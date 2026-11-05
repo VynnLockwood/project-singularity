@@ -24,10 +24,8 @@ REVOKE ALL ON SCHEMA master FROM PUBLIC;
 
 GRANT CONNECT ON DATABASE :"dbname" TO singularity_app, singularity_master_rw, singularity_master_ro;
 
--- singularity_app: owns internal state only. No access to master data.
--- (It also gets CREATE on public: Django keeps its migration bookkeeping there until M2 moves it.)
+-- singularity_app: owns internal state only. No access to master data, nothing in public.
 GRANT USAGE, CREATE ON SCHEMA singularity TO singularity_app;
-GRANT USAGE, CREATE ON SCHEMA public TO singularity_app;
 ALTER DEFAULT PRIVILEGES FOR ROLE singularity_app IN SCHEMA singularity
   GRANT ALL ON TABLES TO singularity_app;
 
