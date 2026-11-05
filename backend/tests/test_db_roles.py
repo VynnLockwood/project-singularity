@@ -19,13 +19,21 @@ HOST = os.environ.get("DB_HOST", "localhost")
 PORT = os.environ.get("DB_PORT", "5432")
 DBNAME = "roles_test"
 ROLES = ["singularity_app", "singularity_master_rw", "singularity_master_ro"]
+PASSWORDS = {
+    "singularity_app": "app-pw",
+    "singularity_master_rw": "rw-pw",
+    "singularity_master_ro": "ro-pw",
+}
 REPO = Path(__file__).resolve().parents[2]
 
 pytestmark = pytest.mark.skipif(not ADMIN, reason="TEST_PG_ADMIN_USER not set")
 
 
 def connect(user, dbname=DBNAME):
-    return psycopg.connect(host=HOST, port=PORT, user=user, dbname=dbname, autocommit=True)
+    # Roles use their known passwords; the admin user relies on PGPASSWORD / trust auth.
+    return psycopg.connect(
+        host=HOST, port=PORT, user=user, dbname=dbname, autocommit=True, password=PASSWORDS.get(user)
+    )
 
 
 def allowed(user, sql):
