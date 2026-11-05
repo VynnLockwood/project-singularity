@@ -12,6 +12,11 @@ def tables(request):
 
 
 @endpoint("GET")
+def graph(request):
+    return JsonResponse(introspect.graph())
+
+
+@endpoint("GET")
 def table_detail(request, name):
     d = introspect.describe_table(name)
     if d is None:

@@ -41,6 +41,30 @@ FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'm
 WHERE c.relkind = 'r' ORDER BY c.relname
 """
 
+PK_SQL = """
+SELECT c.relname AS table_name, a.attname AS column_name
+FROM pg_constraint con
+JOIN pg_class c ON c.oid = con.conrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'master'
+JOIN LATERAL unnest(con.conkey) AS k(attnum) ON true
+JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
+WHERE con.contype = 'p'
+"""
+
+FK_SQL = """
+SELECT c.relname AS from_table, a.attname AS from_column, rc.relname AS to_table, ra.attname AS to_column
+FROM pg_constraint con
+JOIN pg_class c ON c.oid = con.conrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'master'
+JOIN pg_class rc ON rc.oid = con.confrelid
+JOIN pg_namespace rn ON rn.oid = rc.relnamespace AND rn.nspname = 'master'
+JOIN LATERAL unnest(con.conkey, con.confkey) AS k(l, r) ON true
+JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.l
+JOIN pg_attribute ra ON ra.attrelid = rc.oid AND ra.attnum = k.r
+WHERE con.contype = 'f'
+ORDER BY c.relname, a.attname
+"""
+
 CONSTRAINT_KINDS = {"p": "primary_key", "u": "unique", "f": "foreign_key", "c": "check"}
 
 
@@ -94,6 +118,27 @@ def describe_table(name: str) -> dict | None:
             for r in conn.execute(INDEXES_SQL) if r["table_name"] == name
         ]
     return {"name": name, "comment": t["comment"], "columns": cols, "constraints": cons, "indexes": idx}
+
+
+def graph() -> dict:
+    """Everything the schema diagram needs in one read: tables with columns, and foreign-key edges."""
+    with ro_connection() as conn:
+        tables = {
+            r["name"]: {"name": r["name"], "comment": r["comment"], "rowEstimate": r["row_estimate"], "columns": []}
+            for r in conn.execute(TABLES_SQL)
+        }
+        pks = {(r["table_name"], r["column_name"]) for r in conn.execute(PK_SQL)}
+        for r in conn.execute(COLUMNS_SQL):
+            tables[r["table_name"]]["columns"].append({
+                "name": r["column_name"], "type": r["type"], "nullable": r["nullable"],
+                "primaryKey": (r["table_name"], r["column_name"]) in pks,
+            })
+        relations = [
+            {"from": {"table": r["from_table"], "column": r["from_column"]},
+             "to": {"table": r["to_table"], "column": r["to_column"]}}
+            for r in conn.execute(FK_SQL)
+        ]
+    return {"tables": list(tables.values()), "relations": relations}
 
 
 def fingerprint(tables: list[str]) -> str:

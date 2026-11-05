@@ -18,6 +18,7 @@ urlpatterns = [
     path("api/rules/<int:rule_id>/versions", rules.rule_versions),
     path("api/rules/<int:rule_id>/rollback", rules.rule_rollback),
     path("api/schema/tables", schema_views.tables),
+    path("api/schema/graph", schema_views.graph),
     path("api/schema/tables/<str:name>", schema_views.table_detail),
     path("api/query", schema_views.run_query),
     path("api/audit", audit_log),

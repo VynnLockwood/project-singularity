@@ -226,3 +226,26 @@ def test_audit_endpoint(editor, approver, viewer):
     assert {"change.proposed", "change.approved", "change.applied"} <= {e["action"] for e in entries}
     only = viewer.get("/api/audit?action=change.applied").json()["entries"]
     assert len(only) == 1 and only[0]["actor"] == "approver@example.com"
+
+
+# ---- schema graph (2D diagram data) -------------------------------------------
+
+def test_graph_has_columns_keys_and_foreign_keys(approver):
+    ops = [
+        {"op": "create_table", "name": "customer", "columns": [col("name")]},
+        {"op": "create_table", "name": "orderHeader", "columns": [
+            col("customerId", "bigint", references={"table": "customer"})]},
+    ]
+    ch = post(approver, "/api/changes", {"operations": ops}).json()
+    assert post(approver, f"/api/changes/{ch['id']}/approve").json()["status"] == "applied"
+    g = approver.get("/api/schema/graph").json()
+    by = {t["name"]: t for t in g["tables"]}
+    assert set(by) == {"customer", "orderHeader"}
+    assert {c["name"] for c in by["customer"]["columns"] if c["primaryKey"]} == {"id"}
+    assert g["relations"] == [{"from": {"table": "orderHeader", "column": "customerId"},
+                               "to": {"table": "customer", "column": "id"}}]
+
+
+def test_graph_is_readable_by_viewers_but_not_anonymous(viewer):
+    assert viewer.get("/api/schema/graph").json() == {"tables": [], "relations": []}
+    assert Client().get("/api/schema/graph").status_code == 401

@@ -7,7 +7,11 @@ An internal tool for designing and managing a **master data** database in Postgr
 
 ## Status
 
-Milestone 1 (Foundation) and Milestone 2 (Core) are done: compose stack, nginx gateway, Postgres schemas and roles, Google sign-in, roles, audit log, the rules gate, structured operations and SQL generation, the change lifecycle with approvals, backups and revert, REST API, and the MCP server. The `worker` and `embed` containers are placeholders until later milestones. There is no UI for any of this yet (Milestone 3).
+Milestone 1 (Foundation) and Milestone 2 (Core) are done: compose stack, nginx gateway, Postgres schemas and roles, Google sign-in, roles, audit log, the rules gate, structured operations and SQL generation, the change lifecycle with approvals, backups and revert, REST API, and the MCP server. The `worker` and `embed` containers are placeholders until later milestones. Milestone 3 (web chat) adds the signed-in app: a chat with the assistant (OpenRouter), an Approve / Reject popup that appears live over WebSocket, a review queue, and a 2D schema diagram.
+
+## Web chat
+
+Set `OPENROUTER_API_KEY` in `.env` (only the `api` container receives it) and pick models in `singularity.yaml` under `chat` (`defaultModel`, `allowedModels`, `maxToolRounds`, `messagesPerMinute`). The assistant has the same tools as an MCP client for your role, but no approve tool: the popup is the only way to approve from chat, so the model cannot approve its own proposals. Changes proposed from any source (chat, MCP client) show up live for the requester and for approvers.
 
 ## Connect an AI client (MCP)
 
@@ -18,7 +22,7 @@ Endpoint: `https://<your-host>/mcp`. Authenticate with a personal access token s
 
 Tools are filtered by your role: viewers get `get_rules`, `list_tables`, `describe_table`, `query` (SELECT only); editors add `propose_change`, `get_change`, `approve_change`, `reject_change`; approvers add `list_pending`. The AI proposes a change, shows you the diff and SQL, and only after you say yes does it call `approve_change`. Data edits can be approved by the editor who made them; schema changes need an approver.
 
-Known gaps: MCP auth uses personal access tokens rather than OAuth 2.1 (planned follow-up), and there is no scheduled nightly backup yet (a backup is taken before every schema change).
+Known gaps: the Settings UI (rules, roles, default model) and 3D view are later milestones; MCP auth uses personal access tokens rather than OAuth 2.1 (planned follow-up), and there is no scheduled nightly backup yet (a backup is taken before every schema change).
 
 ## Run it
 
