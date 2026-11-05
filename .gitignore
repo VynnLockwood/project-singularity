@@ -1,0 +1,10 @@
+.env
+nginx/certs/
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+.next/
+target/
+*.sqlite3
+.DS_Store

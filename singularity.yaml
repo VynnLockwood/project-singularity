@@ -1,0 +1,27 @@
+# Deploy-time config (restart required). Secrets live in .env, never here.
+auth:
+  provider: google
+  allowedDomains:
+    - example.com          # change to your Google Workspace domain
+  seedAdmins:              # become "approver" on first sign-in
+    - admin@example.com
+  defaultRole: viewer      # viewer | editor | approver
+
+limits:
+  maxQueryRows: 500
+  queryTimeoutMs: 5000
+  maxOpsPerProposal: 50
+  maxRowsPerDataOp: 1000
+
+embedding:
+  model: intfloat/multilingual-e5-small
+  dimension: 384
+
+chat:
+  provider: openrouter
+  defaultModel: anthropic/claude-sonnet-4.5
+  allowedModels:
+    - anthropic/claude-sonnet-4.5
+
+backups:
+  retentionDays: 14
