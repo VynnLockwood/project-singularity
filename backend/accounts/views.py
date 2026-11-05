@@ -9,6 +9,8 @@ from django.views.decorators.http import require_GET, require_http_methods, requ
 from config.siconfig import get_config
 
 from . import google
+from . import tokens as token_service
+from .api import endpoint
 from .models import User
 from .services import RoleChangeDenied, SignInDenied, change_role, sign_in_from_claims
 
@@ -102,3 +104,30 @@ def user_role(request, user_id: int):
     except RoleChangeDenied as exc:
         return JsonResponse({"error": str(exc)}, status=400)
     return JsonResponse(_user_json(target))
+
+
+# ---- MCP access tokens (each user manages their own) -------------------------
+
+@endpoint(["GET", "POST"], min_role="editor")
+def mcp_tokens(request):
+    if request.method == "GET":
+        return JsonResponse({"tokens": [
+            {"id": t.pk, "name": t.name, "prefix": t.prefix, "createdAt": t.created_at.isoformat(),
+             "lastUsedAt": t.last_used_at.isoformat() if t.last_used_at else None}
+            for t in request.user.mcp_tokens.filter(revoked_at__isnull=True)
+        ]})
+    try:
+        tok, raw = token_service.create_token(request.user, request.json.get("name", ""))
+    except token_service.TokenError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+    # The only time the raw token is ever shown.
+    return JsonResponse({"id": tok.pk, "name": tok.name, "prefix": tok.prefix, "token": raw}, status=201)
+
+
+@endpoint("DELETE", min_role="editor")
+def mcp_token_detail(request, token_id):
+    try:
+        token_service.revoke(request.user, token_id)
+    except token_service.TokenError:
+        return JsonResponse({"error": "not found"}, status=404)
+    return JsonResponse({"ok": True})

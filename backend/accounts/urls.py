@@ -10,4 +10,6 @@ urlpatterns = [
     path("auth/logout", views.logout_view),
     path("users", views.users_list),
     path("users/<int:user_id>/role", views.user_role),
+    path("mcp-tokens", views.mcp_tokens),
+    path("mcp-tokens/<int:token_id>", views.mcp_token_detail),
 ]
