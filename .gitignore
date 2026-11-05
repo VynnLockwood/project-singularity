@@ -8,3 +8,6 @@ node_modules/
 target/
 *.sqlite3
 .DS_Store
+next-env.d.ts
+*.tsbuildinfo
+.pytest_cache/
