@@ -143,3 +143,13 @@ body {
 .stat-cards { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-bottom: 0.6rem; }
 .stat-card { border: 1px solid #1c2342; border-radius: 10px; padding: 0.4rem 0.7rem; min-width: 11rem; max-width: 18rem; }
 .stat-card p { margin: 0.15rem 0; }
+
+/* ---- 3D universe ---- */
+.universe-wrap { display: grid; grid-template-columns: minmax(0, 1fr) 16rem; gap: 1rem; }
+.universe { height: 32rem; border: 1px solid #1c2342; border-radius: 12px; overflow: hidden; background: radial-gradient(circle at 50% 40%, #121a38, #070b1c); }
+.universe canvas { display: block; }
+.universe-list { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 0.3rem 0.8rem; }
+.universe-panel { border: 1px solid #1c2342; border-radius: 10px; padding: 0.6rem 0.8rem; }
+.universe-panel h3 { margin: 0 0 0.3rem; }
+.universe-panel ul { padding-left: 1rem; }
+@media (max-width: 800px) { .universe-wrap { grid-template-columns: 1fr; } }

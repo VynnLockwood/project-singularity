@@ -7,7 +7,7 @@ An internal tool for designing and managing a **master data** database in Postgr
 
 ## Status
 
-Milestones 1 to 6 are done: compose stack, nginx gateway, Postgres schemas and roles, Google sign-in, roles, audit log, the rules gate, structured operations and SQL generation, the change lifecycle with approvals, backups and revert, REST API, and the MCP server. The `worker` container is a placeholder until later milestones. Milestone 6 (Rust engine) adds the Duplicates tab and column stats. Milestone 5 (grid editor) adds the Data tab. Milestone 4 (search) adds the embed service and schema search. Milestone 3 (web chat) adds the signed-in app: a chat with the assistant (OpenRouter), an Approve / Reject popup that appears live over WebSocket, a review queue, and a 2D schema diagram.
+Milestones 1 to 7 are done: compose stack, nginx gateway, Postgres schemas and roles, Google sign-in, roles, audit log, the rules gate, structured operations and SQL generation, the change lifecycle with approvals, backups and revert, REST API, and the MCP server. The `worker` container is a placeholder until later milestones. Milestone 7 (3D universe) turns the Schema tab into a 3D view with a 2D toggle. Milestone 6 (Rust engine) adds the Duplicates tab and column stats. Milestone 5 (grid editor) adds the Data tab. Milestone 4 (search) adds the embed service and schema search. Milestone 3 (web chat) adds the signed-in app: a chat with the assistant (OpenRouter), an Approve / Reject popup that appears live over WebSocket, a review queue, and a 2D schema diagram.
 
 ## Web chat
 
@@ -32,7 +32,7 @@ Limits: the grid does not detect that someone else changed the same cell after y
 
 Ask "where does this data belong?" in the Schema tab (Thai or English), or let the assistant call `search_schema`. Every table and column becomes a document (name, type, comment, relationships, a few sample values) embedded by the `embed` container (multilingual-e5-small, CPU, no internet at runtime: the model is baked into the image at build). Ranking blends meaning (pgvector, cosine) with name similarity (`pg_trgm`), and an exact name always ranks first. The index refreshes in the background after an applied schema change; approvers can rebuild it. If nothing scores above `search.minConfidence` (default 0.8), the UI offers to ask the assistant to propose a new column. That threshold was set without running the real model, so tune it against your own schema.
 
-Known gaps: the Settings UI (rules, roles, default model) and 3D view are later milestones; MCP auth uses personal access tokens rather than OAuth 2.1 (planned follow-up), and there is no scheduled nightly backup yet (a backup is taken before every schema change).
+Known gaps: the Settings UI (rules, roles, default model) is a later milestone; MCP auth uses personal access tokens rather than OAuth 2.1 (planned follow-up), and there is no scheduled nightly backup yet (a backup is taken before every schema change).
 
 ## Duplicates and column stats
 
@@ -43,6 +43,12 @@ The **Duplicates** tab scans one table at a time (`duplicates.*` in `singularity
 The **Column stats** button in the Data tab summarises the rows on screen (distinct, empty %, min/max/mean, top values). The browser build is optional: if `frontend/public/engine/` is missing, a TypeScript implementation that passes the same golden test cases (`engine/testdata/stats_cases.json`) is used. CI builds the WASM package and uploads it as an artifact.
 
 Not verified in the build sandbox: the Docker image (Rust stage), the WASM build, and real browser behaviour.
+
+## Schema universe (3D)
+
+The Schema tab shows each table as a body (bigger for more rows) and each foreign key as a link, laid out by a deterministic force-directed algorithm in the Rust engine (`engine/src/layout.rs`; WebAssembly in the browser, with a TypeScript twin checked against the same golden cases in `engine/testdata/layout_cases.json`). Drag to orbit, scroll to zoom, click a table (or pick it from the list) to see its columns and relations. The **2D** button shows the classic card diagram; it is also used automatically when the browser has no WebGL.
+
+Not verified in the build sandbox: the 3D rendering itself (there is no GPU or browser here); the tests cover the layout, the toggle, selection and the fallback.
 
 ## Run it
 

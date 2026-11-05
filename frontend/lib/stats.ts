@@ -65,7 +65,7 @@ export function columnStats(values: unknown[]): ColumnStats {
   return { count, nulls, nullPct: count === 0 ? 0 : round((nulls * 100) / count, 3), distinct: freq.size, top, numeric, text };
 }
 
-type Wasm = { columnStats: (json: string) => string };
+export type Wasm = { columnStats: (json: string) => string; layout3d?: (json: string) => string };
 let wasm: Wasm | null | undefined;
 
 /** Try to load the WebAssembly build once (served at /engine/). Missing or failing is fine: we fall back to TypeScript. */
@@ -75,7 +75,7 @@ export async function loadWasm(): Promise<Wasm | null> {
     const url = "/engine/singularity_engine.js";
     const mod = await import(/* webpackIgnore: true */ url);
     await mod.default("/engine/singularity_engine_bg.wasm");
-    wasm = { columnStats: mod.columnStats };
+    wasm = { columnStats: mod.columnStats, layout3d: mod.layout3d };
   } catch {
     wasm = null;
   }
