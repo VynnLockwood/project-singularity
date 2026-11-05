@@ -21,6 +21,8 @@ urlpatterns = [
     path("api/schema/tables", schema_views.tables),
     path("api/schema/graph", schema_views.graph),
     path("api/schema/tables/<str:name>", schema_views.table_detail),
+    path("api/schema/tables/<str:name>/rows", schema_views.table_rows),
+    path("api/schema/tables/<str:name>/options", schema_views.table_options),
     path("api/query", schema_views.run_query),
     path("api/search", search_views.search),
     path("api/search/reindex", search_views.reindex),

@@ -6,11 +6,12 @@ import { canDecide, upsert } from "@/lib/changes";
 import { connectEvents } from "@/lib/events";
 import { ApprovalPopup } from "./ApprovalPopup";
 import { ChatView } from "./ChatView";
+import { DataView } from "./DataView";
 import { QueueView } from "./QueueView";
 import { SearchBox } from "./SearchBox";
 import { SchemaView } from "./SchemaView";
 
-type Tab = "chat" | "schema" | "queue";
+type Tab = "chat" | "schema" | "data" | "queue";
 
 export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
   const [tab, setTab] = useState<Tab>("chat");
@@ -57,9 +58,9 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
       <header className="topbar">
         <span className="brand">Singularity</span>
         <nav aria-label="Main">
-          {(["chat", "schema", ...(me.role === "viewer" ? [] : ["queue"])] as Tab[]).map((t) => (
+          {(["chat", "schema", "data", ...(me.role === "viewer" ? [] : ["queue"])] as Tab[]).map((t) => (
             <button key={t} className="tab" data-active={tab === t} onClick={() => setTab(t)}>
-              {t === "chat" ? "Chat" : t === "schema" ? "Schema" : `Queue${mine.length ? ` (${mine.length})` : ""}`}
+              {t === "chat" ? "Chat" : t === "schema" ? "Schema" : t === "data" ? "Data" : `Queue${mine.length ? ` (${mine.length})` : ""}`}
             </button>
           ))}
         </nav>
@@ -77,6 +78,10 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
             <SearchBox canPropose={me.role !== "viewer"} canReindex={me.role === "approver"} onAskAssistant={(t) => { setDraft(t); setTab("chat"); }} />
             <SchemaView refreshKey={schemaKey} />
           </>
+        )}
+        {tab === "data" && (
+          <DataView me={me} live={live} refreshKey={schemaKey}
+            onProposed={(c) => setLive((l) => upsert(l, c))} />
         )}
         {tab === "queue" && <QueueView me={me} changes={mine} onDecide={onDecide} busy={busy} />}
       </main>

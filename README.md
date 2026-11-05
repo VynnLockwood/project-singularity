@@ -7,7 +7,7 @@ An internal tool for designing and managing a **master data** database in Postgr
 
 ## Status
 
-Milestones 1 to 4 are done: compose stack, nginx gateway, Postgres schemas and roles, Google sign-in, roles, audit log, the rules gate, structured operations and SQL generation, the change lifecycle with approvals, backups and revert, REST API, and the MCP server. The `worker` container is a placeholder until later milestones. Milestone 4 (search) adds the embed service and schema search. Milestone 3 (web chat) adds the signed-in app: a chat with the assistant (OpenRouter), an Approve / Reject popup that appears live over WebSocket, a review queue, and a 2D schema diagram.
+Milestones 1 to 5 are done: compose stack, nginx gateway, Postgres schemas and roles, Google sign-in, roles, audit log, the rules gate, structured operations and SQL generation, the change lifecycle with approvals, backups and revert, REST API, and the MCP server. The `worker` container is a placeholder until later milestones. Milestone 5 (grid editor) adds the Data tab. Milestone 4 (search) adds the embed service and schema search. Milestone 3 (web chat) adds the signed-in app: a chat with the assistant (OpenRouter), an Approve / Reject popup that appears live over WebSocket, a review queue, and a 2D schema diagram.
 
 ## Web chat
 
@@ -21,6 +21,12 @@ Endpoint: `https://<your-host>/mcp`. Authenticate with a personal access token s
 2. Add the server to your client, e.g. Claude Desktop / Cursor: URL above plus the bearer header.
 
 Tools are filtered by your role: viewers get `get_rules`, `list_tables`, `describe_table`, `query` (SELECT only); editors add `propose_change`, `get_change`, `approve_change`, `reject_change`; approvers add `list_pending`. The AI proposes a change, shows you the diff and SQL, and only after you say yes does it call `approve_change`. Data edits can be approved by the editor who made them; schema changes need an approver.
+
+## Data grid
+
+The Data tab edits one table at a time: server-side paging, sort and filter, reference columns as dropdowns (labelled by the target's name column), and a draft that collects your edits. **Save for approval** sends one proposal through the same rules gate as everything else: identical edits are grouped into one `update_rows`, new rows into one `insert_rows`, and removed rows are *deactivated* (`isActive = false`), never deleted. Editors approve their own data changes in the popup. Viewers see the grid read-only.
+
+Limits: the grid does not detect that someone else changed the same cell after you loaded the page (last approved write wins), and one save is capped by `maxOpsPerProposal` / `maxRowsPerDataOp` in `singularity.yaml`.
 
 ## Search
 
