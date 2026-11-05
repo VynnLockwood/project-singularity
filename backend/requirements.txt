@@ -4,3 +4,5 @@ gunicorn>=23
 PyYAML>=6
 requests>=2.32
 google-auth>=2.35
+mcp>=2,<3
+uvicorn>=0.30
