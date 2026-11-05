@@ -22,6 +22,7 @@ DEFAULTS = {
     "chat": {"provider": "openrouter", "defaultModel": "", "allowedModels": [], "maxToolRounds": 8,
              "messagesPerMinute": 20},
     "search": {"topK": 5, "minConfidence": 0.8, "sampleValues": 5},
+    "duplicates": {"threshold": 0.9, "maxRows": 20000},
     "backups": {"retentionDays": 14},
 }
 

@@ -207,3 +207,40 @@ export const getOptions = (table: string) =>
 export type Operation = Record<string, unknown>;
 export const proposeChange = (operations: Operation[], prompt: string, source: "grid" | "web" = "grid") =>
   call<Change>("POST", "/changes", { operations, source, prompt });
+
+// ---- duplicates ---------------------------------------------------------------
+
+export type GroupStatus = "open" | "dismissed" | "merge_pending" | "merged";
+export interface DuplicateSummary {
+  id: number;
+  table: string;
+  fields: string[];
+  memberIds: number[];
+  score: number;
+  status: GroupStatus;
+  detectedAt: string;
+  mergeChange: number | null;
+}
+export interface DuplicateDetail extends DuplicateSummary {
+  members: Record<string, unknown>[];
+  referencedBy: { table: string; column: string }[];
+}
+export interface ScanResult {
+  table: string;
+  scanned: number;
+  truncated: boolean;
+  groups: number;
+  new: number;
+  removed: number;
+  fields: string[];
+}
+export const listDuplicates = (table?: string) =>
+  call<{ groups: DuplicateSummary[]; tables: Record<string, number> }>(
+    "GET", `/duplicates${table ? `?table=${encodeURIComponent(table)}` : ""}`);
+export const getDuplicate = (id: number) => call<DuplicateDetail>("GET", `/duplicates/${id}`);
+export const scanDuplicates = (table: string, threshold?: number) =>
+  call<ScanResult>("POST", "/duplicates/scan", threshold === undefined ? { table } : { table, threshold });
+export const dismissDuplicate = (id: number) => call<DuplicateSummary>("POST", `/duplicates/${id}/dismiss`, {});
+export const reopenDuplicate = (id: number) => call<DuplicateSummary>("POST", `/duplicates/${id}/reopen`, {});
+export const mergeDuplicate = (id: number, survivorId: number) =>
+  call<{ group: DuplicateSummary; change: Change }>("POST", `/duplicates/${id}/merge`, { survivorId });

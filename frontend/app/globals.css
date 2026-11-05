@@ -135,3 +135,11 @@ body {
 .grid [aria-invalid="true"] { border-color: #ff6b6b; background: rgba(255, 107, 107, 0.12); }
 .grid tr[data-removed="true"] td { text-decoration: line-through; opacity: 0.5; }
 .grid tr[data-new="true"] { background: rgba(63, 178, 127, 0.1); }
+
+/* ---- duplicates and stats ---- */
+.dup-list { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; max-width: 46rem; }
+.dup-list li { display: flex; align-items: center; gap: 0.8rem; padding: 0.4rem 0.8rem; border: 1px solid #1c2342; border-radius: 10px; }
+.dup-list li[data-status="dismissed"], .dup-list li[data-status="merged"] { opacity: 0.6; }
+.stat-cards { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-bottom: 0.6rem; }
+.stat-card { border: 1px solid #1c2342; border-radius: 10px; padding: 0.4rem 0.7rem; min-width: 11rem; max-width: 18rem; }
+.stat-card p { margin: 0.15rem 0; }

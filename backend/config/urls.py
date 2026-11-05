@@ -4,6 +4,7 @@ from approvals import views as changes
 from audit.views import audit_log
 from chat import views as chat_views
 from config.views import health
+from duplicates import views as dup
 from schema import views as schema_views
 from search import views as search_views
 from settings_app import views as rules
@@ -24,6 +25,12 @@ urlpatterns = [
     path("api/schema/tables/<str:name>/rows", schema_views.table_rows),
     path("api/schema/tables/<str:name>/options", schema_views.table_options),
     path("api/query", schema_views.run_query),
+    path("api/duplicates", dup.groups),
+    path("api/duplicates/scan", dup.scan),
+    path("api/duplicates/<int:group_id>", dup.group_detail),
+    path("api/duplicates/<int:group_id>/dismiss", dup.dismiss),
+    path("api/duplicates/<int:group_id>/reopen", dup.reopen),
+    path("api/duplicates/<int:group_id>/merge", dup.merge),
     path("api/search", search_views.search),
     path("api/search/reindex", search_views.reindex),
     path("api/audit", audit_log),

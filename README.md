@@ -7,7 +7,7 @@ An internal tool for designing and managing a **master data** database in Postgr
 
 ## Status
 
-Milestones 1 to 5 are done: compose stack, nginx gateway, Postgres schemas and roles, Google sign-in, roles, audit log, the rules gate, structured operations and SQL generation, the change lifecycle with approvals, backups and revert, REST API, and the MCP server. The `worker` container is a placeholder until later milestones. Milestone 5 (grid editor) adds the Data tab. Milestone 4 (search) adds the embed service and schema search. Milestone 3 (web chat) adds the signed-in app: a chat with the assistant (OpenRouter), an Approve / Reject popup that appears live over WebSocket, a review queue, and a 2D schema diagram.
+Milestones 1 to 6 are done: compose stack, nginx gateway, Postgres schemas and roles, Google sign-in, roles, audit log, the rules gate, structured operations and SQL generation, the change lifecycle with approvals, backups and revert, REST API, and the MCP server. The `worker` container is a placeholder until later milestones. Milestone 6 (Rust engine) adds the Duplicates tab and column stats. Milestone 5 (grid editor) adds the Data tab. Milestone 4 (search) adds the embed service and schema search. Milestone 3 (web chat) adds the signed-in app: a chat with the assistant (OpenRouter), an Approve / Reject popup that appears live over WebSocket, a review queue, and a 2D schema diagram.
 
 ## Web chat
 
@@ -34,6 +34,16 @@ Ask "where does this data belong?" in the Schema tab (Thai or English), or let t
 
 Known gaps: the Settings UI (rules, roles, default model) and 3D view are later milestones; MCP auth uses personal access tokens rather than OAuth 2.1 (planned follow-up), and there is no scheduled nightly backup yet (a backup is taken before every schema change).
 
+## Duplicates and column stats
+
+The `engine/` crate (Rust) does the heavy lifting twice from one codebase: as a Python module (PyO3) inside the backend for duplicate detection, and as WebAssembly in the browser for column statistics. Names are normalized (Unicode NFKC, Thai digits and zero-width marks, company suffixes like Co., Ltd., จำกัด), grouped by blocking keys, then scored with Jaro-Winkler, token-sorted Jaro-Winkler and bigram overlap; a group's score is its weakest link.
+
+The **Duplicates** tab scans one table at a time (`duplicates.*` in `singularity.yaml`), lists groups with their score, and shows the records side by side. Pick the record to keep and **Merge**: this is an ordinary data change that moves every foreign-key reference to the survivor and then deactivates the others, so it goes through the same rules gate and approval popup. "Not duplicates" dismisses a group and a scan will not bring it back.
+
+The **Column stats** button in the Data tab summarises the rows on screen (distinct, empty %, min/max/mean, top values). The browser build is optional: if `frontend/public/engine/` is missing, a TypeScript implementation that passes the same golden test cases (`engine/testdata/stats_cases.json`) is used. CI builds the WASM package and uploads it as an artifact.
+
+Not verified in the build sandbox: the Docker image (Rust stage), the WASM build, and real browser behaviour.
+
 ## Run it
 
 ```sh
@@ -58,6 +68,15 @@ Google OAuth: create an OAuth client and add `https://localhost/api/auth/google/
 Domains allowed to sign in and the first admins come from `singularity.yaml`; roles are managed afterwards through the API (a Settings page comes in a later milestone).
 
 ## Develop
+
+Engine (Rust; needed by the backend's duplicate finder):
+
+```sh
+cd engine
+cargo test
+pip install maturin && maturin build --release --out /tmp/wheels && pip install /tmp/wheels/*.whl
+# optional browser build: wasm-pack build --release --target web --out-dir ../frontend/public/engine --features wasm
+```
 
 Backend (needs a local Postgres):
 

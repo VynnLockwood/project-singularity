@@ -7,11 +7,12 @@ import { connectEvents } from "@/lib/events";
 import { ApprovalPopup } from "./ApprovalPopup";
 import { ChatView } from "./ChatView";
 import { DataView } from "./DataView";
+import { DuplicatesView } from "./DuplicatesView";
 import { QueueView } from "./QueueView";
 import { SearchBox } from "./SearchBox";
 import { SchemaView } from "./SchemaView";
 
-type Tab = "chat" | "schema" | "data" | "queue";
+type Tab = "chat" | "schema" | "data" | "duplicates" | "queue";
 
 export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
   const [tab, setTab] = useState<Tab>("chat");
@@ -50,6 +51,7 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
     }
   }, []);
 
+  const appliedCount = live.filter((c) => c.status === "applied").length;
   const mine = live.filter((c) => canDecide(me, c));
   const popupChanges = mine.filter((c) => !snoozed.has(c.id));
 
@@ -58,9 +60,9 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
       <header className="topbar">
         <span className="brand">Singularity</span>
         <nav aria-label="Main">
-          {(["chat", "schema", "data", ...(me.role === "viewer" ? [] : ["queue"])] as Tab[]).map((t) => (
+          {(["chat", "schema", "data", "duplicates", ...(me.role === "viewer" ? [] : ["queue"])] as Tab[]).map((t) => (
             <button key={t} className="tab" data-active={tab === t} onClick={() => setTab(t)}>
-              {t === "chat" ? "Chat" : t === "schema" ? "Schema" : t === "data" ? "Data" : `Queue${mine.length ? ` (${mine.length})` : ""}`}
+              {t === "chat" ? "Chat" : t === "schema" ? "Schema" : t === "data" ? "Data" : t === "duplicates" ? "Duplicates" : `Queue${mine.length ? ` (${mine.length})` : ""}`}
             </button>
           ))}
         </nav>
@@ -82,6 +84,9 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
         {tab === "data" && (
           <DataView me={me} live={live} refreshKey={schemaKey}
             onProposed={(c) => setLive((l) => upsert(l, c))} />
+        )}
+        {tab === "duplicates" && (
+          <DuplicatesView me={me} refreshKey={appliedCount} onProposed={(c) => setLive((l) => upsert(l, c))} />
         )}
         {tab === "queue" && <QueueView me={me} changes={mine} onDecide={onDecide} busy={busy} />}
       </main>

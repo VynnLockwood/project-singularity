@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     "channels",
     "chat",
     "search",
+    "duplicates",
 ]
 
 MIDDLEWARE = [

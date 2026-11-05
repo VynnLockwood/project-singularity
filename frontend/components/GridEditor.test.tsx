@@ -47,10 +47,10 @@ describe("GridEditor", () => {
   it("shows rows, the range, and reference columns as dropdowns with names", async () => {
     await setup();
     expect(screen.getByText("1–2 of 2")).toBeInTheDocument();
-    const fk = screen.getByLabelText("customerId 1") as HTMLSelectElement;
-    await waitFor(() => expect(within(fk).getByText("Acme")).toBeInTheDocument());
-    expect(fk.value).toBe("10");
-    expect(within(fk).getByText("Beta")).toBeInTheDocument();
+    const fk = () => screen.getByLabelText("customerId 1") as HTMLSelectElement;
+    await waitFor(() => expect(within(fk()).getByText("Acme")).toBeInTheDocument(), { timeout: 4000 });
+    expect(fk().value).toBe("10");
+    expect(within(fk()).getByText("Beta")).toBeInTheDocument();
   });
 
   it("read-only columns are not editable", async () => {

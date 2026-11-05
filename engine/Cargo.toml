@@ -1,0 +1,28 @@
+[package]
+name = "singularity-engine"
+version = "0.1.0"
+edition = "2021"
+description = "Duplicate detection and column statistics for Singularity (Python via PyO3, browser via WASM)"
+publish = false
+
+[lib]
+name = "singularity_engine"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+python = ["dep:pyo3"]
+wasm = ["dep:wasm-bindgen"]
+
+[dependencies]
+strsim = "0.11"
+unicode-normalization = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+pyo3 = { version = "0.25", optional = true, features = ["abi3-py310", "extension-module"] }
+wasm-bindgen = { version = "0.2", optional = true }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

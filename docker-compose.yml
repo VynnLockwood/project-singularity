@@ -46,7 +46,7 @@ services:
     restart: unless-stopped
 
   api:
-    build: ./backend
+    build: { context: ., dockerfile: backend/Dockerfile }
     # ASGI (uvicorn) so the same process serves HTTP and the /ws/ WebSocket
     command: sh -c "python manage.py migrate --noinput && exec uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --workers 3 --proxy-headers --forwarded-allow-ips='*'"
     environment:
@@ -67,7 +67,7 @@ services:
   # MCP server: same image and code as the API, separate process. Bearer-token auth,
   # role-filtered tools; every change still goes through the gate and approvals.
   mcp:
-    build: ./backend
+    build: { context: ., dockerfile: backend/Dockerfile }
     command: uvicorn mcp_server.app:app --host 0.0.0.0 --port 8001 --proxy-headers --forwarded-allow-ips='*'
     environment: *backend-env
     volumes:
@@ -81,7 +81,7 @@ services:
 
   # Placeholder until Milestone 4/6: Celery worker.
   worker:
-    build: ./backend
+    build: { context: ., dockerfile: backend/Dockerfile }
     command: sleep infinity
     environment: *backend-env
     depends_on:

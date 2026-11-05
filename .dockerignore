@@ -1,0 +1,7 @@
+.git
+**/node_modules
+**/.next
+**/__pycache__
+**/*.pyc
+engine/target
+frontend/out

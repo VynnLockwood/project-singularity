@@ -9,6 +9,8 @@ import {
   buildOperations, cellText, draftSize, emptyDraft, validate, type Draft,
 } from "@/lib/grid";
 
+import { ColumnStats } from "./ColumnStats";
+
 const PAGE = 50;
 
 interface Props {
@@ -35,6 +37,7 @@ export function GridEditor({ me, table, live, onProposed }: Props) {
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [reload, setReload] = useState(0);
+  const [showStats, setShowStats] = useState(false);
 
   const appliedHere = live.filter((c) => c.status === "applied" && c.kind === "data" && c.tables.includes(table)).length;
 
@@ -144,6 +147,7 @@ export function GridEditor({ me, table, live, onProposed }: Props) {
         <label className="small">
           <input type="checkbox" checked={inactive} onChange={(e) => { setInactive(e.target.checked); setOffset(0); }} /> show inactive
         </label>
+        <button className="link" aria-pressed={showStats} onClick={() => setShowStats((v) => !v)}>Column stats</button>
         <span className="spacer" />
         <button className="link" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>Previous</button>
         <button className="link" disabled={last >= page.total} onClick={() => setOffset(offset + PAGE)}>Next</button>
@@ -153,6 +157,7 @@ export function GridEditor({ me, table, live, onProposed }: Props) {
       </div>
 
       {error && <p className="problems" role="alert">{error}</p>}
+      {showStats && <ColumnStats columns={columns} rows={page.rows} />}
 
       <div className="grid-scroll">
         <table className="grid">

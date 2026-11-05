@@ -1,0 +1,23 @@
+[
+  {"name": "empty", "input": [], "expected": {"count": 0, "nulls": 0, "nullPct": 0.0, "distinct": 0, "top": [], "numeric": null, "text": null}},
+  {"name": "all null", "input": [null, null], "expected": {"count": 2, "nulls": 2, "nullPct": 100.0, "distinct": 0, "top": [], "numeric": null, "text": null}},
+  {"name": "numbers", "input": [1, 2, 2, 3, null], "expected": {"count": 5, "nulls": 1, "nullPct": 20.0, "distinct": 3,
+    "top": [{"value": "2", "count": 2}, {"value": "1", "count": 1}, {"value": "3", "count": 1}],
+    "numeric": {"min": 1.0, "max": 3.0, "mean": 2.0, "median": 2.0, "stddev": 0.707107}, "text": null}},
+  {"name": "even count median", "input": [10, 20, 30, 40], "expected": {"count": 4, "nulls": 0, "nullPct": 0.0, "distinct": 4,
+    "top": [{"value": "10", "count": 1}, {"value": "20", "count": 1}, {"value": "30", "count": 1}, {"value": "40", "count": 1}],
+    "numeric": {"min": 10.0, "max": 40.0, "mean": 25.0, "median": 25.0, "stddev": 11.18034}, "text": null}},
+  {"name": "numeric strings (numeric columns arrive as text)", "input": ["10.50", "2", "3.25"], "expected": {"count": 3, "nulls": 0, "nullPct": 0.0, "distinct": 3,
+    "top": [{"value": "10.50", "count": 1}, {"value": "2", "count": 1}, {"value": "3.25", "count": 1}],
+    "numeric": {"min": 2.0, "max": 10.5, "mean": 5.25, "median": 3.25, "stddev": 3.747221}, "text": null}},
+  {"name": "text with Thai", "input": ["สวัสดี", "abc", "abc", null], "expected": {"count": 4, "nulls": 1, "nullPct": 25.0, "distinct": 2,
+    "top": [{"value": "abc", "count": 2}, {"value": "สวัสดี", "count": 1}],
+    "numeric": null, "text": {"minLength": 3, "maxLength": 6, "avgLength": 4.0}}},
+  {"name": "mixed is neither numeric nor text", "input": ["a", 1, true], "expected": {"count": 3, "nulls": 0, "nullPct": 0.0, "distinct": 3,
+    "top": [{"value": "1", "count": 1}, {"value": "a", "count": 1}, {"value": "true", "count": 1}], "numeric": null, "text": null}},
+  {"name": "empty strings are values, not numbers", "input": ["", ""], "expected": {"count": 2, "nulls": 0, "nullPct": 0.0, "distinct": 1,
+    "top": [{"value": "", "count": 2}], "numeric": null, "text": {"minLength": 0, "maxLength": 0, "avgLength": 0.0}}},
+  {"name": "top is capped at five, ties by value", "input": ["a","b","c","d","e","f","g"], "expected": {"count": 7, "nulls": 0, "nullPct": 0.0, "distinct": 7,
+    "top": [{"value": "a", "count": 1}, {"value": "b", "count": 1}, {"value": "c", "count": 1}, {"value": "d", "count": 1}, {"value": "e", "count": 1}],
+    "numeric": null, "text": {"minLength": 1, "maxLength": 1, "avgLength": 1.0}}}
+]
