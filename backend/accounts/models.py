@@ -30,3 +30,21 @@ class User(AbstractUser):
     @property
     def can_approve(self) -> bool:
         return self.rank >= ROLE_RANK[Role.APPROVER]
+
+
+class McpToken(models.Model):
+    """A personal access token for MCP clients (Claude Desktop, Cursor, ...).
+
+    Only a hash is stored. The raw token is shown once, when it is created.
+    """
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="mcp_tokens")
+    name = models.CharField(max_length=64)
+    token_hash = models.CharField(max_length=64, unique=True)
+    prefix = models.CharField(max_length=12)  # first characters, so people can tell tokens apart
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]

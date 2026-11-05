@@ -127,6 +127,23 @@ def test_row_limit_rolls_back_everything():
     assert {r[0] for r in rows("SELECT name FROM customer")} == {"n"}
 
 
+def test_row_limit_also_applies_to_tables_without_an_id():
+    # The rules normally force an id column; with that rule off, only the post-update check can enforce the cap.
+    global RULES
+    saved = RULES
+    RULES = [r for r in RULES if r["name"] != "auditColumns"]
+    try:
+        apply([{"op": "create_table", "name": "tag", "columns": [col("label"), col("kind")]}])
+        apply([{"op": "insert_rows", "table": "tag", "rows": [{"label": f"l{i}", "kind": "k"} for i in range(5)]}])
+        with pytest.raises(executor.ApplyError, match="touched 5 rows"):
+            apply([{"op": "update_rows", "table": "tag", "where": {"kind": "k"}, "set": {"kind": "z"}}], max_rows=3)
+        assert {r[0] for r in rows("SELECT kind FROM tag")} == {"k"}          # rolled back
+        res = apply([{"op": "update_rows", "table": "tag", "where": {"kind": "k"}, "set": {"kind": "z"}}])
+        assert res.reverse_ops is None                                          # no id -> cannot be undone
+    finally:
+        RULES = saved
+
+
 # ---- schema ops and reverse capture ---------------------------------------
 
 def test_add_column_rename_comment_type_reverses():

@@ -21,6 +21,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "accounts",
     "audit",
+    "approvals",
     "settings_app",
 ]
 
