@@ -9,35 +9,25 @@ so the test strips only that one CREATE EXTENSION line when it is unavailable.
 import os
 import subprocess
 import sys
-from pathlib import Path
 
-import psycopg
 import pytest
 
-ADMIN = os.environ.get("TEST_PG_ADMIN_USER")
-HOST = os.environ.get("DB_HOST", "localhost")
-PORT = os.environ.get("DB_PORT", "5432")
+from . import pgsetup
+from .pgsetup import ADMIN, HOST, PORT, REPO
+
 DBNAME = "roles_test"
-ROLES = ["singularity_app", "singularity_master_rw", "singularity_master_ro"]
-PASSWORDS = {
-    "singularity_app": "app-pw",
-    "singularity_master_rw": "rw-pw",
-    "singularity_master_ro": "ro-pw",
-}
-REPO = Path(__file__).resolve().parents[2]
 
 pytestmark = pytest.mark.skipif(not ADMIN, reason="TEST_PG_ADMIN_USER not set")
 
 
 def connect(user, dbname=DBNAME):
-    # Roles use their known passwords; the admin user relies on PGPASSWORD / trust auth.
-    return psycopg.connect(
-        host=HOST, port=PORT, user=user, dbname=dbname, autocommit=True, password=PASSWORDS.get(user)
-    )
+    return pgsetup.connect(user, dbname)
 
 
 def allowed(user, sql):
     """True if `sql` runs as `user`, False if Postgres denies it."""
+    import psycopg
+
     with connect(user) as conn:
         try:
             conn.execute(sql)
@@ -48,44 +38,13 @@ def allowed(user, sql):
 
 @pytest.fixture(scope="module")
 def db():
-    with connect(ADMIN, "postgres") as admin:
-        admin.execute(f"DROP DATABASE IF EXISTS {DBNAME} WITH (FORCE)")
-        for r in ROLES:
-            admin.execute(f"DROP ROLE IF EXISTS {r}")
-        admin.execute(f"CREATE DATABASE {DBNAME}")
-        have_vector = admin.execute(
-            "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'"
-        ).fetchone()
-
-    script = (REPO / "db/init/01-schemas-roles.sh").read_text()
-    if not have_vector:
-        stripped = script.replace("CREATE EXTENSION IF NOT EXISTS vector;", "")
-        assert stripped != script
-        script = stripped
-    scratch = Path(os.environ.get("TMPDIR", "/tmp")) / "init-roles-test.sh"
-    scratch.write_text(script)
-
-    env = {
-        **os.environ,
-        "PGHOST": HOST,
-        "PGPORT": PORT,
-        "POSTGRES_USER": ADMIN,
-        "POSTGRES_DB": DBNAME,
-        "DB_APP_PASSWORD": "app-pw",
-        "DB_MASTER_RW_PASSWORD": "rw-pw",
-        "DB_MASTER_RO_PASSWORD": "ro-pw",
-    }
-    subprocess.run(["bash", str(scratch)], env=env, check=True)
-
+    pgsetup.create_scratch_db(DBNAME)
     # rw creates a table in master, as the gate's apply step would.
     with connect("singularity_master_rw") as rw:
         rw.execute("CREATE TABLE master.customer (id int PRIMARY KEY, name text)")
         rw.execute("INSERT INTO master.customer VALUES (1, 'Acme')")
     yield
-    with connect(ADMIN, "postgres") as admin:
-        admin.execute(f"DROP DATABASE IF EXISTS {DBNAME} WITH (FORCE)")
-        for r in ROLES:
-            admin.execute(f"DROP ROLE IF EXISTS {r}")
+    pgsetup.drop_db(DBNAME)
 
 
 def test_ro_can_read_master_but_not_write(db):
@@ -150,7 +109,7 @@ def test_django_migrates_as_the_restricted_app_role(db):
         "DB_PORT": PORT,
         "DB_NAME": DBNAME,
         "DB_APP_USER": "singularity_app",
-        "DB_APP_PASSWORD": "app-pw",
+        "DB_APP_PASSWORD": pgsetup.PASSWORDS["singularity_app"],
         "DJANGO_DEBUG": "1",
     }
     backend = REPO / "backend"

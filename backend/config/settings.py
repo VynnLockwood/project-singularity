@@ -57,3 +57,16 @@ LANGUAGE_CODE = "en"
 
 GOOGLE_OAUTH_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
 GOOGLE_OAUTH_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
+
+# Connections to the `master` schema. Two separate DB roles on purpose: reads can
+# never write, and only the gate's apply step holds the read/write role.
+MASTER_DB = {
+    "host": os.environ.get("DB_HOST", "localhost"),
+    "port": os.environ.get("DB_PORT", "5432"),
+    "dbname": os.environ.get("DB_NAME", "singularity"),
+    "ro_user": os.environ.get("DB_MASTER_RO_USER", "singularity_master_ro"),
+    "ro_password": os.environ.get("DB_MASTER_RO_PASSWORD", ""),
+    "rw_user": os.environ.get("DB_MASTER_RW_USER", "singularity_master_rw"),
+    "rw_password": os.environ.get("DB_MASTER_RW_PASSWORD", ""),
+}
+BACKUP_DIR = os.environ.get("BACKUP_DIR", "/backups")
