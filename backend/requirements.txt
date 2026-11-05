@@ -8,3 +8,4 @@ mcp>=2,<3
 uvicorn[standard]>=0.30
 channels>=4.2
 channels-redis>=4.2
+pgvector>=0.3

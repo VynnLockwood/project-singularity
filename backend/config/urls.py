@@ -5,6 +5,7 @@ from audit.views import audit_log
 from chat import views as chat_views
 from config.views import health
 from schema import views as schema_views
+from search import views as search_views
 from settings_app import views as rules
 
 urlpatterns = [
@@ -21,6 +22,8 @@ urlpatterns = [
     path("api/schema/graph", schema_views.graph),
     path("api/schema/tables/<str:name>", schema_views.table_detail),
     path("api/query", schema_views.run_query),
+    path("api/search", search_views.search),
+    path("api/search/reindex", search_views.reindex),
     path("api/audit", audit_log),
     path("api/chat/models", chat_views.models),
     path("api/chat/conversations", chat_views.conversations),

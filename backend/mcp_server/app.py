@@ -30,7 +30,7 @@ from . import tools  # noqa: E402
 current_user: ContextVar = ContextVar("current_user", default=None)
 
 INSTRUCTIONS = """\
-Singularity manages a master-data PostgreSQL database. Start with get_rules and list_tables.
+Singularity manages a master-data PostgreSQL database. Start with get_rules and list_tables; use search_schema to find where a kind of data belongs.
 You never write SQL to change anything: call propose_change with structured operations (create_table,
 add_column, insert_rows, ...). The gate checks your proposal against the team's rules and returns a
 diff. Show the diff to the user and ask for confirmation before calling approve_change. Schema changes
@@ -99,6 +99,17 @@ async def describe_table(table: str) -> dict:
 @mcp.tool(name="query", description="Run one read-only SELECT against master data. Row-limited; cannot change anything.")
 async def query(sql: str, limit: int | None = None) -> dict:
     return await run("query", sql=sql, limit=limit)
+
+
+@mcp.tool(
+    name="search_schema",
+    description=(
+        "Find where a kind of data belongs: semantic search over tables and columns (Thai or English). "
+        "Use before proposing a new column, to avoid duplicates. If 'confident' is false, nothing fits well."
+    ),
+)
+async def search_schema(query: str, limit: int | None = None) -> dict:
+    return await run("search_schema", query=query, limit=limit)
 
 
 @mcp.tool(

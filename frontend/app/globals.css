@@ -111,3 +111,12 @@ body {
 .card-col { fill: #b9c2ee; font-size: 12px; }
 .card-type { fill: var(--muted); font-size: 11px; }
 .edge { fill: none; stroke: var(--glow); stroke-width: 1.5; opacity: 0.8; }
+
+/* ---- search ---- */
+.search { margin-bottom: 1rem; max-width: 46rem; }
+.search form { display: flex; gap: 0.6rem; }
+.search input { flex: 1; background: #0b1020; color: var(--fg); border: 1px solid #2a3263; border-radius: 999px; padding: 0.55rem 1rem; font: inherit; }
+.hits { list-style: none; padding: 0; margin: 0.6rem 0; display: flex; flex-direction: column; gap: 0.4rem; }
+.hits li { padding: 0.4rem 0.8rem; border: 1px solid #1c2342; border-radius: 10px; }
+.hits li[data-confident="true"] { border-color: #3fb27f; }
+.hits p { margin: 0.15rem 0 0; }

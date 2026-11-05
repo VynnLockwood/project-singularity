@@ -7,6 +7,7 @@ import { connectEvents } from "@/lib/events";
 import { ApprovalPopup } from "./ApprovalPopup";
 import { ChatView } from "./ChatView";
 import { QueueView } from "./QueueView";
+import { SearchBox } from "./SearchBox";
 import { SchemaView } from "./SchemaView";
 
 type Tab = "chat" | "schema" | "queue";
@@ -19,6 +20,7 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
   const [error, setError] = useState("");
   const [schemaKey, setSchemaKey] = useState(0);
   const [online, setOnline] = useState(false);
+  const [draft, setDraft] = useState("");
 
   // What is waiting for this person now, then keep it fresh from the event stream.
   useEffect(() => {
@@ -69,8 +71,13 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
       </header>
       {error && <p className="problems" role="alert">{error}</p>}
       <main className="content">
-        {tab === "chat" && <ChatView me={me} live={live} onDecide={onDecide} busy={busy} />}
-        {tab === "schema" && <SchemaView refreshKey={schemaKey} />}
+        {tab === "chat" && <ChatView me={me} live={live} onDecide={onDecide} busy={busy} draft={draft} onDraftUsed={() => setDraft("")} />}
+        {tab === "schema" && (
+          <>
+            <SearchBox canPropose={me.role !== "viewer"} canReindex={me.role === "approver"} onAskAssistant={(t) => { setDraft(t); setTab("chat"); }} />
+            <SchemaView refreshKey={schemaKey} />
+          </>
+        )}
         {tab === "queue" && <QueueView me={me} changes={mine} onDecide={onDecide} busy={busy} />}
       </main>
       <ApprovalPopup

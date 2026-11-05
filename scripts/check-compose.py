@@ -29,7 +29,7 @@ nginx_ports = {int(p["target"]) for p in services["nginx"].get("ports", [])}
 if nginx_ports != {80, 443}:
     errors.append(f"nginx should publish exactly 80 and 443, got {sorted(nginx_ports)}")
 
-for name in ("db", "redis", "web"):
+for name in ("db", "redis", "web", "embed"):
     nets = set(services[name].get("networks", {}))
     if nets != {"internal"}:
         errors.append(f"{name} must be on the internal network only, got {sorted(nets)}")

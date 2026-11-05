@@ -17,6 +17,7 @@ x-backend-env: &backend-env
   GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
   GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
   SINGULARITY_CONFIG: /app/singularity.yaml
+  EMBED_URL: http://embed:8080
   BACKUP_DIR: /backups
   MCP_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost}
 
@@ -91,11 +92,16 @@ services:
     networks: [internal, egress]
     restart: unless-stopped
 
-  # Placeholder until Milestone 4: multilingual-e5-small on CPU.
+  # multilingual-e5-small on CPU. No internet at runtime: the model is baked into the image at build time.
   embed:
-    image: alpine:3.20
-    command: sleep infinity
+    build: ./embed
+    expose: ["8080"]
     networks: [internal]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8080/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     restart: unless-stopped
 
   db:

@@ -8,11 +8,12 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
   -v rw_pw="$DB_MASTER_RW_PASSWORD" \
   -v ro_pw="$DB_MASTER_RO_PASSWORD" \
   -v dbname="$POSTGRES_DB" <<'SQL'
-CREATE EXTENSION IF NOT EXISTS vector;
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-
 CREATE SCHEMA IF NOT EXISTS singularity;
 CREATE SCHEMA IF NOT EXISTS master;
+
+-- Extensions live in the internal schema (the app role finds them via its search_path; `public` stays locked).
+CREATE EXTENSION IF NOT EXISTS vector SCHEMA singularity;
+CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA singularity;
 
 CREATE ROLE singularity_app       LOGIN PASSWORD :'app_pw';
 CREATE ROLE singularity_master_rw LOGIN PASSWORD :'rw_pw';

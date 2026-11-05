@@ -86,7 +86,7 @@ def test_health_endpoint_needs_no_token(server):
 
 
 def test_each_role_sees_only_its_tools(server):
-    read = ["describe_table", "get_rules", "list_tables", "query"]
+    read = ["describe_table", "get_rules", "list_tables", "query", "search_schema"]
     edit = read + ["approve_change", "get_change", "propose_change", "reject_change"]
     assert names(server, Role.VIEWER) == read
     assert names(server, Role.EDITOR) == sorted(edit)
@@ -106,7 +106,7 @@ def test_role_change_applies_immediately_to_the_same_token(server):
     assert "list_pending" in names(server, Role.APPROVER)
     u.role = Role.VIEWER
     u.save()
-    assert names(server, Role.APPROVER) == ["describe_table", "get_rules", "list_tables", "query"]
+    assert names(server, Role.APPROVER) == ["describe_table", "get_rules", "list_tables", "query", "search_schema"]
 
 
 def test_revoked_token_stops_working(server):

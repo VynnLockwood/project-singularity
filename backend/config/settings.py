@@ -25,6 +25,7 @@ INSTALLED_APPS = [
     "settings_app",
     "channels",
     "chat",
+    "search",
 ]
 
 MIDDLEWARE = [
@@ -81,3 +82,6 @@ CHANNEL_LAYERS = {
     "default": {"BACKEND": "channels_redis.core.RedisChannelLayer", "CONFIG": {"hosts": [_redis]}}
     if _redis else {"BACKEND": "channels.layers.InMemoryChannelLayer"}
 }
+
+# Embedding service (internal network). Unset = search indexing is off (local dev, tests).
+EMBED_URL = os.environ.get("EMBED_URL", "")

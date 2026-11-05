@@ -13,9 +13,12 @@ interface Props {
   live: Change[];
   onDecide: (change: Change, action: "approve" | "reject") => Promise<void> | void;
   busy?: boolean;
+  /** Text to place in the message box (from search); cleared via onDraftUsed. */
+  draft?: string;
+  onDraftUsed?: () => void;
 }
 
-export function ChatView({ me, live, onDecide, busy }: Props) {
+export function ChatView({ me, live, onDecide, busy, draft, onDraftUsed }: Props) {
   const [convs, setConvs] = useState<ConversationSummary[]>([]);
   const [current, setCurrent] = useState<number | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -27,6 +30,12 @@ export function ChatView({ me, live, onDecide, busy }: Props) {
 
   const refreshList = useCallback(() => listConversations().then(setConvs).catch(() => {}), []);
   useEffect(() => { refreshList(); }, [refreshList]);
+  useEffect(() => {
+    if (draft) {
+      setText(draft);
+      onDraftUsed?.();
+    }
+  }, [draft, onDraftUsed]);
   useEffect(() => { bottom.current?.scrollIntoView?.({ block: "end" }); }, [messages, changes]);
 
   const open = async (id: number) => {

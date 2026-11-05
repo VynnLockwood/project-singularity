@@ -49,7 +49,7 @@ def create_scratch_db(name: str) -> None:
     script = (REPO / "db/init/01-schemas-roles.sh").read_text()
     script = re.sub(r"^CREATE ROLE .*;\n", "", script, flags=re.MULTILINE)
     if not have_vector:
-        stripped = script.replace("CREATE EXTENSION IF NOT EXISTS vector;", "")
+        stripped = script.replace("CREATE EXTENSION IF NOT EXISTS vector SCHEMA singularity;", "")
         assert stripped != script
         script = stripped
     scratch = Path(os.environ.get("TMPDIR", "/tmp")) / f"init-{name}.sh"

@@ -24,6 +24,9 @@ SPECS = {
                        {"table": {"type": "string"}}, ["table"]),
     "query": ("Run one read-only SELECT against master data. Row-limited.",
               {"sql": {"type": "string"}, "limit": {"type": "integer"}}, ["sql"]),
+    "search_schema": ("Find where a kind of data belongs: semantic search over tables and columns (Thai or English). "
+                      "Use before proposing a new column. If 'confident' is false, nothing fits well.",
+                      {"query": {"type": "string"}, "limit": {"type": "integer"}}, ["query"]),
     "propose_change": (
         "Propose structural or data changes as a list of operations (never SQL). " + _OPS +
         " Returns the checked change with a diff. The user approves it in a popup; nothing is applied until then.",

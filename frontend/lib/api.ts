@@ -142,3 +142,21 @@ export interface SchemaGraph {
   relations: Relation[];
 }
 export const getGraph = () => call<SchemaGraph>("GET", "/schema/graph");
+
+// ---- search -------------------------------------------------------------------
+
+export interface SearchHit {
+  kind: "table" | "column";
+  table: string;
+  column: string | null;
+  confidence: number;
+  description: string;
+}
+export interface SearchResult {
+  results: SearchHit[];
+  confident: boolean;
+  suggestion: string | null;
+}
+export const searchSchema = (q: string) => call<SearchResult>("GET", `/search?q=${encodeURIComponent(q)}`);
+export const reindexSearch = (rebuild = false) =>
+  call<{ embedded: number; unchanged: number; removed: number }>("POST", "/search/reindex", { rebuild });

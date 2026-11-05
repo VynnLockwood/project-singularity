@@ -7,7 +7,7 @@ An internal tool for designing and managing a **master data** database in Postgr
 
 ## Status
 
-Milestone 1 (Foundation) and Milestone 2 (Core) are done: compose stack, nginx gateway, Postgres schemas and roles, Google sign-in, roles, audit log, the rules gate, structured operations and SQL generation, the change lifecycle with approvals, backups and revert, REST API, and the MCP server. The `worker` and `embed` containers are placeholders until later milestones. Milestone 3 (web chat) adds the signed-in app: a chat with the assistant (OpenRouter), an Approve / Reject popup that appears live over WebSocket, a review queue, and a 2D schema diagram.
+Milestones 1 to 4 are done: compose stack, nginx gateway, Postgres schemas and roles, Google sign-in, roles, audit log, the rules gate, structured operations and SQL generation, the change lifecycle with approvals, backups and revert, REST API, and the MCP server. The `worker` container is a placeholder until later milestones. Milestone 4 (search) adds the embed service and schema search. Milestone 3 (web chat) adds the signed-in app: a chat with the assistant (OpenRouter), an Approve / Reject popup that appears live over WebSocket, a review queue, and a 2D schema diagram.
 
 ## Web chat
 
@@ -21,6 +21,10 @@ Endpoint: `https://<your-host>/mcp`. Authenticate with a personal access token s
 2. Add the server to your client, e.g. Claude Desktop / Cursor: URL above plus the bearer header.
 
 Tools are filtered by your role: viewers get `get_rules`, `list_tables`, `describe_table`, `query` (SELECT only); editors add `propose_change`, `get_change`, `approve_change`, `reject_change`; approvers add `list_pending`. The AI proposes a change, shows you the diff and SQL, and only after you say yes does it call `approve_change`. Data edits can be approved by the editor who made them; schema changes need an approver.
+
+## Search
+
+Ask "where does this data belong?" in the Schema tab (Thai or English), or let the assistant call `search_schema`. Every table and column becomes a document (name, type, comment, relationships, a few sample values) embedded by the `embed` container (multilingual-e5-small, CPU, no internet at runtime: the model is baked into the image at build). Ranking blends meaning (pgvector, cosine) with name similarity (`pg_trgm`), and an exact name always ranks first. The index refreshes in the background after an applied schema change; approvers can rebuild it. If nothing scores above `search.minConfidence` (default 0.8), the UI offers to ask the assistant to propose a new column. That threshold was set without running the real model, so tune it against your own schema.
 
 Known gaps: the Settings UI (rules, roles, default model) and 3D view are later milestones; MCP auth uses personal access tokens rather than OAuth 2.1 (planned follow-up), and there is no scheduled nightly backup yet (a backup is taken before every schema change).
 

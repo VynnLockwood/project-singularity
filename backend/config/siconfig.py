@@ -21,6 +21,7 @@ DEFAULTS = {
     "embedding": {"model": "intfloat/multilingual-e5-small", "dimension": 384},
     "chat": {"provider": "openrouter", "defaultModel": "", "allowedModels": [], "maxToolRounds": 8,
              "messagesPerMinute": 20},
+    "search": {"topK": 5, "minConfidence": 0.8, "sampleValues": 5},
     "backups": {"retentionDays": 14},
 }
 

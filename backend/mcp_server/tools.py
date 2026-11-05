@@ -18,6 +18,7 @@ TOOL_ROLES = {
     "list_tables": "viewer",
     "describe_table": "viewer",
     "query": "viewer",
+    "search_schema": "viewer",
     "propose_change": "editor",
     "get_change": "editor",
     "approve_change": "editor",
@@ -96,6 +97,16 @@ def _result(user, change: Change) -> dict:
     return {**service.serialize(change), "next": _next_step(user, change)}
 
 
+def search_schema(user, query: str, limit: int | None = None) -> dict:
+    from search import service as search_service
+    from search.embedder import SearchError
+
+    try:
+        return search_service.search(query, limit)
+    except SearchError as exc:
+        raise ToolFailure(str(exc)) from exc
+
+
 def propose_change(user, operations: list, prompt: str = "", *, source: str = "mcp",
                    conversation_id: int | None = None) -> dict:
     try:
@@ -139,6 +150,7 @@ IMPL = {
     "list_tables": list_tables,
     "describe_table": describe_table,
     "query": run_query,
+    "search_schema": search_schema,
     "propose_change": propose_change,
     "get_change": get_change,
     "approve_change": approve_change,
