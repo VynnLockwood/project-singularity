@@ -43,6 +43,10 @@ for name in ("web", "embed", "db", "redis", "nginx"):
         if key.startswith("GOOGLE_") or key.startswith("OPENROUTER_"):
             errors.append(f"{name} should not receive {key}")
 
+for name in ("mcp", "worker"):
+    if "OPENROUTER_API_KEY" in services[name].get("environment", {}):
+        errors.append(f"{name} should not receive the OpenRouter key; only api calls the provider")
+
 if errors:
     print("compose check FAILED:")
     for e in errors:

@@ -23,6 +23,8 @@ INSTALLED_APPS = [
     "audit",
     "approvals",
     "settings_app",
+    "channels",
+    "chat",
 ]
 
 MIDDLEWARE = [
@@ -35,6 +37,7 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = "config.urls"
 WSGI_APPLICATION = "config.wsgi.application"
+ASGI_APPLICATION = "config.asgi.application"
 AUTH_USER_MODEL = "accounts.User"
 
 # Django's own tables live in the `singularity` schema (spec section 1). The app
@@ -71,3 +74,10 @@ MASTER_DB = {
     "rw_password": os.environ.get("DB_MASTER_RW_PASSWORD", ""),
 }
 BACKUP_DIR = os.environ.get("BACKUP_DIR", "/backups")
+
+# WebSocket events (approval popups, queue counts). Redis in the stack; in memory for local dev and tests.
+_redis = os.environ.get("REDIS_URL")
+CHANNEL_LAYERS = {
+    "default": {"BACKEND": "channels_redis.core.RedisChannelLayer", "CONFIG": {"hosts": [_redis]}}
+    if _redis else {"BACKEND": "channels.layers.InMemoryChannelLayer"}
+}

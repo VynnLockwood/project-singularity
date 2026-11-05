@@ -2,6 +2,7 @@ from django.urls import include, path
 
 from approvals import views as changes
 from audit.views import audit_log
+from chat import views as chat_views
 from config.views import health
 from schema import views as schema_views
 from settings_app import views as rules
@@ -20,5 +21,9 @@ urlpatterns = [
     path("api/schema/tables/<str:name>", schema_views.table_detail),
     path("api/query", schema_views.run_query),
     path("api/audit", audit_log),
+    path("api/chat/models", chat_views.models),
+    path("api/chat/conversations", chat_views.conversations),
+    path("api/chat/conversations/<int:conv_id>", chat_views.conversation_detail),
+    path("api/chat/conversations/<int:conv_id>/messages", chat_views.send_message),
     path("api/", include("accounts.urls")),
 ]

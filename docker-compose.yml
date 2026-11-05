@@ -46,8 +46,11 @@ services:
 
   api:
     build: ./backend
-    command: sh -c "python manage.py migrate --noinput && exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3"
-    environment: *backend-env
+    # ASGI (uvicorn) so the same process serves HTTP and the /ws/ WebSocket
+    command: sh -c "python manage.py migrate --noinput && exec uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --workers 3 --proxy-headers --forwarded-allow-ips='*'"
+    environment:
+      <<: *backend-env
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     volumes:
       - ./singularity.yaml:/app/singularity.yaml:ro
       - backups:/backups
@@ -55,6 +58,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_started
     networks: [internal, egress]
     restart: unless-stopped
 

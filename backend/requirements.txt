@@ -6,3 +6,5 @@ requests>=2.32
 google-auth>=2.35
 mcp>=2,<3
 uvicorn>=0.30
+channels>=4.2
+channels-redis>=4.2

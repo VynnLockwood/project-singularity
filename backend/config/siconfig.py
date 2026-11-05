@@ -19,7 +19,8 @@ DEFAULTS = {
         "maxRowsPerDataOp": 1000,
     },
     "embedding": {"model": "intfloat/multilingual-e5-small", "dimension": 384},
-    "chat": {"provider": "openrouter", "defaultModel": "", "allowedModels": []},
+    "chat": {"provider": "openrouter", "defaultModel": "", "allowedModels": [], "maxToolRounds": 8,
+             "messagesPerMinute": 20},
     "backups": {"retentionDays": 14},
 }
 

@@ -96,9 +96,11 @@ def _result(user, change: Change) -> dict:
     return {**service.serialize(change), "next": _next_step(user, change)}
 
 
-def propose_change(user, operations: list, prompt: str = "") -> dict:
+def propose_change(user, operations: list, prompt: str = "", *, source: str = "mcp",
+                   conversation_id: int | None = None) -> dict:
     try:
-        change = service.propose(user, operations, source="mcp", prompt=prompt[:10_000])
+        change = service.propose(user, operations, source=source, prompt=prompt[:10_000],
+                                 conversation_id=conversation_id)
     except service.ChangeError as exc:
         raise ToolFailure(exc.message) from exc
     return _result(user, change)

@@ -18,4 +18,4 @@ RUN useradd --system --no-create-home app && mkdir /backups && chown -R app /app
 USER app
 
 EXPOSE 8000
-CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]
+CMD ["uvicorn", "config.asgi:application", "--host", "0.0.0.0", "--port", "8000", "--workers", "3"]
