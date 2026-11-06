@@ -79,7 +79,8 @@ def _check_column(col, errs: list[str], where: str, *, allow_references: bool = 
             errs.append(f"{where}: references must be {{table, column}}")
         else:
             _ident(ref.get("table"), "references.table", errs, where)
-            _ident(ref.get("column", "id"), "references.column", errs, where)
+            if ref.get("column") is not None:
+                _ident(ref["column"], "references.column", errs, where)
 
 
 def _check_where(w, errs: list[str], where: str) -> None:
@@ -194,7 +195,8 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
             _ident(op.get("table"), "table", errs, where)
             _ident(op.get("column"), "column", errs, where)
             _ident(op.get("ref_table"), "ref_table", errs, where)
-            _ident(op.get("ref_column", "id"), "ref_column", errs, where)
+            if op.get("ref_column") is not None:
+                _ident(op["ref_column"], "ref_column", errs, where)
             if op.get("name") is not None:
                 _ident(op["name"], "name", errs, where)
         elif kind == "drop_column":

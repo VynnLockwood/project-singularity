@@ -5,6 +5,7 @@ from psycopg import sql
 from approvals import service as changes
 from approvals.models import Change
 from config.siconfig import get_config
+from gate.conventions import audit_column, pk_column
 from schema import introspect, rows as rows_mod
 from schema.conn import ro_connection
 from schema.util import jsonable
@@ -53,8 +54,9 @@ def group_key(table: str, ids: list[int]) -> str:
 def scan(table: str, user, *, fields: list[str] | None = None, threshold: float | None = None) -> dict:
     d = _describe(table)
     columns = {c["name"]: c for c in d["columns"]}
-    if "id" not in columns:
-        raise DuplicateError("this table has no id column")
+    pk = pk_column(columns, table, rows_mod._primary_key(d))
+    if pk is None:
+        raise DuplicateError("this table has no primary key column")
     fields = fields or default_fields(columns)
     if not fields:
         raise DuplicateError("this table has no text column to compare")
@@ -67,9 +69,11 @@ def scan(table: str, user, *, fields: list[str] | None = None, threshold: float 
         raise DuplicateError("threshold must be between 0.5 and 1")
     max_rows = cfg["maxRows"]
 
-    q = sql.SQL("SELECT id, {cols} FROM {t}{w} ORDER BY id LIMIT {n}").format(
+    active = audit_column(columns, "is_active")
+    q = sql.SQL("SELECT {pk} AS pk, {cols} FROM {t}{w} ORDER BY {pk} LIMIT {n}").format(
+        pk=sql.Identifier(pk),
         cols=sql.SQL(", ").join(sql.Identifier(f) for f in fields), t=sql.Identifier("master", table),
-        w=sql.SQL(' WHERE "isActive" IS DISTINCT FROM false') if "isActive" in columns else sql.SQL(""),
+        w=sql.SQL(" WHERE {} IS DISTINCT FROM false").format(sql.Identifier(active)) if active else sql.SQL(""),
         n=sql.Literal(max_rows + 1))
     with ro_connection() as conn:
         conn.execute("SET TRANSACTION READ ONLY")
@@ -77,7 +81,7 @@ def scan(table: str, user, *, fields: list[str] | None = None, threshold: float 
     truncated = len(data) > max_rows
     data = data[:max_rows]
 
-    found = _engine().find_duplicates([(r["id"], [r[f] or "" for f in fields]) for r in data], float(threshold))
+    found = _engine().find_duplicates([(r["pk"], [r[f] or "" for f in fields]) for r in data], float(threshold))
 
     existing = {g.key: g for g in DuplicateGroup.objects.filter(table_name=table)}
     keep, created = set(), 0
@@ -114,26 +118,37 @@ def summary(g: DuplicateGroup) -> dict:
 
 
 def detail(g: DuplicateGroup) -> dict:
-    q = sql.SQL("SELECT * FROM {t} WHERE id = ANY(%s) ORDER BY id").format(t=sql.Identifier("master", g.table_name))
+    pk = _table_pk(g.table_name)
+    q = sql.SQL("SELECT * FROM {t} WHERE {pk} = ANY(%s) ORDER BY {pk}").format(
+        t=sql.Identifier("master", g.table_name), pk=sql.Identifier(pk))
     with ro_connection() as conn:
         conn.execute("SET TRANSACTION READ ONLY")
         members = [{k: jsonable(v) for k, v in r.items()} for r in conn.execute(q, (g.member_ids,)).fetchall()]
     refs = [r for r in introspect.graph()["relations"] if r["to"]["table"] == g.table_name]
-    return {**summary(g), "members": members,
+    return {**summary(g), "members": members, "primaryKey": pk,
             "referencedBy": [{"table": r["from"]["table"], "column": r["from"]["column"]} for r in refs]}
+
+
+def _table_pk(table: str) -> str:
+    d = _describe(table)
+    pk = pk_column({c["name"] for c in d["columns"]}, table, rows_mod._primary_key(d))
+    if pk is None:
+        raise DuplicateError("this table has no primary key column")
+    return pk
 
 
 def merge_operations(g: DuplicateGroup, survivor_id: int) -> list[dict]:
     if survivor_id not in g.member_ids:
         raise DuplicateError("the survivor must be one of the group's records")
     losers = [i for i in g.member_ids if i != survivor_id]
+    pk = _table_pk(g.table_name)
     ops = []
     for r in introspect.graph()["relations"]:
-        if r["to"]["table"] == g.table_name and r["to"]["column"] == "id":
+        if r["to"]["table"] == g.table_name and r["to"]["column"] == pk:
             ops.append({"op": "update_rows", "table": r["from"]["table"],
                         "where": {r["from"]["column"]: losers if len(losers) > 1 else losers[0]},
                         "set": {r["from"]["column"]: survivor_id}})
-    ops.append({"op": "deactivate_rows", "table": g.table_name, "where": {"id": losers if len(losers) > 1 else losers[0]}})
+    ops.append({"op": "deactivate_rows", "table": g.table_name, "where": {pk: losers if len(losers) > 1 else losers[0]}})
     return ops
 
 

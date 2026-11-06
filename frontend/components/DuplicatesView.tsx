@@ -134,17 +134,20 @@ export function DuplicatesView({ me, refreshKey, onProposed }: Props) {
                 <tr>{canEdit && <th>keep</th>}{columns.map((c) => <th key={c}>{c}</th>)}</tr>
               </thead>
               <tbody>
-                {open.members.map((m) => (
-                  <tr key={String(m.id)} data-removed={survivor !== null && survivor !== m.id && canEdit}>
+                {open.members.map((m) => {
+                  const mid = m[open.primaryKey ?? "id"] as number;
+                  return (
+                  <tr key={String(mid)} data-removed={survivor !== null && survivor !== mid && canEdit}>
                     {canEdit && (
                       <td>
-                        <input type="radio" name="survivor" aria-label={`keep record ${m.id}`} checked={survivor === m.id}
-                          onChange={() => setSurvivor(m.id as number)} />
+                        <input type="radio" name="survivor" aria-label={`keep record ${mid}`} checked={survivor === mid}
+                          onChange={() => setSurvivor(mid)} />
                       </td>
                     )}
                     {columns.map((c) => <td key={c}>{show(m[c])}</td>)}
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

@@ -12,7 +12,8 @@ import psycopg
 from psycopg import sql
 
 from gate import sqlgen
-from gate.state import fk_name, has_column, index_name, unique_name
+from gate.conventions import audit_column
+from gate.state import fk_name, index_name, pk_of, unique_name
 
 from .conn import rw_connection
 from .util import jsonable, pg_type_to_allowed
@@ -32,9 +33,10 @@ def _where_sql(where: dict):
     return sqlgen._where(where)
 
 
-def _before_rows(conn, table: str, where: dict, cols: list[str], max_rows: int) -> list[dict]:
+def _before_rows(conn, table: str, where: dict, cols: list[str], max_rows: int, pk: str) -> list[dict]:
+    """Rows about to change, each with its primary key under the key "pk"."""
     q = sql.SQL("SELECT {} FROM {} WHERE {} LIMIT {} FOR UPDATE").format(
-        sql.SQL(", ").join(sql.Identifier(c) for c in ["id", *cols]),
+        sql.SQL(", ").join([sql.SQL("{} AS pk").format(sql.Identifier(pk)), *(sql.Identifier(c) for c in cols)]),
         sqlgen.tbl(table),
         _where_sql(where),
         sql.Literal(max_rows + 1),
@@ -45,15 +47,15 @@ def _before_rows(conn, table: str, where: dict, cols: list[str], max_rows: int) 
     return rows
 
 
-def _group_updates(table: str, rows: list[dict], cols: list[str]) -> list[dict]:
-    """Restore ops: rows with identical old values share one update (id IN [...])."""
+def _group_updates(table: str, rows: list[dict], cols: list[str], pk: str) -> list[dict]:
+    """Restore ops: rows with identical old values share one update (pk IN [...])."""
     groups: dict[str, dict] = {}
     for r in rows:
         values = {c: jsonable(r[c]) for c in cols}
         key = repr(sorted(values.items(), key=lambda kv: kv[0]))
-        groups.setdefault(key, {"values": values, "ids": []})["ids"].append(r["id"])
+        groups.setdefault(key, {"values": values, "ids": []})["ids"].append(r["pk"])
     return [
-        {"op": "update_rows", "table": table, "where": {"id": g["ids"]}, "set": g["values"]}
+        {"op": "update_rows", "table": table, "where": {pk: g["ids"]}, "set": g["values"]}
         for g in groups.values()
     ]
 
@@ -87,10 +89,11 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int):
         prev_type = _col_type(conn, t, op["column"])
     elif k == "set_column_comment":
         prev_comment = _col_comment(conn, t, op["column"])
-    elif k == "update_rows" and has_column(before, t, "id"):
-        rows_before = _before_rows(conn, t, op["where"], list(op["set"]), max_rows)
-    elif k == "deactivate_rows" and has_column(before, t, "id"):
-        rows_before = _before_rows(conn, t, op["where"], ["isActive"], max_rows)
+    elif k == "update_rows" and pk_of(before, t):
+        rows_before = _before_rows(conn, t, op["where"], list(op["set"]), max_rows, pk_of(before, t))
+    elif k == "deactivate_rows" and pk_of(before, t):
+        active_col = audit_column(before[t]["columns"], "is_active") or "is_active"
+        rows_before = _before_rows(conn, t, op["where"], [active_col], max_rows, pk_of(before, t))
 
     # --- run
     inserted_ids: list = []
@@ -98,7 +101,7 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int):
     for s in stmts:
         cur = conn.execute(s.sql)
         if s.returning_id:
-            inserted_ids.append(cur.fetchone()["id"])
+            inserted_ids.append(cur.fetchone()[pk_of(before, t)])
         if k in ("update_rows", "deactivate_rows"):
             rowcount = cur.rowcount
     if rowcount is not None and rowcount > max_rows:
@@ -128,16 +131,17 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int):
     if k in ("drop_column", "drop_table", "drop_index", "drop_constraint"):
         return None
     if k == "insert_rows":
-        if inserted_ids and has_column(before, t, "isActive"):
-            return [{"op": "deactivate_rows", "table": t, "where": {"id": inserted_ids}}]
+        if inserted_ids and audit_column(before[t]["columns"], "is_active"):
+            return [{"op": "deactivate_rows", "table": t, "where": {pk_of(before, t): inserted_ids}}]
         return None
     if k == "update_rows":
-        return _group_updates(t, rows_before, list(op["set"])) if rows_before is not None else None
+        return _group_updates(t, rows_before, list(op["set"]), pk_of(before, t)) if rows_before is not None else None
     if k == "deactivate_rows":
         if rows_before is None:
             return None
-        ids = [r["id"] for r in rows_before if r["isActive"]]
-        return [{"op": "update_rows", "table": t, "where": {"id": ids}, "set": {"isActive": True}}] if ids else []
+        active_col = audit_column(before[t]["columns"], "is_active") or "is_active"
+        ids = [r["pk"] for r in rows_before if r[active_col]]
+        return [{"op": "update_rows", "table": t, "where": {pk_of(before, t): ids}, "set": {active_col: True}}] if ids else []
     return None
 
 

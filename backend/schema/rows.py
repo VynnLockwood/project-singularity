@@ -5,13 +5,14 @@ import psycopg
 from psycopg import sql
 
 from config.siconfig import get_config
+from gate.conventions import audit_column, audit_names, pk_column
 
 from . import introspect
 from .conn import ro_connection
 from .util import jsonable
 
 MAX_PAGE = 200
-AUDIT = {"id", "createdAt", "updatedAt", "createdBy", "isActive"}
+AUDIT = {"id", *audit_names()}
 
 
 class RowsError(Exception):
@@ -25,6 +26,16 @@ def _describe(table: str) -> dict:
     if d is None:
         raise RowsError("table not found", 404)
     return d
+
+
+def _primary_key(d: dict) -> str | None:
+    """Primary key column named in a describe_table result."""
+    import re
+    for c in d["constraints"]:
+        if c["kind"] == "primary_key":
+            m = re.search(r'\(\"?([^")]+)\"?\)', c["definition"])
+            return m.group(1) if m else None
+    return None
 
 
 def _like(text: str) -> str:
@@ -62,14 +73,16 @@ def read_rows(table: str, *, offset: int = 0, limit: int = 50, sort: str | None 
         if text:
             where.append(sql.SQL("{}::text ILIKE %s").format(sql.Identifier(col)))
             params.append(_like(text))
-    if "isActive" in cols and not include_inactive:
-        where.append(sql.SQL('"isActive" IS DISTINCT FROM false'))
+    active = audit_column(cols, "is_active")
+    if active and not include_inactive:
+        where.append(sql.SQL("{} IS DISTINCT FROM false").format(sql.Identifier(active)))
     clause = sql.SQL(" WHERE ") + sql.SQL(" AND ").join(where) if where else sql.SQL("")
 
-    order_col = sort or ("id" if "id" in cols else next(iter(cols)))
+    pk = pk_column(cols, table, _primary_key(d))
+    order_col = sort or pk or next(iter(cols))
     order = sql.SQL("{} {}").format(sql.Identifier(order_col), sql.SQL(direction.upper()))
-    if "id" in cols and order_col != "id":
-        order += sql.SQL(", id")
+    if pk and order_col != pk:
+        order += sql.SQL(", {}").format(sql.Identifier(pk))
 
     t = sql.Identifier("master", table)
     total = _run(sql.SQL("SELECT count(*) AS n FROM {}{}").format(t, clause), params)[0]["n"]
@@ -78,7 +91,7 @@ def read_rows(table: str, *, offset: int = 0, limit: int = 50, sort: str | None 
 
     refs = {r["from"]["column"]: r["to"] for r in introspect.graph()["relations"] if r["from"]["table"] == table}
     return {
-        "table": table, "total": total, "offset": offset, "limit": limit,
+        "table": table, "total": total, "offset": offset, "limit": limit, "primaryKey": pk,
         "columns": [{
             "name": c["name"], "type": c["type"], "nullable": c["nullable"],
             "readOnly": c["identity"] or c["name"] in AUDIT,
@@ -103,23 +116,25 @@ def options(table: str, *, q: str = "", limit: int = 100) -> dict:
     """id + label pairs for a reference dropdown."""
     d = _describe(table)
     cols = {c["name"]: c for c in d["columns"]}
-    if "id" not in cols:
-        raise RowsError("this table has no id column to reference")
+    pk = pk_column(cols, table, _primary_key(d))
+    if pk is None:
+        raise RowsError("this table has no primary key column to reference")
     label = label_column(cols)
     limit = max(1, min(int(limit), MAX_PAGE))
     t = sql.Identifier("master", table)
-    label_expr = sql.Identifier(label) if label else sql.SQL("id::text")
+    label_expr = sql.Identifier(label) if label else sql.SQL("{}::text").format(sql.Identifier(pk))
     where, params = sql.SQL(""), []
     conds = []
     if q:
         conds.append(sql.SQL("{}::text ILIKE %s").format(label_expr))
         params.append(_like(q))
-    if "isActive" in cols:
-        conds.append(sql.SQL('"isActive" IS DISTINCT FROM false'))
+    active = audit_column(cols, "is_active")
+    if active:
+        conds.append(sql.SQL("{} IS DISTINCT FROM false").format(sql.Identifier(active)))
     if conds:
         where = sql.SQL(" WHERE ") + sql.SQL(" AND ").join(conds)
-    rows = _run(sql.SQL("SELECT id, {} AS label FROM {}{} ORDER BY label LIMIT {}").format(
-        label_expr, t, where, sql.Literal(limit + 1)), params)
+    rows = _run(sql.SQL("SELECT {} AS id, {} AS label FROM {}{} ORDER BY label LIMIT {}").format(
+        sql.Identifier(pk), label_expr, t, where, sql.Literal(limit + 1)), params)
     return {
         "labelColumn": label, "truncated": len(rows) > limit,
         "options": [{"id": jsonable(r["id"]), "label": str(r["label"])} for r in rows[:limit]],

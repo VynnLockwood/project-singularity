@@ -8,6 +8,7 @@ from django.db import transaction
 from psycopg import sql
 
 from config.siconfig import get_config
+from gate.conventions import audit_names
 from schema import introspect
 from schema.conn import ro_connection
 
@@ -16,7 +17,7 @@ from .models import DIMENSIONS, SchemaEmbedding
 
 log = logging.getLogger(__name__)
 
-AUDIT_COLUMNS = {"id", "createdAt", "updatedAt", "createdBy", "isActive"}
+AUDIT_COLUMNS = {"id", *audit_names()}
 SAMPLE_TYPES = ("text", "character varying", "integer", "bigint", "smallint", "numeric", "date", "boolean")
 MAX_SAMPLE_LEN = 40
 _lock = threading.Lock()
@@ -33,6 +34,11 @@ def _samples(table: str, column: str, limit: int) -> list[str]:
         return []
 
 
+def _skip(table: dict, col: dict) -> bool:
+    """Audit columns and the table's own primary key say nothing about the data."""
+    return col["name"] in AUDIT_COLUMNS or bool(col.get("primaryKey") and col["name"] == f"{table['name']}_id")
+
+
 def build_docs() -> list[dict]:
     g = introspect.graph()
     refs = {(r["from"]["table"], r["from"]["column"]): r["to"] for r in g["relations"]}
@@ -47,7 +53,7 @@ def build_docs() -> list[dict]:
         text += " Columns: " + ", ".join(c["name"] for c in t["columns"] if c["name"] not in AUDIT_COLUMNS) + "."
         docs.append({"kind": "table", "table": t["name"], "column": "", "content": text})
         for c in t["columns"]:
-            if c["name"] in AUDIT_COLUMNS:
+            if _skip(t, c):
                 continue
             text = f"table {t['name']}, column {c['name']} ({c['type']})."
             if comments.get(c["name"]):

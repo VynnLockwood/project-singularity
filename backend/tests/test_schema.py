@@ -25,7 +25,7 @@ def apply(ops, *, skip_rules=False, max_rows=1000):
 
 
 def make_customer(extra=None):
-    cols = [col("customerCode", unique=True), col("name", comment="Legal name"), *(extra or [])]
+    cols = [col("customer_code", unique=True), col("name", comment="Legal name"), *(extra or [])]
     return apply([{"op": "create_table", "name": "customer", "columns": cols, "comment": "Customers"}])
 
 
@@ -42,12 +42,12 @@ def test_create_table_and_introspect():
     assert [t["name"] for t in introspect.list_tables()] == ["customer"]
     d = introspect.describe_table("customer")
     names = [c["name"] for c in d["columns"]]
-    assert names == ["id", "createdAt", "updatedAt", "createdBy", "isActive", "customerCode", "name"]
+    assert names == ["customer_id", "created_at", "updated_at", "created_by", "is_active", "customer_code", "name"]
     assert d["comment"] == "Customers"
     by = {c["name"]: c for c in d["columns"]}
-    assert by["id"]["identity"] and by["id"]["type"] == "integer"
+    assert by["customer_id"]["identity"] and by["customer_id"]["type"] == "integer"
     assert by["name"]["comment"] == "Legal name"
-    assert by["isActive"]["default"] == "true" and by["isActive"]["nullable"] is False
+    assert by["is_active"]["default"] == "true" and by["is_active"]["nullable"] is False
     kinds = {c["kind"] for c in d["constraints"]}
     assert {"primary_key", "unique"} <= kinds
 
@@ -59,7 +59,7 @@ def test_describe_missing_table_is_none():
 def test_snapshot_matches_what_the_gate_expects():
     make_customer()
     snap = introspect.snapshot()
-    assert snap["customer"]["columns"]["id"] == {"type": "integer", "nullable": False}
+    assert snap["customer"]["columns"]["customer_id"] == {"type": "integer", "nullable": False}
     assert "customer_pkey" in snap["customer"]["constraints"]
     # A follow-up op validated against the real snapshot works
     res = check.run([{"op": "add_column", "table": "customer", "column": col("email")}], snap, RULES)
@@ -70,7 +70,7 @@ def test_foreign_key_roundtrip():
     make_customer()
     apply([{
         "op": "create_table", "name": "invoice",
-        "columns": [col("invoiceCode", unique=True), col("customerId", "integer", references={"table": "customer"})],
+        "columns": [col("invoice_code", unique=True), col("customer_id", "integer", references={"table": "customer"})],
     }])
     d = introspect.describe_table("invoice")
     assert any(c["kind"] == "foreign_key" and "REFERENCES master.customer" in c["definition"] for c in d["constraints"])
@@ -81,47 +81,47 @@ def test_foreign_key_roundtrip():
 def test_insert_autofills_created_by_and_reverses_to_deactivate():
     make_customer()
     res = apply([{"op": "insert_rows", "table": "customer", "rows": [
-        {"customerCode": "C1", "name": "Acme"}, {"customerCode": "C2", "name": "Beta"}]}])
-    assert rows('SELECT "customerCode", "createdBy", "isActive" FROM customer ORDER BY id') == [
+        {"customer_code": "C1", "name": "Acme"}, {"customer_code": "C2", "name": "Beta"}]}])
+    assert rows('SELECT "customer_code", "created_by", "is_active" FROM customer ORDER BY customer_id') == [
         ["C1", ME, True], ["C2", ME, True]]
-    assert res.reverse_ops == [{"op": "deactivate_rows", "table": "customer", "where": {"id": [1, 2]}}]
+    assert res.reverse_ops == [{"op": "deactivate_rows", "table": "customer", "where": {"customer_id": [1, 2]}}]
 
 
 def test_update_sets_updated_at_and_reverse_restores_old_values():
     make_customer()
     apply([{"op": "insert_rows", "table": "customer", "rows": [
-        {"customerCode": "C1", "name": "Acme"}, {"customerCode": "C2", "name": "Acme"}]}])
-    before = rows('SELECT "updatedAt" FROM customer WHERE id = 1')[0][0]
-    res = apply([{"op": "update_rows", "table": "customer", "where": {"customerCode": ["C1", "C2"]},
+        {"customer_code": "C1", "name": "Acme"}, {"customer_code": "C2", "name": "Acme"}]}])
+    before = rows('SELECT "updated_at" FROM customer WHERE customer_id = 1')[0][0]
+    res = apply([{"op": "update_rows", "table": "customer", "where": {"customer_code": ["C1", "C2"]},
                   "set": {"name": "Acme Ltd"}}])
     assert {r[0] for r in rows("SELECT name FROM customer")} == {"Acme Ltd"}
-    assert rows('SELECT "updatedAt" FROM customer WHERE id = 1')[0][0] >= before
+    assert rows('SELECT "updated_at" FROM customer WHERE customer_id = 1')[0][0] >= before
     # both rows shared the same old value -> one grouped restore op
-    assert res.reverse_ops == [{"op": "update_rows", "table": "customer", "where": {"id": [1, 2]}, "set": {"name": "Acme"}}]
+    assert res.reverse_ops == [{"op": "update_rows", "table": "customer", "where": {"customer_id": [1, 2]}, "set": {"name": "Acme"}}]
     apply(res.reverse_ops, skip_rules=True)
     assert {r[0] for r in rows("SELECT name FROM customer")} == {"Acme"}
 
 
 def test_deactivate_and_reverse():
     make_customer()
-    apply([{"op": "insert_rows", "table": "customer", "rows": [{"customerCode": "C1", "name": "A"}]}])
-    res = apply([{"op": "deactivate_rows", "table": "customer", "where": {"customerCode": "C1"}}])
-    assert rows('SELECT "isActive" FROM customer') == [[False]]
+    apply([{"op": "insert_rows", "table": "customer", "rows": [{"customer_code": "C1", "name": "A"}]}])
+    res = apply([{"op": "deactivate_rows", "table": "customer", "where": {"customer_code": "C1"}}])
+    assert rows('SELECT "is_active" FROM customer') == [[False]]
     apply(res.reverse_ops, skip_rules=True)
-    assert rows('SELECT "isActive" FROM customer') == [[True]]
+    assert rows('SELECT "is_active" FROM customer') == [[True]]
 
 
 def test_jsonb_and_quotes_roundtrip():
-    apply([{"op": "create_table", "name": "doc", "columns": [col("docCode", unique=True), col("body", "jsonb"), col("title")]}])
+    apply([{"op": "create_table", "name": "doc", "columns": [col("doc_code", unique=True), col("body", "jsonb"), col("title")]}])
     apply([{"op": "insert_rows", "table": "doc", "rows": [
-        {"docCode": "D1", "body": {"a": [1, 2]}, "title": "O'Brien \"x\" %s"}]}])
+        {"doc_code": "D1", "body": {"a": [1, 2]}, "title": "O'Brien \"x\" %s"}]}])
     assert rows('SELECT body, title FROM doc') == [[{"a": [1, 2]}, "O'Brien \"x\" %s"]]
 
 
 def test_row_limit_rolls_back_everything():
     make_customer()
     apply([{"op": "insert_rows", "table": "customer", "rows": [
-        {"customerCode": f"C{i}", "name": "n"} for i in range(5)]}])
+        {"customer_code": f"C{i}", "name": "n"} for i in range(5)]}])
     with pytest.raises(executor.ApplyError, match="more than 3 rows"):
         apply([{"op": "update_rows", "table": "customer", "where": {"name": "n"}, "set": {"name": "x"}}], max_rows=3)
     assert {r[0] for r in rows("SELECT name FROM customer")} == {"n"}
@@ -148,13 +148,13 @@ def test_row_limit_also_applies_to_tables_without_an_id():
 
 def test_add_column_rename_comment_type_reverses():
     make_customer([col("score")])
-    apply([{"op": "insert_rows", "table": "customer", "rows": [{"customerCode": "C1", "name": "A", "score": "7"}]}])
+    apply([{"op": "insert_rows", "table": "customer", "rows": [{"customer_code": "C1", "name": "A", "score": "7"}]}])
 
-    r = apply([{"op": "add_column", "table": "customer", "column": col("phoneNumber", comment="Main phone")}])
-    assert r.reverse_ops == [{"op": "drop_column", "table": "customer", "column": "phoneNumber", "reason": "revert"}]
+    r = apply([{"op": "add_column", "table": "customer", "column": col("phone_number", comment="Main phone")}])
+    assert r.reverse_ops == [{"op": "drop_column", "table": "customer", "column": "phone_number", "reason": "revert"}]
 
-    r = apply([{"op": "rename_column", "table": "customer", "column": "phoneNumber", "new_name": "phone"}])
-    assert r.reverse_ops == [{"op": "rename_column", "table": "customer", "column": "phone", "new_name": "phoneNumber"}]
+    r = apply([{"op": "rename_column", "table": "customer", "column": "phone_number", "new_name": "phone"}])
+    assert r.reverse_ops == [{"op": "rename_column", "table": "customer", "column": "phone", "new_name": "phone_number"}]
 
     r = apply([{"op": "set_column_comment", "table": "customer", "column": "phone", "comment": "New"}])
     assert r.reverse_ops[0]["comment"] == "Main phone"
@@ -168,15 +168,15 @@ def test_add_column_rename_comment_type_reverses():
 
 def test_rename_table_index_unique_fk_reverses():
     make_customer()
-    apply([{"op": "create_table", "name": "invoice", "columns": [col("invoiceCode", unique=True), col("customerId", "integer")]}])
-    r = apply([{"op": "add_index", "table": "invoice", "columns": ["customerId"]}])
-    assert r.reverse_ops == [{"op": "drop_index", "name": "invoice_customerId_idx", "reason": "revert"}]
+    apply([{"op": "create_table", "name": "invoice", "columns": [col("invoice_code", unique=True), col("customer_id", "integer")]}])
+    r = apply([{"op": "add_index", "table": "invoice", "columns": ["customer_id"]}])
+    assert r.reverse_ops == [{"op": "drop_index", "name": "invoice_customer_id_idx", "reason": "revert"}]
     apply(r.reverse_ops, skip_rules=True)
-    r = apply([{"op": "add_foreign_key", "table": "invoice", "column": "customerId", "ref_table": "customer"}])
-    assert r.reverse_ops == [{"op": "drop_constraint", "table": "invoice", "name": "fk_invoice_customerId", "reason": "revert"}]
+    r = apply([{"op": "add_foreign_key", "table": "invoice", "column": "customer_id", "ref_table": "customer"}])
+    assert r.reverse_ops == [{"op": "drop_constraint", "table": "invoice", "name": "fk_invoice_customer_id", "reason": "revert"}]
     apply(r.reverse_ops, skip_rules=True)
-    r = apply([{"op": "add_unique", "table": "invoice", "columns": ["customerId"]}])
-    assert r.reverse_ops[0]["name"] == "uq_invoice_customerId"
+    r = apply([{"op": "add_unique", "table": "invoice", "columns": ["customer_id"]}])
+    assert r.reverse_ops[0]["name"] == "uq_invoice_customer_id"
     r = apply([{"op": "rename_table", "table": "invoice", "new_name": "bill"}])
     assert r.reverse_ops == [{"op": "rename_table", "table": "bill", "new_name": "invoice"}]
 
@@ -192,7 +192,7 @@ def test_drops_are_irreversible():
 
 def test_multi_op_change_reverses_in_opposite_order():
     r = apply([
-        {"op": "create_table", "name": "a", "columns": [col("aCode", unique=True)]},
+        {"op": "create_table", "name": "a", "columns": [col("a_code", unique=True)]},
         {"op": "add_column", "table": "a", "column": col("note")},
     ])
     assert [o["op"] for o in r.reverse_ops] == ["drop_column", "drop_table"]
@@ -203,10 +203,10 @@ def test_multi_op_change_reverses_in_opposite_order():
 def test_failure_rolls_back_the_whole_change():
     make_customer()
     apply([{"op": "insert_rows", "table": "customer", "rows": [
-        {"customerCode": "C1", "name": "same"}, {"customerCode": "C2", "name": "same"}]}])
+        {"customer_code": "C1", "name": "same"}, {"customer_code": "C2", "name": "same"}]}])
     with pytest.raises(executor.ApplyError, match="could not create unique index"):
         apply([
-            {"op": "create_table", "name": "other", "columns": [col("oCode", unique=True)]},
+            {"op": "create_table", "name": "other", "columns": [col("o_code", unique=True)]},
             {"op": "add_unique", "table": "customer", "columns": ["name"]},   # duplicates -> fails
         ])
     assert [t["name"] for t in introspect.list_tables()] == ["customer"]   # 'other' was rolled back
@@ -237,7 +237,7 @@ def test_fingerprint_changes_when_structure_changes():
 def test_fingerprint_ignores_row_changes():
     make_customer()
     f = introspect.fingerprint(["customer"])
-    apply([{"op": "insert_rows", "table": "customer", "rows": [{"customerCode": "C1", "name": "A"}]}])
+    apply([{"op": "insert_rows", "table": "customer", "rows": [{"customer_code": "C1", "name": "A"}]}])
     assert introspect.fingerprint(["customer"]) == f
 
 
@@ -245,7 +245,7 @@ def test_fingerprint_ignores_row_changes():
 
 def test_backup_writes_a_restorable_dump(settings):
     make_customer()
-    apply([{"op": "insert_rows", "table": "customer", "rows": [{"customerCode": "C1", "name": "A"}]}])
+    apply([{"op": "insert_rows", "table": "customer", "rows": [{"customer_code": "C1", "name": "A"}]}])
     path = backup.backup_master("change-7")
     assert path.exists() and path.name.endswith("-change-7.dump") and path.stat().st_size > 0
     listing = subprocess.run(["pg_restore", "-l", str(path)], capture_output=True, text=True, check=True).stdout
@@ -274,15 +274,15 @@ def test_backup_failure_is_reported(settings):
 
 def test_query_returns_rows_and_columns():
     make_customer()
-    apply([{"op": "insert_rows", "table": "customer", "rows": [{"customerCode": "C1", "name": "A"}]}])
-    out = query.run_select('SELECT "customerCode", name FROM customer')
-    assert out == {"columns": ["customerCode", "name"], "rows": [["C1", "A"]], "truncated": False}
+    apply([{"op": "insert_rows", "table": "customer", "rows": [{"customer_code": "C1", "name": "A"}]}])
+    out = query.run_select('SELECT "customer_code", name FROM customer')
+    assert out == {"columns": ["customer_code", "name"], "rows": [["C1", "A"]], "truncated": False}
 
 
 def test_query_truncates():
     make_customer()
-    apply([{"op": "insert_rows", "table": "customer", "rows": [{"customerCode": f"C{i}", "name": "n"} for i in range(5)]}])
-    out = query.run_select("SELECT id FROM customer", limit=3)
+    apply([{"op": "insert_rows", "table": "customer", "rows": [{"customer_code": f"C{i}", "name": "n"} for i in range(5)]}])
+    out = query.run_select("SELECT customer_id FROM customer", limit=3)
     assert len(out["rows"]) == 3 and out["truncated"] is True
 
 
@@ -307,9 +307,9 @@ def test_query_rejects_non_select(bad):
 
 def test_query_cannot_write_through_a_cte():
     make_customer()
-    apply([{"op": "insert_rows", "table": "customer", "rows": [{"customerCode": "C1", "name": "A"}]}])
+    apply([{"op": "insert_rows", "table": "customer", "rows": [{"customer_code": "C1", "name": "A"}]}])
     with pytest.raises(query.QueryError):
-        query.run_select("WITH d AS (DELETE FROM customer RETURNING id) SELECT * FROM d")
+        query.run_select("WITH d AS (DELETE FROM customer RETURNING customer_id) SELECT * FROM d")
     assert rows("SELECT count(*) FROM customer") == [[1]]
 
 

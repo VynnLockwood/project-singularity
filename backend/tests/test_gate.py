@@ -11,7 +11,7 @@ def col(name, type="text", **kw):
 
 
 def create(name="customer", cols=None):
-    return {"op": "create_table", "name": name, "columns": cols or [col("customerCode", unique=True), col("name")]}
+    return {"op": "create_table", "name": name, "columns": cols or [col("customer_code", unique=True), col("name")]}
 
 
 # ---- operations.parse_ops --------------------------------------------------
@@ -60,7 +60,7 @@ def test_kind_and_affected_tables():
     assert operations.kind_of([{"op": "insert_rows", "table": "t", "rows": [{"a": 1}]}]) == "data"
     assert operations.kind_of([create()]) == "schema"
     ops = [
-        create("order", [col("customerId", "integer", references={"table": "customer"})]),
+        create("order", [col("customer_id", "integer", references={"table": "customer"})]),
         {"op": "rename_table", "table": "a", "new_name": "b"},
     ]
     assert operations.affected_tables(ops) == ["a", "b", "customer", "order"]
@@ -76,7 +76,7 @@ def test_kind_and_affected_tables():
         ("supplierContact", "snake_case", "supplier_contact"),
         ("supplier_contact", "PascalCase", "SupplierContact"),
         ("taxID", "snake_case", "tax_id"),
-        ("customer_id", "camelCase", "customerId"),
+        ("customerId", "snake_case", "customer_id"),
     ],
 )
 def test_to_style(name, style, expected):
@@ -103,26 +103,26 @@ def names(res, sev=None):
 def test_audit_columns_are_added_automatically():
     res = run([create()])
     cols = [c["name"] for c in res.operations[0]["columns"]]
-    assert cols[:5] == ["id", "createdAt", "updatedAt", "createdBy", "isActive"]
-    assert "customer.id" in res.auto_added
+    assert cols[:5] == ["customer_id", "created_at", "updated_at", "created_by", "is_active"]
+    assert "customer.customer_id" in res.auto_added
     assert res.ok
 
 
 def test_original_ops_not_mutated():
     ops = [create()]
     run(ops)
-    assert [c["name"] for c in ops[0]["columns"]] == ["customerCode", "name"]
+    assert [c["name"] for c in ops[0]["columns"]] == ["customer_code", "name"]
 
 
 def test_table_naming_blocks_with_suggestion():
-    res = run([create("Supplier_Contact")])
+    res = run([create("supplierContact")])
     v = next(v for v in res.violations if v["rule"] == "tableNaming")
-    assert v["severity"] == "block" and v["suggestion"] == "supplierContact"
+    assert v["severity"] == "block" and v["suggestion"] == "supplier_contact"
     assert not res.ok
 
 
 def test_column_naming_blocks():
-    res = run([create(cols=[col("customerCode", unique=True), col("phone_number")])])
+    res = run([create(cols=[col("customer_code", unique=True), col("phoneNumber")])])
     assert "columnNaming" in names(res, "block") and not res.ok
 
 
@@ -132,19 +132,19 @@ def test_reserved_word_blocked():
 
 
 def test_money_must_be_numeric_18_2():
-    bad = run([create(cols=[col("customerCode", unique=True), col("unitPrice", "real")])])
+    bad = run([create(cols=[col("customer_code", unique=True), col("unit_price", "real")])])
     assert {"moneyIsNumeric", "noFloat"} <= names(bad, "block")
-    ok = run([create(cols=[col("customerCode", unique=True), col("unitPrice", "numeric(18,2)")])])
+    ok = run([create(cols=[col("customer_code", unique=True), col("unit_price", "numeric(18,2)")])])
     assert ok.ok
 
 
 def test_timestamp_columns_need_timezone():
-    res = run([create(cols=[col("customerCode", unique=True), col("shippedAt", "timestamp")])])
+    res = run([create(cols=[col("customer_code", unique=True), col("shipped_at", "timestamp")])])
     assert "timestampsHaveTimezone" in names(res, "block")
 
 
 def test_wrong_type_for_required_column_blocks():
-    res = run([create(cols=[col("id", "text"), col("customerCode", unique=True)])])
+    res = run([create(cols=[col("customer_id", "text"), col("customer_code", unique=True)])])
     assert "auditColumns" in names(res, "block")
 
 
@@ -158,9 +158,9 @@ def test_required_columns_without_autoadd_is_violation():
 
 
 def test_code_column_free_text_warns_but_unique_key_does_not():
-    res = run([create(cols=[col("customerCode", unique=True), col("countryCode")])])
+    res = run([create(cols=[col("customer_code", unique=True), col("country_code")])])
     msgs = [v["message"] for v in res.violations if v["rule"] == "codesNeedLookup"]
-    assert len(msgs) == 1 and "countryCode" in msgs[0]
+    assert len(msgs) == 1 and "country_code" in msgs[0]
     assert res.ok  # warnings never block
 
 
@@ -169,7 +169,7 @@ def test_fk_naming_warns_with_suggestion():
     op = create("invoice", [col("invoiceCode", unique=True), col("buyer", "integer", references={"table": "customer"})])
     res = run([op], st)
     v = next(v for v in res.violations if v["rule"] == "foreignKeyNaming")
-    assert v["suggestion"] == "customerId"
+    assert v["suggestion"] == "customer_id"
 
 
 def test_business_key_warning():
@@ -249,7 +249,7 @@ def test_duplicate_table_and_missing_fk_target():
 def test_deactivate_requires_is_active():
     st = {"t": {"columns": {"id": {"type": "integer", "nullable": False}}, "indexes": set(), "constraints": set()}}
     errs, _ = state.validate([{"op": "deactivate_rows", "table": "t", "where": {"id": 1}}], st)
-    assert any("isActive" in e for e in errs)
+    assert any("is_active" in e for e in errs)
 
 
 def test_data_op_unknown_column():
@@ -267,13 +267,13 @@ def test_validate_does_not_mutate_input_state():
 # ---- SQL generation --------------------------------------------------------
 
 def test_create_table_sql():
-    res = run([create("customer", [col("customerCode", unique=True), col("name", nullable=False, comment="Legal name")])])
+    res = run([create("customer", [col("customer_code", unique=True), col("name", nullable=False, comment="Legal name")])])
     sql_text = "\n".join(res.sql)
     assert 'CREATE TABLE "master"."customer"' in sql_text
-    assert '"id" integer GENERATED BY DEFAULT AS IDENTITY NOT NULL CONSTRAINT "customer_pkey" PRIMARY KEY' in sql_text
-    assert '"createdAt" timestamptz NOT NULL DEFAULT now()' in sql_text
-    assert '"isActive" boolean NOT NULL DEFAULT true' in sql_text
-    assert 'CONSTRAINT "customer_customerCode_key" UNIQUE' in sql_text
+    assert '"customer_id" integer GENERATED BY DEFAULT AS IDENTITY NOT NULL CONSTRAINT "customer_pkey" PRIMARY KEY' in sql_text
+    assert '"created_at" timestamptz NOT NULL DEFAULT now()' in sql_text
+    assert '"is_active" boolean NOT NULL DEFAULT true' in sql_text
+    assert 'CONSTRAINT "customer_customer_code_key" UNIQUE' in sql_text
     assert "COMMENT ON COLUMN \"master\".\"customer\".\"name\" IS 'Legal name'" in sql_text
 
 
@@ -297,14 +297,14 @@ def test_fk_is_named_and_qualified():
 
 
 def test_update_sets_updated_at_and_createdby_autofill():
-    st = {"t": {"columns": {"id": {}, "name": {}, "updatedAt": {}, "createdBy": {}, "isActive": {}},
+    st = {"t": {"columns": {"id": {}, "name": {}, "updated_at": {}, "created_by": {}, "is_active": {}},
                 "indexes": set(), "constraints": set()}}
     upd = run([{"op": "update_rows", "table": "t", "where": {"id": [1, 2]}, "set": {"name": "x"}}], st)
-    assert '"updatedAt" = now()' in upd.sql[0] and '"id" IN (1, 2)' in upd.sql[0]
+    assert '"updated_at" = now()' in upd.sql[0] and '"id" IN (1, 2)' in upd.sql[0]
     ins = run([{"op": "insert_rows", "table": "t", "rows": [{"name": "a"}]}], st, actor="me@example.com")
-    assert '"createdBy"' in ins.sql[0] and "'me@example.com'" in ins.sql[0] and "RETURNING" in ins.sql[0]
+    assert '"created_by"' in ins.sql[0] and "'me@example.com'" in ins.sql[0] and "RETURNING" in ins.sql[0]
     deact = run([{"op": "deactivate_rows", "table": "t", "where": {"id": 3}}], st)
-    assert '"isActive" = false' in deact.sql[0]
+    assert '"is_active" = false' in deact.sql[0]
 
 
 def test_alter_type_uses_cast():
@@ -315,7 +315,7 @@ def test_alter_type_uses_cast():
 
 def test_diff_lines():
     res = run([create()])
-    assert res.diff[0].startswith("+ create table customer (id integer")
+    assert res.diff[0].startswith("+ create table customer (customer_id integer")
 
 
 def test_skip_rules_still_validates_semantics():
@@ -323,3 +323,29 @@ def test_skip_rules_still_validates_semantics():
     assert res.errors and not res.ok
     ok = run([create("Bad_Name")], skip_rules=True)
     assert ok.ok and not ok.violations
+
+
+# ---- <table>_id primary keys -------------------------------------------------
+
+def test_foreign_key_defaults_to_the_target_tables_primary_key():
+    st = {"province": {"columns": {"province_id": {"type": "integer", "nullable": False}},
+                       "indexes": set(), "constraints": set(), "pk": "province_id"}}
+    res = run([create("district", [col("district_code", unique=True),
+                                   col("province_id", "integer", references={"table": "province"})])], st)
+    assert res.ok, (res.errors, res.violations)
+    assert 'REFERENCES "master"."province" ("province_id")' in "\n".join(res.sql)
+
+
+def test_legacy_id_primary_key_is_still_understood():
+    st = {"province": {"columns": {"id": {"type": "integer", "nullable": False}},
+                       "indexes": set(), "constraints": set()}}
+    res = run([{"op": "add_foreign_key", "table": "province", "column": "id", "ref_table": "province"}], st)
+    assert 'REFERENCES "master"."province" ("id")' in res.sql[0]
+
+
+def test_renaming_the_primary_key_keeps_track_of_it():
+    st = {"province": {"columns": {"id": {"type": "integer", "nullable": False}},
+                       "indexes": set(), "constraints": set(), "pk": "id"}}
+    errs, after = state.validate([{"op": "rename_column", "table": "province", "column": "id",
+                                   "new_name": "province_id"}], st)
+    assert not errs and state.pk_of(after, "province") == "province_id"

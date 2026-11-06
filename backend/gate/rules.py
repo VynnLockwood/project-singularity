@@ -175,6 +175,7 @@ def evaluate(ops: list[dict], rules: list[dict]) -> tuple[list[dict], list[dict]
                 have = {c["name"]: c for c in op["columns"]}
                 missing = []
                 for req in p["columns"]:
+                    req = {**req, "name": req["name"].replace("{table}", op["name"])}
                     cur = have.get(req["name"])
                     if cur is None:
                         if auto:
@@ -248,7 +249,7 @@ def evaluate(ops: list[dict], rules: list[dict]) -> tuple[list[dict], list[dict]
             for i, op in enumerate(ops_out):
                 if op["op"] != "create_table":
                     continue
-                if not any(c.get("unique") or (c.get("primary_key") and c["name"] != "id") for c in op["columns"]):
+                if not any(c.get("unique") or (c.get("primary_key") and c["name"] not in ("id", f"{op['name']}_id")) for c in op["columns"]):
                     add(rule, i, f"table {op['name']!r} has no unique business key column (for example a code)")
 
     return ops_out, violations, auto_added

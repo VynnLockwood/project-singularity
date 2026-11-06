@@ -73,7 +73,7 @@ def snapshot() -> dict:
     st: dict = {}
     with ro_connection() as conn:
         for r in conn.execute(TABLES_SQL):
-            st[r["name"]] = {"columns": {}, "indexes": set(), "constraints": set()}
+            st[r["name"]] = {"columns": {}, "indexes": set(), "constraints": set(), "pk": None}
         for r in conn.execute(COLUMNS_SQL):
             st[r["table_name"]]["columns"][r["column_name"]] = {
                 "type": normalize_type(r["type"]), "nullable": r["nullable"],
@@ -82,6 +82,8 @@ def snapshot() -> dict:
             st[r["table_name"]]["constraints"].add(r["name"])
         for r in conn.execute(INDEXES_SQL):
             st[r["table_name"]]["indexes"].add(r["name"])
+        for r in conn.execute(PK_SQL):
+            st[r["table_name"]]["pk"] = r["column_name"]
     return st
 
 

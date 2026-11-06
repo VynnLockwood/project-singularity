@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 from typing import Iterator
 
+from .conventions import audit_column, pk_column
 from .operations import normalize_type
 
 
@@ -31,6 +32,21 @@ def fk_name(table: str, col: str) -> str:
 
 def has_column(state: dict, table: str, column: str) -> bool:
     return column in state.get(table, {}).get("columns", {})
+
+
+def pk_of(state: dict, table: str) -> str | None:
+    """Primary key column of `table` in `state` (declared, else <table>_id, else id)."""
+    t = state.get(table)
+    return pk_column(t["columns"], table, t.get("pk")) if t else None
+
+
+def ref_column(state: dict, ref: dict, own_table: str | None = None, own_cols=None) -> str:
+    """Column a reference points at: the one given, else the target table's primary key."""
+    if ref.get("column"):
+        return ref["column"]
+    if own_table is not None and ref["table"] == own_table and own_cols is not None:
+        return pk_column({c["name"] for c in own_cols}, own_table, next((c["name"] for c in own_cols if c.get("primary_key")), None)) or "id"
+    return pk_of(state, ref["table"]) or "id"
 
 
 def _col_entry(col: dict) -> dict:
@@ -61,15 +77,18 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
             err(f"table {name!r} already exists")
         cols = {}
         constraints = set()
+        pk = None
         for c in op["columns"]:
             cols[c["name"]] = _col_entry(c)
+            if c.get("primary_key"):
+                pk = c["name"]
             if c.get("unique"):
                 constraints.add(_trim(f"{name}_{c['name']}_key"))
             if c.get("primary_key"):
                 constraints.add(_trim(f"{name}_pkey"))
             ref = c.get("references")
             if ref:
-                rt, rc = ref["table"], ref.get("column", "id")
+                rt, rc = ref["table"], ref_column(state, ref, name, op["columns"])
                 if rt != name and rt not in state:
                     err(f"column {c['name']} references missing table {rt!r}")
                 elif rt != name and rc not in state[rt]["columns"]:
@@ -77,7 +96,7 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
                 elif rt == name and rc not in {x["name"] for x in op["columns"]}:
                     err(f"column {c['name']} references missing column {rt}.{rc}")
                 constraints.add(fk_name(name, c["name"]))
-        state[name] = {"columns": cols, "indexes": set(), "constraints": constraints}
+        state[name] = {"columns": cols, "indexes": set(), "constraints": constraints, "pk": pk}
 
     elif kind == "add_column":
         t, c = op["table"], op["column"]
@@ -86,7 +105,7 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
                 err(f"column {t}.{c['name']} already exists")
             ref = c.get("references")
             if ref:
-                rt, rc = ref["table"], ref.get("column", "id")
+                rt, rc = ref["table"], ref_column(state, ref)
                 if rt not in state:
                     err(f"column {c['name']} references missing table {rt!r}")
                 elif rc not in state[rt]["columns"]:
@@ -111,6 +130,8 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
                 err(f"column {t}.{n} already exists")
             else:
                 state[t]["columns"][n] = state[t]["columns"].pop(c)
+                if state[t].get("pk") == c:
+                    state[t]["pk"] = n
 
     elif kind == "alter_column_type":
         t, c = op["table"], op["column"]
@@ -138,7 +159,8 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
 
     elif kind == "add_foreign_key":
         t, c = op["table"], op["column"]
-        rt, rc = op["ref_table"], op.get("ref_column", "id")
+        rt = op["ref_table"]
+        rc = op.get("ref_column") or pk_of(state, rt) or "id"
         if need_col(t, c):
             if rt not in state:
                 err(f"referenced table {rt!r} does not exist")
@@ -190,8 +212,8 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
     elif kind == "deactivate_rows":
         t = op["table"]
         if need_table(t):
-            if "isActive" not in state[t]["columns"]:
-                err(f"table {t!r} has no isActive column, so rows cannot be deactivated")
+            if audit_column(state[t]["columns"], "is_active") is None:
+                err(f"table {t!r} has no is_active column, so rows cannot be deactivated")
             for k in op["where"]:
                 need_col(t, k)
 
