@@ -2,9 +2,9 @@
 auth:
   provider: google
   allowedDomains:
-    - example.com          # change to your Google Workspace domain
+    - gmail.com
   seedAdmins:              # become "approver" on first sign-in
-    - admin@example.com
+    - nolanrobinson490@gmail.com
   defaultRole: viewer      # viewer | editor | approver
 
 limits:

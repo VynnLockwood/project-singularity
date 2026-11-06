@@ -48,7 +48,8 @@ def google_login(request):
     state = secrets.token_urlsafe(32)
     request.session[STATE_KEY] = state
     domains = get_config()["auth"]["allowedDomains"]
-    hd = domains[0] if len(domains) == 1 else None
+    # Only pass hd for Google Workspace domains, not consumer gmail.com
+    hd = domains[0] if len(domains) == 1 and domains[0] != "gmail.com" else None
     return HttpResponseRedirect(google.authorization_url(_redirect_uri(request), state, hd))
 
 

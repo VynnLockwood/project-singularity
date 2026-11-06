@@ -25,9 +25,10 @@ def authorization_url(redirect_uri: str, state: str, hosted_domain: str | None =
         "scope": "openid email profile",
         "state": state,
         "prompt": "select_account",
+        "access_type": "offline",
     }
     if hosted_domain:
-        params["hd"] = hosted_domain  # UI hint only; the domain is enforced server-side
+        params["hd"] = hosted_domain
     return f"{AUTH_URL}?{urlencode(params)}"
 
 
