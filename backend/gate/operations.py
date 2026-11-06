@@ -101,7 +101,8 @@ def _on_delete(d: dict, errs: list[str], where: str) -> None:
         errs.append(f"{where}: on_delete must be one of {list(ON_DELETE_VALUES)}")
 
 
-_ESCAPE_FUNCS = None  # filled lazily with pglast enums (see check_expression)
+# The parser wraps `LIKE .. ESCAPE` / `SIMILAR TO` patterns in these pg_catalog functions (keyed by A_Expr_Kind name).
+_ESCAPE_FUNCS = {"AEXPR_LIKE": "like_escape", "AEXPR_ILIKE": "like_escape", "AEXPR_SIMILAR": "similar_to_escape"}
 
 
 def check_expression(expr: str, columns: set[str]) -> list[str]:
@@ -141,10 +142,6 @@ def check_expression(expr: str, columns: set[str]) -> list[str]:
 
     errs: list[str] = []
     K = enums.A_Expr_Kind
-    global _ESCAPE_FUNCS
-    if _ESCAPE_FUNCS is None:
-        _ESCAPE_FUNCS = {K.AEXPR_LIKE: "like_escape", K.AEXPR_ILIKE: "like_escape",
-                         K.AEXPR_SIMILAR: "similar_to_escape"}
 
     def bad(msg):
         if msg not in errs:
@@ -153,6 +150,11 @@ def check_expression(expr: str, columns: set[str]) -> list[str]:
     def op_name(e) -> str | None:
         names = [n.sval for n in e.name] if e.name else []
         return names[0] if len(names) == 1 and isinstance(e.name[0], ast.String) else None
+
+    def plain_call(f) -> bool:
+        """A function call with no FILTER / OVER / DISTINCT / ORDER BY / VARIADIC / * decorations."""
+        return not (f.agg_order or f.agg_filter or f.over or f.agg_within_group or f.agg_star
+                    or f.agg_distinct or f.func_variadic)
 
     def walk(n):
         if isinstance(n, ast.ColumnRef):
@@ -177,6 +179,9 @@ def check_expression(expr: str, columns: set[str]) -> list[str]:
             if (n.typeName.setof or n.typeName.arrayBounds or not qualified_ok
                     or t[-1] not in CHECK_CAST_TYPES):
                 bad("type cast to this type is not allowed")
+            for m in n.typeName.typmods or ():
+                if not (isinstance(m, ast.A_Const) and isinstance(m.val, ast.Integer)):
+                    bad("type modifiers must be plain integers")
             walk(n.arg)
         elif isinstance(n, ast.FuncCall):
             names = [x.sval for x in n.funcname if isinstance(x, ast.String)]
@@ -184,8 +189,7 @@ def check_expression(expr: str, columns: set[str]) -> list[str]:
             if (len(n.funcname) > 2 or (len(names) == 2 and names[0] != "pg_catalog")
                     or fname not in CHECK_FUNCS):
                 bad(f"function {'.'.join(names)}() is not allowed (allowed: {sorted(CHECK_FUNCS)})")
-            if (n.agg_order or n.agg_filter or n.over or n.agg_within_group or n.agg_star
-                    or n.agg_distinct or n.func_variadic):
+            if not plain_call(n):
                 bad("aggregate, window and special function forms are not allowed")
             for a in n.args or ():
                 walk(a)
@@ -201,9 +205,9 @@ def check_expression(expr: str, columns: set[str]) -> list[str]:
             else:
                 bad("this operator form is not allowed")
             walk(n.lexpr)
-            esc = _ESCAPE_FUNCS.get(n.kind)
+            esc = _ESCAPE_FUNCS.get(n.kind.name)
             rx = n.rexpr
-            if (esc and isinstance(rx, ast.FuncCall) and not rx.agg_order and not rx.over
+            if (esc and isinstance(rx, ast.FuncCall) and plain_call(rx)
                     and [x.sval for x in rx.funcname if isinstance(x, ast.String)] == ["pg_catalog", esc]
                     and len(rx.funcname) == 2):
                 # LIKE ... ESCAPE / SIMILAR TO: the parser wraps the pattern in this function; only that spot is exempt

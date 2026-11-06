@@ -254,3 +254,23 @@ def test_sqlgen_never_renders_unvalidated_expression():
     with mock.patch.object(sqlgen, "_render_check", side_effect=sqlgen.UnsafeOp("boom")):
         res = run([add_check("length(city) > 1")])
     assert res.errors == ["boom"] and not res.ok
+
+
+# ---- fix round 2 -------------------------------------------------------------------
+
+@pytest.mark.parametrize("expr", [
+    "city LIKE pg_catalog.like_escape('a','!') FILTER (WHERE (SELECT 1)=1)",
+    "city LIKE like_escape(DISTINCT 'a','!')",
+    "city LIKE pg_catalog.like_escape('a','!') OVER ()",
+    "city LIKE pg_catalog.like_escape(VARIADIC ARRAY['a'])",
+    "city SIMILAR TO pg_catalog.similar_to_escape('a') FILTER (WHERE true)",
+    "city::text((SELECT 1)) = 'x'",
+    "city::varchar(length(city)) = 'x'",
+])
+def test_round2_rejections(expr):
+    assert check_expr(expr), expr
+
+
+def test_round2_plain_typmods_still_ok():
+    assert check_expr("city::varchar(5) = 'x'") == []
+    assert check_expr("length(city)::numeric(5,2) > 1") == []
