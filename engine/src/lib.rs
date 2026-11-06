@@ -1,5 +1,6 @@
 //! Singularity engine: pure Rust core, with thin bindings for Python (feature `python`) and the browser (feature `wasm`).
 
+pub mod cosmos;
 pub mod dedup;
 pub mod layout;
 pub mod normalize;
@@ -7,6 +8,7 @@ pub mod stats;
 
 pub use dedup::{find_duplicates, Group, Record};
 pub use normalize::normalize;
+pub use cosmos::cosmos_json;
 pub use layout::layout_json;
 pub use stats::column_stats_json;
 
@@ -44,12 +46,19 @@ mod python {
         crate::layout::layout_json(input_json)
     }
 
+    #[pyfunction]
+    #[pyo3(name = "cosmos")]
+    fn cosmos_py(input_json: &str) -> String {
+        crate::cosmos::cosmos_json(input_json)
+    }
+
     #[pymodule]
     fn singularity_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add_function(wrap_pyfunction!(find_duplicates_py, m)?)?;
         m.add_function(wrap_pyfunction!(normalize_py, m)?)?;
         m.add_function(wrap_pyfunction!(column_stats_py, m)?)?;
         m.add_function(wrap_pyfunction!(layout_py, m)?)?;
+        m.add_function(wrap_pyfunction!(cosmos_py, m)?)?;
         Ok(())
     }
 }
@@ -68,5 +77,11 @@ mod wasm {
     #[wasm_bindgen(js_name = layout3d)]
     pub fn layout3d(input_json: &str) -> String {
         crate::layout::layout_json(input_json)
+    }
+
+    /// Starfield and accretion-disk parameters for the app background (see cosmos.rs).
+    #[wasm_bindgen(js_name = cosmosScene)]
+    pub fn cosmos_scene(input_json: &str) -> String {
+        crate::cosmos::cosmos_json(input_json)
     }
 }

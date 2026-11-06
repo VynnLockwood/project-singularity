@@ -172,3 +172,24 @@ def test_query_tool_cannot_write(server):
     res = with_client(server["url"], server["tokens"][Role.APPROVER],
                       lambda c: c.call_tool("query", {"sql": "DROP TABLE customer"}))
     assert res.is_error and "only SELECT" in res.content[0].text
+
+
+def test_connection_link_authenticates_without_a_header(server):
+    """/mcp/t/<token> works for clients that cannot send an Authorization header."""
+    async def go(url):
+        async with httpx2.AsyncClient() as http:
+            async with Client(streamable_http_client(url, http_client=http)) as c:
+                return sorted(t.name for t in (await c.list_tools()).tools)
+
+    link = f"{server['base']}/mcp/t/{server['tokens'][Role.VIEWER]}"
+    assert asyncio.run(go(link)) == names(server, Role.VIEWER)
+
+
+def test_connection_link_with_bad_token_is_401(server):
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(f"{server['base']}/mcp/t/sgl_nope", data=b"{}", headers={"Content-Type": "application/json"})
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(req)
+    assert e.value.code == 401

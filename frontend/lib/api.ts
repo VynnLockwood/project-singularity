@@ -41,7 +41,7 @@ export class ApiError extends Error {
   }
 }
 
-async function call<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+async function call<T>(method: "GET" | "POST" | "DELETE", path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
   if (method !== "GET") {
     if (!csrfToken()) await fetch(`${BASE}/csrf`, { credentials: "same-origin" });
@@ -244,3 +244,17 @@ export const dismissDuplicate = (id: number) => call<DuplicateSummary>("POST", `
 export const reopenDuplicate = (id: number) => call<DuplicateSummary>("POST", `/duplicates/${id}/reopen`, {});
 export const mergeDuplicate = (id: number, survivorId: number) =>
   call<{ group: DuplicateSummary; change: Change }>("POST", `/duplicates/${id}/merge`, { survivorId });
+
+// ---- MCP connection tokens ----------------------------------------------------
+
+export interface McpToken {
+  id: number;
+  name: string;
+  prefix: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+export const listTokens = () => call<{ tokens: McpToken[] }>("GET", "/mcp-tokens").then((r) => r.tokens);
+export const createToken = (name: string) =>
+  call<{ id: number; name: string; prefix: string; token: string }>("POST", "/mcp-tokens", { name });
+export const revokeToken = (id: number) => call<{ ok: boolean }>("DELETE", `/mcp-tokens/${id}`);

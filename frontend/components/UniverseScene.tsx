@@ -20,9 +20,9 @@ interface Props {
   onUnavailable?: () => void;
 }
 
-const BODY = 0x6ea8ff;
-const PICKED = 0xffc857;
-const LINK = 0x3a4a7a;
+const BODY = 0xffa646;
+const PICKED = 0xfff1c2;
+const LINK = 0x9a4f1c;
 
 /** The 3D "schema universe": tables are bodies, foreign keys are links. Drag to orbit, wheel to zoom, click to select. */
 export function UniverseScene({ universe, selected, onSelect, onUnavailable }: Props) {
@@ -72,7 +72,7 @@ export function UniverseScene({ universe, selected, onSelect, onUnavailable }: P
           cv.width = 256; cv.height = 64;
           const g = cv.getContext("2d");
           if (g) {
-            g.font = "28px sans-serif"; g.fillStyle = "#e8ecff"; g.textAlign = "center";
+            g.font = "28px sans-serif"; g.fillStyle = "#fbe9d0"; g.textAlign = "center";
             g.fillText(b.name, 128, 40);
           }
           const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(cv), transparent: true, depthTest: false }));
@@ -80,6 +80,22 @@ export function UniverseScene({ universe, selected, onSelect, onUnavailable }: P
           label.position.set(b.pos[0], b.pos[1] + b.size + 6, b.pos[2]);
           scene.add(label);
         }
+
+        // the singularity itself: a black sphere with a glowing ring, at the centre the tables orbit
+        const hole = new THREE.Mesh(new THREE.SphereGeometry(11, 32, 20), new THREE.MeshBasicMaterial({ color: 0x000000 }));
+        scene.add(hole);
+        const ring = new THREE.Mesh(
+          new THREE.TorusGeometry(19, 1.6, 12, 96),
+          new THREE.MeshBasicMaterial({ color: 0xff8a1f, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending }),
+        );
+        ring.rotation.x = Math.PI / 2.25;
+        scene.add(ring);
+        const ring2 = new THREE.Mesh(
+          new THREE.TorusGeometry(26, 0.7, 8, 96),
+          new THREE.MeshBasicMaterial({ color: 0xffc46b, transparent: true, opacity: 0.45, blending: THREE.AdditiveBlending }),
+        );
+        ring2.rotation.x = Math.PI / 2.25;
+        scene.add(ring2);
 
         const pts: number[] = [];
         for (const l of universe.links) {
@@ -94,7 +110,7 @@ export function UniverseScene({ universe, selected, onSelect, onUnavailable }: P
           meshes.forEach((m, n) => {
             const mat = m.material as import("three").MeshStandardMaterial;
             mat.color.setHex(n === name ? PICKED : BODY);
-            mat.emissive.setHex(n === name ? 0x553300 : 0x000000);
+            mat.emissive.setHex(n === name ? 0x884400 : 0x000000);
           });
         };
 
@@ -125,6 +141,8 @@ export function UniverseScene({ universe, selected, onSelect, onUnavailable }: P
 
         let raf = 0;
         const tick = () => {
+          ring.rotation.z += 0.003;
+          ring2.rotation.z -= 0.002;
           controls.update();
           renderer.render(scene, camera);
           raf = requestAnimationFrame(tick);

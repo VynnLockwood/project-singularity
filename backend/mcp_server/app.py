@@ -1,7 +1,7 @@
 """The MCP server (spec section 3): `uvicorn mcp_server.app:app`.
 
 Auth: every request carries `Authorization: Bearer sgl_...` (a personal access
-token made in the web app). The token is looked up on every request, so a role
+token made in the web app), or the same token in the URL as /mcp/t/sgl_... . The token is looked up on every request, so a role
 change or a revoked token takes effect immediately. Each user only sees the
 tools their role allows, and the tool functions re-check the role anyway.
 
@@ -157,6 +157,9 @@ async def list_pending() -> dict:
     return await run("list_pending")
 
 
+LINK_PREFIX = "/mcp/t/"
+
+
 class BearerAuth:
     """ASGI middleware: authenticate the token, publish the user for this request only."""
 
@@ -172,6 +175,13 @@ class BearerAuth:
         headers = {k.decode().lower(): v.decode() for k, v in scope["headers"]}
         auth = headers.get("authorization", "")
         raw = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+
+        # Connection link: /mcp/t/<token> carries the token in the URL, for clients that cannot send
+        # a header (Claude.ai and Gemini custom connectors). The path is rewritten to /mcp.
+        path = scope["path"]
+        if path.startswith(LINK_PREFIX):
+            raw = raw or path[len(LINK_PREFIX):].strip("/")
+            scope = {**scope, "path": "/mcp", "raw_path": b"/mcp"}
 
         def lookup():
             close_old_connections()
