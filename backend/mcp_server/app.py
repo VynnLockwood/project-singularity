@@ -35,6 +35,9 @@ You never write SQL to change anything: call propose_change with structured oper
 add_column, insert_rows, ...). The gate checks your proposal against the team's rules and returns a
 diff. Show the diff to the user and ask for confirmation before calling approve_change. Schema changes
 by editors wait for an approver. Dropping things needs a 'reason'. Use query for read-only SELECTs.
+Settings, gate rules and people's roles are changed the same way: read them with get_settings (and list_users),
+then call propose_config_change with structured operations (set_setting, reset_setting, update_rule,
+create_rule, set_user_role). These always wait in the approval queue for an approver; never claim they are applied.
 """
 
 
@@ -195,7 +198,7 @@ class BearerAuth:
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
         if scope["path"] == "/healthz":
-            return await JSONResponse({"ok": True})(scope, receive, send)
+            return await JSONResponse({"ok": True, "tools": len(tools.IMPL)})(scope, receive, send)
 
         headers = {k.decode().lower(): v.decode() for k, v in scope["headers"]}
         auth = headers.get("authorization", "")

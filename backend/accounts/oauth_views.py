@@ -7,7 +7,7 @@ from django.middleware.csrf import get_token
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
-from . import oauth
+from . import oauth, tokens
 from .oauth import OAuthError
 
 
@@ -44,7 +44,7 @@ def authorization_server(request, suffix=None):
         "token_endpoint": f"{o}/oauth/token",
         "registration_endpoint": f"{o}/oauth/register",
         "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none"],
         "scopes_supported": ["mcp"],
@@ -67,7 +67,7 @@ def register(request):
         return _json_error(exc.code, exc.description)
     return _cors(JsonResponse({
         "client_id": client.client_id, "client_name": client.name, "redirect_uris": client.redirect_uris,
-        "grant_types": ["authorization_code"], "response_types": ["code"], "token_endpoint_auth_method": "none",
+        "grant_types": ["authorization_code", "refresh_token"], "response_types": ["code"], "token_endpoint_auth_method": "none",
     }, status=201))
 
 
@@ -77,13 +77,23 @@ def token(request):
     if request.method == "OPTIONS":
         return _cors(HttpResponse(status=204))
     f = request.POST
-    if f.get("grant_type") != "authorization_code":
-        return _json_error("unsupported_grant_type", "only authorization_code is supported")
+    grant = f.get("grant_type")
     try:
-        access = oauth.exchange(f.get("code", ""), f.get("client_id", ""), f.get("redirect_uri", ""), f.get("code_verifier", ""))
+        if grant == "authorization_code":
+            access, refresh = oauth.exchange(f.get("code", ""), f.get("client_id", ""), f.get("redirect_uri", ""), f.get("code_verifier", ""))
+        elif grant == "refresh_token":
+            pair = tokens.refresh_oauth_token(f.get("refresh_token", ""))
+            if pair is None:
+                raise OAuthError("invalid_grant", "the refresh token is invalid or was revoked")
+            access, refresh = pair
+        else:
+            return _json_error("unsupported_grant_type", "use authorization_code or refresh_token")
     except OAuthError as exc:
         return _json_error(exc.code, exc.description)
-    resp = _cors(JsonResponse({"access_token": access, "token_type": "Bearer", "scope": "mcp"}))
+    resp = _cors(JsonResponse({
+        "access_token": access, "token_type": "Bearer", "scope": "mcp",
+        "expires_in": int(tokens.ACCESS_TTL.total_seconds()), "refresh_token": refresh,
+    }))
     resp["Cache-Control"] = "no-store"
     return resp
 

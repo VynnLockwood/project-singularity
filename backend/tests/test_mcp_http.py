@@ -82,7 +82,7 @@ def test_missing_or_bad_token_is_401(server):
 def test_health_endpoint_needs_no_token(server):
     import urllib.request
 
-    assert json.load(urllib.request.urlopen(server["base"] + "/healthz")) == {"ok": True}
+    assert json.load(urllib.request.urlopen(server["base"] + "/healthz"))["ok"] is True
 
 
 def test_each_role_sees_only_its_tools(server):

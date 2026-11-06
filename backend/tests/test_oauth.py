@@ -143,6 +143,40 @@ def test_callback_returns_to_the_consent_page(monkeypatch):
 
 def test_new_oauth_token_replaces_the_clients_previous_one():
     user = User.objects.create(username="e@x.com", email="e@x.com", role=Role.EDITOR)
-    _, first = tokens.create_oauth_token(user, "Claude")
-    _, second = tokens.create_oauth_token(user, "Claude")
+    _, first, _r1 = tokens.create_oauth_token(user, "Claude")
+    _, second, _r2 = tokens.create_oauth_token(user, "Claude")
     assert tokens.authenticate(first) is None and tokens.authenticate(second) == user
+
+
+def test_tokens_expire_and_refresh_issues_a_new_pair():
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    user = User.objects.create(username="r@x.com", email="r@x.com", role=Role.EDITOR)
+    row, access, refresh = tokens.create_oauth_token(user, "Claude")
+    assert tokens.authenticate(access) == user
+    row.expires_at = timezone.now() - timedelta(seconds=1)
+    row.save()
+    assert tokens.authenticate(access) is None  # expired
+    new_access, new_refresh = tokens.refresh_oauth_token(refresh)
+    assert tokens.authenticate(new_access) == user and new_refresh != refresh and tokens.authenticate(access) is None
+    assert tokens.refresh_oauth_token(refresh) is None  # the old refresh token is spent
+    row.refresh_from_db()
+    row.revoked_at = timezone.now()
+    row.save()
+    assert tokens.refresh_oauth_token(new_refresh) is None and tokens.authenticate(new_access) is None  # revoked
+
+
+def test_token_endpoint_returns_expiry_and_a_refresh_token_that_works():
+    from accounts.models import OAuthClient
+
+    user = User.objects.create(username="t@x.com", email="t@x.com", role=Role.EDITOR)
+    _, _a, refresh = tokens.create_oauth_token(user, "Claude")
+    r = Client().post("/oauth/token", {"grant_type": "refresh_token", "refresh_token": refresh})
+    body = r.json()
+    assert r.status_code == 200 and body["expires_in"] > 0 and body["refresh_token"] and tokens.authenticate(body["access_token"]) == user
+    bad = Client().post("/oauth/token", {"grant_type": "refresh_token", "refresh_token": refresh})
+    assert bad.status_code == 400 and bad.json()["error"] == "invalid_grant"
+    assert "refresh_token" in Client().get("/.well-known/oauth-authorization-server").json()["grant_types_supported"]
+    assert OAuthClient is not None

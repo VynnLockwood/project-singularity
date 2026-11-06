@@ -45,6 +45,9 @@ class McpToken(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     last_used_at = models.DateTimeField(null=True, blank=True)
     revoked_at = models.DateTimeField(null=True, blank=True)
+    # OAuth tokens only: the access token expires and is renewed with the refresh token (manual tokens never expire)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    refresh_hash = models.CharField(max_length=64, blank=True, default="", db_index=True)
 
     class Meta:
         ordering = ["-created_at"]

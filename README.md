@@ -15,7 +15,7 @@ Set `OPENROUTER_API_KEY` in `.env` (only the `api` container receives it) and pi
 
 ## Connect an AI client (MCP)
 
-**Claude (recommended): OAuth.** Add `https://<your-host>/mcp` as a custom connector. Claude finds the sign-in service (`/.well-known/oauth-*`), registers itself (`/oauth/register`), sends you to a consent page after your normal Google sign-in, and receives a revocable access token (authorization code + PKCE S256). The connection then shows in the Connect tab, where you can revoke it.
+**Claude (recommended): OAuth.** Add `https://<your-host>/mcp` as a custom connector. Claude finds the sign-in service (`/.well-known/oauth-*`), registers itself (`/oauth/register`), sends you to a consent page after your normal Google sign-in, and receives a revocable access token (authorization code + PKCE S256) valid for 30 days plus a refresh token, so Claude renews it by itself. The connection then shows in the Connect tab, where you can revoke it. After updating Singularity, rebuild and restart the `mcp`, `api` and `web` containers: a client only sees the tools the running server offers (reconnecting just re-reads them), and `/healthz` on the mcp container reports how many it has.
 
 **Manual links and tokens:** sign in, open the **Connect** tab, name the connection and press **Create connection link**. You get, once, ready-to-paste settings for each client (only a hash of the token is stored):
 

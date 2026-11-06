@@ -62,8 +62,8 @@ def issue_code(client: OAuthClient, user: User, redirect_uri: str, challenge: st
     return raw
 
 
-def exchange(code: str, client_id: str, redirect_uri: str, verifier: str) -> str:
-    """Swap an authorization code for an access token. A code works once."""
+def exchange(code: str, client_id: str, redirect_uri: str, verifier: str) -> tuple[str, str]:
+    """Swap an authorization code for (access token, refresh token). A code works once."""
     with transaction.atomic():
         row = (
             OAuthCode.objects.select_for_update().select_related("client", "user")
@@ -80,4 +80,5 @@ def exchange(code: str, client_id: str, redirect_uri: str, verifier: str) -> str
         raise OAuthError("invalid_grant", "PKCE verification failed")
     if not row.user.is_active:
         raise OAuthError("invalid_grant", "the account is disabled")
-    return tokens.create_oauth_token(row.user, row.client.name)[1]
+    _, access, refresh = tokens.create_oauth_token(row.user, row.client.name)
+    return access, refresh
