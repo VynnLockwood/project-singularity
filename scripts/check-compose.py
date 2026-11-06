@@ -26,8 +26,9 @@ for name, svc in services.items():
         errors.append(f"{name} publishes host ports; only nginx may")
 
 nginx_ports = {int(p["target"]) for p in services["nginx"].get("ports", [])}
-if nginx_ports != {80, 443}:
-    errors.append(f"nginx should publish exactly 80 and 443, got {sorted(nginx_ports)}")
+# TLS is terminated in front (Cloudflare Tunnel), so the gateway serves plain HTTP on 80 only
+if nginx_ports != {80}:
+    errors.append(f"nginx should publish exactly container port 80, got {sorted(nginx_ports)}")
 
 for name in ("db", "redis", "web", "embed"):
     nets = set(services[name].get("networks", {}))
