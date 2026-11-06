@@ -137,10 +137,23 @@ def test_create_table_has_surrogate_key_and_mapped_columns():
     assert fk_col == {"name": "province_id", "type": "integer", "nullable": True}
 
 
-def test_natural_key_becomes_unique_business_key():
+def test_natural_key_becomes_inline_unique_business_key():
     res = mapped()
-    uniq = {(o["table"], tuple(o["columns"])) for o in ops_of(res, "add_unique")}
-    assert uniq == {("province", ("code",)), ("district", ("code",)), ("subdistrict", ("code",))}
+    assert ops_of(res, "add_unique") == []
+    for t in ("province", "district", "subdistrict"):
+        cols = {c["name"]: c for c in created(res, t)["columns"]}
+        assert cols["code"]["unique"] is True
+        assert [n for n, c in cols.items() if c.get("unique")] == ["code"]
+    after = gate_ok(res.ops)
+    assert "province_code_key" in after["province"]["constraints"]
+
+
+def test_multi_column_unique_stays_add_unique():
+    text = "CREATE TABLE t (id text PRIMARY KEY, a text, b text);\nALTER TABLE t ADD CONSTRAINT t_ab UNIQUE (a, b);\n"
+    res = mapped({"tables": {"t": {"target": "t", "columns": {"code": "id", "a": "a", "b": "b"}}}}, text)
+    assert res.issues == []
+    assert [o["columns"] for o in ops_of(res, "add_unique")] == [["a", "b"]]
+    gate_ok(res.ops)
 
 
 def test_refs_become_foreign_keys_with_source_on_delete():
@@ -554,13 +567,14 @@ def test_shape_requires_source_columns():
         parse_ops([op])
 
 
-def test_inline_unique_and_duplicate_unique_become_one_add_unique_each():
-    text = ("CREATE TABLE t (id text PRIMARY KEY, a text UNIQUE, b text);\n"
+def test_single_column_uniques_become_one_inline_unique_each():
+    text = ("CREATE TABLE t (id text PRIMARY KEY, a text UNIQUE, b text, c text);\n"
             "ALTER TABLE t ADD CONSTRAINT t_b_key UNIQUE (b);\nALTER TABLE t ADD CONSTRAINT t_b_key2 UNIQUE (b);\n")
-    res = mapped({"tables": {"t": {"target": "t", "columns": {"code": "id", "aa": "a", "bb": "b"}}}}, text)
+    res = mapped({"tables": {"t": {"target": "t", "columns": {"code": "id", "aa": "a", "bb": "b", "cc": "c"}}}}, text)
     assert res.issues == []
-    assert sorted(tuple(o["columns"]) for o in ops_of(res, "add_unique")) == [("aa",), ("bb",), ("code",)]
-    assert all("unique" not in c for c in created(res, "t")["columns"])
+    assert ops_of(res, "add_unique") == []
+    assert {c["name"]: c.get("unique", False) for c in created(res, "t")["columns"]} == {
+        "t_id": False, "code": True, "aa": True, "bb": True, "cc": False}
     gate_ok(res.ops)
 
 
@@ -569,3 +583,85 @@ def test_ref_to_wrong_parent_reported_once():
     m["tables"]["district"]["refs"][0]["parent"] = "subdistrict"
     res = mapped(m)
     assert not any("fk_district_province" in i.message for i in res.issues)
+
+
+def test_one_source_column_mapped_twice_is_an_issue():
+    m = copy.deepcopy(MAPPING)
+    m["tables"]["province"]["columns"]["label"] = "province_name"
+    msg = issue_for(m)
+    assert "more than one target column" in msg and "province_name" in msg
+
+
+def test_ref_source_column_without_row_data_is_an_issue():
+    text = ("CREATE TABLE p (id text PRIMARY KEY);\n"
+            "CREATE TABLE c (id text PRIMARY KEY, pid text REFERENCES p(id));\n"
+            "COPY p (id) FROM stdin;\nA\n\\.\nCOPY c (id) FROM stdin;\n1\n\\.\n")
+    m = {"tables": {"p": {"target": "p", "columns": {"code": "id"}},
+                    "c": {"target": "c", "columns": {"code": "id"},
+                          "refs": [{"column": "p_id", "parent": "p", "parent_key": "code", "source_column": "pid"}]}}}
+    res = mapped(m, text)
+    (iss,) = res.issues
+    assert iss.statement == "tables.c.refs[0]"
+    assert "'p_id'" in iss.message and "'pid'" in iss.message and "columns: id" in iss.message
+    assert res.ops == []
+
+
+def test_rows_not_read_when_mapping_has_issues():
+    p = parse_script(MINI)
+    reads = []
+    for st in p.streams.values():
+        orig = st.rows
+        st.rows = lambda orig=orig, name=st.table: (reads.append(name), orig())[1]
+    m = copy.deepcopy(MAPPING)
+    m["tables"]["province"]["target"] = "Province"
+    res = apply_mapping(p, m)
+    assert res.issues and reads == []
+    apply_mapping(p, copy.deepcopy(MAPPING))
+    assert sorted(reads) == ["district", "province", "subdistrict"]
+
+
+def test_mapped_mini_dump_has_no_business_key_warning():
+    from gate import check
+    from gate.defaults import DEFAULT_RULES
+    rules = [{**r, "enabled": True} for r in DEFAULT_RULES]
+    res = mapped()
+    out = check.run(bind_script(res.ops, 1), {}, rules, actor="me@example.com", allow_bulk=True, max_script_rows=100,
+                    max_ops=100)
+    assert res.ops and not [v for v in out.violations if "business key" in str(v)], out.violations
+
+
+@pytest.mark.usefixtures("master")
+def test_mapped_mini_dump_loads_end_to_end():
+    from gate import check
+    from gate.defaults import DEFAULT_RULES
+    from schema import executor, introspect, query
+
+    rules = [{**r, "enabled": True} for r in DEFAULT_RULES]
+    p = parse_script(MINI)
+    ops = bind_script(apply_mapping(p, suggest_mapping(p)).ops, 1)
+    st = introspect.snapshot()
+    res = check.run(ops, st, rules, actor="me@example.com", allow_bulk=True, max_script_rows=100, max_ops=100)
+    assert res.ok and not res.violations, (res.errors, res.violations)
+
+    def row_source(op):  # what Task 9's provider does: project stream rows into op column order
+        stream = p.streams[op["source"]["stream"]]
+        idx = [stream.columns.index(c) for c in op["source"]["columns"]]
+        return (tuple(r[i] for i in idx) for r in stream.rows())
+
+    executor.execute(res.operations, st, "me@example.com", rules=rules, row_source=row_source)
+
+    def q(sql):
+        r = query.run_select(sql)
+        names = [c["name"] if isinstance(c, dict) else c for c in r["columns"]]
+        return [dict(zip(names, x)) for x in r["rows"]]
+
+    got = q("SELECT s.code AS s, s.subdistrict_name AS n, d.code AS d, p.code AS p, p.province_name AS pn "
+            "FROM master.subdistrict s JOIN master.district d ON d.district_id = s.district_id "
+            "JOIN master.province p ON p.province_id = d.province_id ORDER BY s.code")
+    assert [(r["s"], r["n"], r["d"], r["p"], r["pn"]) for r in got] == [
+        ("100101", "พระบรมมหาราชวัง", "1001", "10", "กรุงเทพมหานคร"),
+        ("100102", "วังบูรพาภิรมย์", "1001", "10", "กรุงเทพมหานคร"),
+        ("110101", "ปากน้ำ", "1101", "11", "สมุทรปราการ")]
+    cons = q("SELECT conname FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace "
+             "WHERE n.nspname = 'master' AND contype = 'u' ORDER BY 1")
+    assert [r["conname"] for r in cons] == ["district_code_key", "province_code_key", "subdistrict_code_key"]

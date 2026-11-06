@@ -12,14 +12,18 @@ have a generated key `<table>_id` plus a unique business key. The mapping says h
                   "parent_key": "<parent target col>",       # unique column of the parent the value matches
                   "source_column": "<source col here>"}]}}}  # holds the parent's key; only feeds the join
 
-Every source column must be mapped, dropped, or used as a ref's source_column. Every table that the
-script creates or loads rows into must be in the mapping.
+Every source column must be mapped (to exactly one target column), dropped, or used as a ref's
+source_column. Every table that the script creates or loads rows into must be in the mapping.
 
 apply_mapping() returns gate ops (never executes SQL):
 * tables the script creates: create_table <target> with `<target>_id` (integer identity primary key,
   not from the script), the mapped columns, and one integer column per ref; the script's PRIMARY KEY /
-  UNIQUE constraints become add_unique on the mapped columns (the natural key becomes the business key);
-  CHECKs (column names rewritten in the pglast AST), indexes, foreign keys and comments are carried over;
+  UNIQUE constraints become keys on the mapped columns (the natural key becomes the business key):
+  single-column ones as an inline `unique: true` on the column (constraint `<table>_<col>_key`, what the
+  gate's business-key rule looks for), multi-column ones as add_unique;
+  CHECKs (column names rewritten in the pglast AST), indexes, foreign keys and comments are carried over.
+  CHECK constraints keep the script's name as-is (e.g. `chk_subdistrict_postcode`), even when the target
+  table has another name; unique / index / foreign key names are left to the gate's defaults;
   each ref adds add_foreign_key (on_delete from the script's FK on that column, else "restrict");
 * tables the script only loads rows into (no CREATE TABLE): only the bulk_insert, into an existing table;
 * then one bulk_insert per table with rows, parents before children:
@@ -32,7 +36,9 @@ apply_mapping() returns gate ops (never executes SQL):
   script is stored (Task 9); a Change must never hold a bulk_insert with a null script_id.
 
 User mistakes are returned as issues (ScriptIssue with line 0 and `statement` = the mapping path, or
-the data line for bad COPY rows), never raised. When there are issues, `ops` is empty.
+the data line for bad COPY rows), never raised. When there are issues, `ops` is empty. Rows are read
+(to count them and find bad COPY rows) only when the mapping itself has no issues, so bad rows show up
+after the mapping is fixed. A ref whose source column is not in the script's row data is an issue.
 """
 from __future__ import annotations
 
@@ -282,7 +288,7 @@ def apply_mapping(parsed: ParsedScript, mapping: dict) -> MappingResult:
         seen_targets.setdefault(tgt, n)
 
     # --- columns, drop, refs
-    plain: dict[str, dict[str, str]] = {}      # source table -> {source col -> first target col}
+    plain: dict[str, dict[str, str]] = {}      # source table -> {source col -> target col}
     ref_src: dict[str, dict[str, str]] = {}    # source table -> {source col -> ref column}
     for n in mapped:
         s, m, p = srcs[n], tables[n], f"tables.{n}"
@@ -298,8 +304,11 @@ def apply_mapping(parsed: ParsedScript, mapping: dict) -> MappingResult:
             if sc not in s.columns:
                 bad(f"{p}.columns.{tc}", f"source column {n}.{sc} does not exist "
                                          f"(columns: {', '.join(s.columns)})")
+            elif sc in plain[n]:
+                bad(f"{p}.columns.{tc}", f"source column {n}.{sc} is mapped to more than one target column "
+                                         f"({plain[n][sc]!r} and {tc!r}); map it once")
             else:
-                plain[n].setdefault(sc, tc)
+                plain[n][sc] = tc
             used.add(tc)
         for d in m.get("drop", []):
             if d not in s.columns:
@@ -403,17 +412,24 @@ def apply_mapping(parsed: ParsedScript, mapping: dict) -> MappingResult:
             create["comment"] = s.comment
         creates[n] = create
 
+        def make_unique(col_name: str, cols=cols) -> None:
+            # single-column key: inline UNIQUE (constraint <table>_<col>_key), which the gate's
+            # business-key rule recognises; multi-column keys stay add_unique
+            next(c for c in cols if c["name"] == col_name)["unique"] = True
+
         if s.pk:
             k = kept(n, s.pk)
             if k is None:
                 bad(p, f"primary key column {n}.{s.pk} is dropped; map it (it becomes the unique business key)")
             else:
-                uniques.append({"op": "add_unique", "table": tgt, "columns": [k]})
+                make_unique(k)
         for cols_, label in s.uniques:
             ks = [kept(n, c) for c in cols_]
             if None in ks:
                 bad(p, f"{label} of {n} uses a dropped column "
                        f"({', '.join(c for c, k in zip(cols_, ks) if k is None)})")
+            elif len(ks) == 1:
+                make_unique(ks[0])
             else:
                 uniques.append({"op": "add_unique", "table": tgt, "columns": ks})
         for ix in s.indexes:
@@ -469,7 +485,9 @@ def apply_mapping(parsed: ParsedScript, mapping: dict) -> MappingResult:
         bad("tables", f"the tables refer to each other in a cycle ({', '.join(cycle)}); "
                       "rows cannot be loaded parents first")
 
-    # --- bulk loads
+    # --- bulk loads (rows are counted only for a mapping without issues: counting reads every row)
+    if issues:
+        return MappingResult([], issues)
     bulks: list[dict] = []
     for n in order:
         stream = parsed.streams.get(n)
@@ -494,7 +512,10 @@ def apply_mapping(parsed: ParsedScript, mapping: dict) -> MappingResult:
         refs: list[dict] = []
         used = set(op_cols)
         for i, r in enumerate(m.get("refs", [])):
-            if r["source_column"] not in stream.columns or r["parent"] not in target_of:
+            if r["source_column"] not in stream.columns:
+                bad(f"tables.{n}.refs[{i}]", f"ref {r['column']!r} of {n!r} reads source column "
+                                             f"{r['source_column']!r}, which has no data in the script "
+                                             f"(the rows of {n} have columns: {', '.join(stream.columns)})")
                 continue
             carrier = f"_ref_{r['column']}"[:MAX_IDENT]
             if carrier in used:
