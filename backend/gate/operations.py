@@ -407,11 +407,22 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
                 errs.append(f"{where}: duplicate columns")
             if isinstance(cols, list) and "__row" in cols:
                 errs.append(f"{where}: column name '__row' is reserved")
+            # source.columns: the stream's columns, one per op column, in op column order (the row
+            # provider projects stream rows with it). script_id is null only between mapping
+            # (scripts.mapping) and binding to a stored script (scripts.mapping.bind_script);
+            # a bulk_insert with a null script_id has no rows to read.
             src = op.get("source")
-            if (not isinstance(src, dict) or set(src) != {"script_id", "stream"}
-                    or not isinstance(src["script_id"], int) or isinstance(src["script_id"], bool)
-                    or not isinstance(src["stream"], str) or not src["stream"]):
-                errs.append(f"{where}: source must be {{script_id: int, stream: text}}")
+            if (not isinstance(src, dict) or set(src) != {"script_id", "stream", "columns"}
+                    or not (src["script_id"] is None
+                            or (isinstance(src["script_id"], int) and not isinstance(src["script_id"], bool)))
+                    or not isinstance(src["stream"], str) or not src["stream"]
+                    or not isinstance(src["columns"], list)):
+                errs.append(f"{where}: source must be {{script_id: int|null, stream: text, columns: [stream column]}}")
+            else:
+                for c in src["columns"]:
+                    _ident(c, "source column", errs, where)
+                if isinstance(cols, list) and len(src["columns"]) != len(cols):
+                    errs.append(f"{where}: source.columns must have one stream column per column")
             er = op.get("expected_rows")
             if not isinstance(er, int) or isinstance(er, bool) or er < 1:
                 errs.append(f"{where}: expected_rows must be a positive integer")

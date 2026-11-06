@@ -38,11 +38,13 @@ def geo():
 
 
 def bulk(expected=3, **kw):
-    return {"op": "bulk_insert", "table": "district", "columns": ["name", "population", "province_code"],
-            "source": {"script_id": 1, "stream": "district"},
-            "refs": [{"column": "province_id", "parent_table": "province", "parent_key": "code",
-                      "source_column": "province_code"}],
-            "expected_rows": expected, **kw}
+    op = {"op": "bulk_insert", "table": "district", "columns": ["name", "population", "province_code"],
+          "refs": [{"column": "province_id", "parent_table": "province", "parent_key": "code",
+                    "source_column": "province_code"}],
+          "expected_rows": expected, **kw}
+    # stream columns named like the op columns (one per op column)
+    op.setdefault("source", {"script_id": 1, "stream": "district", "columns": list(op["columns"])})
+    return op
 
 
 GOOD = [("Bang Rak", "50000", "BKK"), ("Suthep", "", "CNX"), ("Pathum Wan", "40000", "BKK")]
@@ -106,7 +108,7 @@ def test_gate_refuses_bulk_by_default(geo):
 
 def test_gate_state_checks(geo):
     st = introspect.snapshot()
-    for op in (bulk(table="nope"), {**bulk(), "columns": ["name", "ghost", "province_code"]},
+    for op in (bulk(table="nope"), bulk(columns=["name", "ghost", "province_code"]),
                {**bulk(), "refs": [{**bulk()["refs"][0], "parent_key": "ghost"}]},
                {**bulk(), "refs": [{**bulk()["refs"][0], "source_column": "zzz"}]}):
         assert not check.run([op], st, RULES, allow_bulk=True).ok
@@ -119,7 +121,7 @@ def test_sequence_advanced_after_load(geo):
 
 
 def test_explicit_pk_advances_sequence(geo):
-    op = {**bulk(), "columns": ["district_id", "name", "population", "province_code"]}
+    op = bulk(columns=["district_id", "name", "population", "province_code"])
     load([("100", "A", "1", "BKK"), ("101", "B", "2", "CNX"), ("102", "C", "3", "BKK")], op=op)
     apply([{"op": "insert_rows", "table": "district", "rows": [{"name": "Next"}]}])
     assert rows("SELECT max(district_id) AS m FROM master.district")[0]["m"] == 103
@@ -144,7 +146,7 @@ def test_dry_run_restores_sequences(geo):
     before = seq_state()
     load(GOOD, dry_run=True)
     assert seq_state() == before
-    op = {**bulk(), "columns": ["district_id", "name", "population", "province_code"]}
+    op = bulk(columns=["district_id", "name", "population", "province_code"])
     load([("100", "A", "1", "BKK"), ("101", "B", "2", "CNX"), ("102", "C", "3", "BKK")], op=op, dry_run=True)
     assert seq_state() == before
     load(GOOD)
@@ -178,7 +180,7 @@ def test_too_many_rows_stops_early(geo):
 
 
 def test_reserved_column_name(geo):
-    res = check.run([{**bulk(), "columns": ["__row", "province_code"]}], introspect.snapshot(), RULES, allow_bulk=True)
+    res = check.run([bulk(columns=["__row", "province_code"])], introspect.snapshot(), RULES, allow_bulk=True)
     assert not res.ok and any("reserved" in e for e in res.errors)
 
 
@@ -193,7 +195,7 @@ def test_two_bulk_ops_in_one_execute(geo):
 
 def test_empty_string_becomes_null_for_non_text(geo):
     apply([{"op": "add_column", "table": "district", "column": col("extra", "jsonb")}])
-    op = {**bulk(), "columns": ["name", "extra", "population", "province_code"]}
+    op = bulk(columns=["name", "extra", "population", "province_code"])
     load([("", "", "", "BKK")], op=bulk(1, **{"columns": op["columns"]}))
     r = rows("SELECT name, extra, population FROM master.district")[0]
     assert r == {"name": "", "extra": None, "population": None}
@@ -234,7 +236,7 @@ def test_table_without_pk_and_without_is_active_is_irreversible():
     from schema.conn import rw_connection
     with rw_connection() as c:
         c.execute("CREATE TABLE master.plain (name text, qty integer)")
-    op = {"op": "bulk_insert", "table": "plain", "columns": ["name", "qty"], "source": {"script_id": 1, "stream": "s"},
+    op = {"op": "bulk_insert", "table": "plain", "columns": ["name", "qty"], "source": {"script_id": 1, "stream": "s", "columns": ["name", "qty"]},
           "refs": [], "expected_rows": 2}
     st = introspect.snapshot()
     res = check.run([op], st, RULES, actor=ME, allow_bulk=True)
@@ -248,7 +250,7 @@ def test_no_is_active_role_gives_none_reverse():
     from schema.conn import rw_connection
     with rw_connection() as c:
         c.execute("CREATE TABLE master.thing (thing_id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name text)")
-    op = {"op": "bulk_insert", "table": "thing", "columns": ["name"], "source": {"script_id": 1, "stream": "s"},
+    op = {"op": "bulk_insert", "table": "thing", "columns": ["name"], "source": {"script_id": 1, "stream": "s", "columns": ["name"]},
           "refs": [], "expected_rows": 1}
     st = introspect.snapshot()
     res = check.run([op], st, RULES, actor=ME, allow_bulk=True)

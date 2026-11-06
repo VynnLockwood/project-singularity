@@ -27,20 +27,15 @@ import re
 from decimal import Decimal, InvalidOperation
 from dataclasses import dataclass, field
 from itertools import chain
-from typing import Callable, Iterable, Iterator
+from typing import Callable, Iterator
 
 import pglast
 from pglast import ast, enums
 from pglast.stream import RawStream
 
+from scripts.copyparse import RowStreamError, ScriptIssue, iter_copy_rows  # noqa: F401 (re-exported)
+from scripts.copyparse import excerpt as _excerpt, iter_lines as _iter_lines
 from gate.operations import DEFAULT_FUNCS, IDENT_RE, TYPE_RE, check_expression, normalize_type
-
-
-@dataclass
-class ScriptIssue:
-    line: int
-    statement: str
-    message: str
 
 
 @dataclass
@@ -57,61 +52,6 @@ class ParsedScript:
     streams: dict[str, RowStream] = field(default_factory=dict)
     ignored: list[str] = field(default_factory=list)
     errors: list[ScriptIssue] = field(default_factory=list)
-
-
-# ---------------------------------------------------------------- COPY text format
-
-_COPY_ESC = re.compile(r"\\(x[0-9A-Fa-f]{1,2}|[0-7]{1,3}|.)", re.S)
-_COPY_CHARS = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v"}
-
-
-def _copy_unescape(m: re.Match) -> str:
-    s = m.group(1)
-    if s[0] == "x" and len(s) > 1:
-        return chr(int(s[1:], 16))
-    if s[0] in "01234567":
-        return chr(int(s, 8) & 0xFF)
-    return _COPY_CHARS.get(s, s)
-
-
-class RowStreamError(Exception):
-    """Raised *while iterating* a RowStream when a data row is bad (e.g. wrong number of fields).
-
-    COPY rows are read lazily, so this cannot be reported by parse_script; consumers (mapping,
-    validation, bulk load) must catch it and report `.issue` (it carries the data line number).
-    """
-
-    def __init__(self, issue: ScriptIssue):
-        super().__init__(f"line {issue.line}: {issue.message}")
-        self.issue = issue
-
-
-def iter_copy_rows(lines: Iterable[str], *, width: int | None = None,
-                   first_line: int = 1) -> Iterator[list[str | None]]:
-    """Rows of a COPY text-format block: tab separated, `\\N` = NULL, backslash escapes; stops at `\\.`.
-
-    With `width`, a row with a different number of fields raises RowStreamError (line numbers count
-    from `first_line`, the script line of the first data line).
-    """
-    for i, line in enumerate(lines):
-        if line.endswith("\r"):
-            line = line[:-1]
-        if line == "\\.":
-            return
-        fields = line.split("\t")
-        if width is not None and len(fields) != width:
-            raise RowStreamError(ScriptIssue(first_line + i, _excerpt(line),
-                                             f"row has {len(fields)} fields, expected {width}"))
-        yield [None if f == "\\N" else (_COPY_ESC.sub(_copy_unescape, f) if "\\" in f else f) for f in fields]
-
-
-def _iter_lines(text: str, start: int, end: int) -> Iterator[str]:
-    while start < end:
-        j = text.find("\n", start, end)
-        if j == -1:
-            j = end
-        yield text[start:j]
-        start = j + 1
 
 
 # ---------------------------------------------------------------- splitter
@@ -284,11 +224,6 @@ def _sql(node) -> str:
         return RawStream()(node)
     except Exception:  # noqa: BLE001 - only used for messages
         return type(node).__name__
-
-
-def _excerpt(s: str, limit: int = 200) -> str:
-    s = " ".join(s.split())
-    return s if len(s) <= limit else s[: limit - 3] + "..."
 
 
 _SIMPLE_TYPES = {

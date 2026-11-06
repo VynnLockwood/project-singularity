@@ -431,7 +431,7 @@ def test_revert_of_large_bulk_load_uses_script_cap(approver):
     ops = [{"op": "create_table", "name": "big", "columns": [col("label")]}]
     service.approve(approver, service.propose(approver, ops, source="web").pk)
     st = introspect.snapshot()
-    op = {"op": "bulk_insert", "table": "big", "columns": ["label"], "source": {"script_id": 1, "stream": "s"},
+    op = {"op": "bulk_insert", "table": "big", "columns": ["label"], "source": {"script_id": 1, "stream": "s", "columns": ["label"]},
           "refs": [], "expected_rows": 1500}
     res = gcheck.run([op], st, rules_service_active(), actor=approver.email, allow_bulk=True)
     assert res.ok, res.errors
