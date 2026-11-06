@@ -78,6 +78,13 @@ def _col_comment(conn, table: str, column: str) -> str:
     return (row["c"] if row else None) or ""
 
 
+def _table_comment(conn, table: str) -> str:
+    row = conn.execute(
+        "SELECT obj_description(format('master.%%I', %s::text)::regclass) AS c", (table,)
+    ).fetchone()
+    return (row["c"] if row else None) or ""
+
+
 def _run_op(conn, op: dict, before: dict, stmts, max_rows: int):
     """Execute one operation; return its reverse op(s) (a list) or None if irreversible."""
     k = op["op"]
@@ -89,6 +96,8 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int):
         prev_type = _col_type(conn, t, op["column"])
     elif k == "set_column_comment":
         prev_comment = _col_comment(conn, t, op["column"])
+    elif k == "set_table_comment":
+        prev_comment = _table_comment(conn, t)
     elif k == "update_rows" and pk_of(before, t):
         rows_before = _before_rows(conn, t, op["where"], list(op["set"]), max_rows, pk_of(before, t))
     elif k == "deactivate_rows" and pk_of(before, t):
@@ -124,6 +133,10 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int):
         return [{"op": "alter_column_type", "table": t, "column": op["column"], "type": allowed}] if allowed else None
     if k == "set_column_comment":
         return [{"op": "set_column_comment", "table": t, "column": op["column"], "comment": prev_comment}]
+    if k == "set_table_comment":
+        return [{"op": "set_table_comment", "table": t, "comment": prev_comment}]
+    if k == "add_check":
+        return [{"op": "drop_constraint", "table": t, "name": op["name"], "reason": why}]
     if k == "add_index":
         return [{"op": "drop_index", "name": op.get("name") or index_name(t, op["columns"]), "reason": why}]
     if k == "add_unique":

@@ -21,10 +21,21 @@ TYPE_RE = re.compile(
 # Defaults: JSON literals or one of these function calls. Nothing free-form.
 DEFAULT_FUNCS = {"now()", "gen_random_uuid()", "current_date"}
 
+ON_DELETE_VALUES = ("restrict", "cascade", "set null", "no action")
+
+# add_check expressions: the only functions and operators they may use.
+CHECK_FUNCS = {"char_length", "length", "lower", "upper", "coalesce", "abs"}
+CHECK_OPS = {"=", "<>", "!=", "<", ">", "<=", ">=", "~", "~*", "!~", "!~*", "+", "-", "*", "/", "%", "||"}
+CHECK_COMPARISONS = {"=", "<>", "!=", "<", ">", "<=", ">=", "~", "~*", "!~", "!~*"}
+CHECK_CAST_TYPES = {"text", "varchar", "int2", "int4", "int8", "numeric", "float4", "float8", "bool", "date",
+                    "timestamp", "timestamptz", "uuid"}
+MAX_CHECK_LEN = 1000
+
 SCHEMA_OPS = {
     "create_table", "add_column", "rename_table", "rename_column", "alter_column_type",
     "set_column_comment", "add_index", "add_foreign_key", "add_unique",
     "drop_column", "drop_table", "drop_index", "drop_constraint",
+    "add_check", "set_table_comment",
 }
 DATA_OPS = {"insert_rows", "update_rows", "deactivate_rows"}
 ALL_OPS = SCHEMA_OPS | DATA_OPS
@@ -76,12 +87,133 @@ def _check_column(col, errs: list[str], where: str, *, allow_references: bool = 
         errs.append(f"{where}: comment must be text")
     ref = col.get("references")
     if ref is not None:
-        if not allow_references or not isinstance(ref, dict) or set(ref) - {"table", "column"}:
-            errs.append(f"{where}: references must be {{table, column}}")
+        if not allow_references or not isinstance(ref, dict) or set(ref) - {"table", "column", "on_delete"}:
+            errs.append(f"{where}: references must be {{table, column?, on_delete?}}")
         else:
             _ident(ref.get("table"), "references.table", errs, where)
+            _on_delete(ref, errs, where)
             if ref.get("column") is not None:
                 _ident(ref["column"], "references.column", errs, where)
+
+
+def _on_delete(d: dict, errs: list[str], where: str) -> None:
+    if "on_delete" in d and d["on_delete"] not in ON_DELETE_VALUES:
+        errs.append(f"{where}: on_delete must be one of {list(ON_DELETE_VALUES)}")
+
+
+def check_expression(expr: str, columns: set[str]) -> list[str]:
+    """Problems with a CHECK expression (empty list = safe to render).
+
+    The text must parse (pglast) as exactly one boolean expression that only uses
+    plain column references of the table, constants, allow-listed operators and
+    functions, and no subqueries. Anything not explicitly handled is rejected.
+    """
+    import pglast
+    from pglast import ast, enums
+
+    if not isinstance(expr, str) or not expr.strip():
+        return ["expression must be non-empty text"]
+    if len(expr) > MAX_CHECK_LEN:
+        return [f"expression is longer than {MAX_CHECK_LEN} characters"]
+    if "--" in expr or "/*" in expr:
+        return ["expression must not contain comments"]
+    try:
+        stmts = pglast.parse_sql(f"SELECT ({expr})")
+    except pglast.parser.ParseError as exc:
+        return [f"expression is not valid SQL: {exc}"]
+    sel = stmts[0].stmt if len(stmts) == 1 else None
+    plain = (
+        isinstance(sel, ast.SelectStmt) and sel.targetList and len(sel.targetList) == 1
+        and not any(getattr(sel, f) for f in (
+            "fromClause", "whereClause", "groupClause", "havingClause", "windowClause", "sortClause",
+            "limitCount", "limitOffset", "lockingClause", "withClause", "intoClause", "distinctClause",
+            "valuesLists", "larg", "rarg"))
+    )
+    if not plain:
+        return ["expression must be a single expression"]
+    top = sel.targetList[0].val
+
+    errs: list[str] = []
+    K = enums.A_Expr_Kind
+
+    def bad(msg):
+        if msg not in errs:
+            errs.append(msg)
+
+    def op_name(e) -> str | None:
+        names = [n.sval for n in e.name] if e.name else []
+        return names[0] if len(names) == 1 and isinstance(e.name[0], ast.String) else None
+
+    def walk(n):
+        if isinstance(n, ast.ColumnRef):
+            f = n.fields
+            if len(f) != 1 or not isinstance(f[0], ast.String):
+                bad("column references must be a plain column name of the table")
+            elif f[0].sval not in columns:
+                bad(f"unknown column {f[0].sval!r}")
+        elif isinstance(n, ast.A_Const):
+            pass
+        elif isinstance(n, ast.BoolExpr):
+            for a in n.args:
+                walk(a)
+        elif isinstance(n, ast.NullTest | ast.BooleanTest):
+            walk(n.arg)
+        elif isinstance(n, ast.CoalesceExpr):
+            for a in n.args:
+                walk(a)
+        elif isinstance(n, ast.TypeCast):
+            t = [x.sval for x in n.typeName.names if isinstance(x, ast.String)]
+            if n.typeName.setof or n.typeName.arrayBounds or t[-1:] and t[-1] not in CHECK_CAST_TYPES or len(t) > 2:
+                bad("type cast to this type is not allowed")
+            walk(n.arg)
+        elif isinstance(n, ast.FuncCall):
+            names = [x.sval for x in n.funcname if isinstance(x, ast.String)]
+            fname = names[-1] if names else None
+            if (len(n.funcname) > 2 or (len(names) == 2 and names[0] != "pg_catalog")
+                    or fname not in CHECK_FUNCS):
+                bad(f"function {'.'.join(names)}() is not allowed (allowed: {sorted(CHECK_FUNCS)})")
+            if (n.agg_order or n.agg_filter or n.over or n.agg_within_group or n.agg_star
+                    or n.agg_distinct or n.func_variadic):
+                bad("aggregate, window and special function forms are not allowed")
+            for a in n.args or ():
+                walk(a)
+        elif isinstance(n, ast.A_Expr):
+            name = op_name(n)
+            if n.kind == K.AEXPR_OP:
+                if name not in CHECK_OPS:
+                    bad(f"operator {name!r} is not allowed")
+            elif n.kind in (K.AEXPR_IN, K.AEXPR_LIKE, K.AEXPR_ILIKE, K.AEXPR_SIMILAR, K.AEXPR_BETWEEN,
+                            K.AEXPR_NOT_BETWEEN, K.AEXPR_BETWEEN_SYM, K.AEXPR_NOT_BETWEEN_SYM,
+                            K.AEXPR_DISTINCT, K.AEXPR_NOT_DISTINCT):
+                pass
+            else:
+                bad("this operator form is not allowed")
+            walk(n.lexpr)
+            if isinstance(n.rexpr, tuple | list):
+                for a in n.rexpr:
+                    walk(a)
+            else:
+                walk(n.rexpr)
+        elif n is None:
+            pass
+        else:
+            bad(f"{type(n).__name__} is not allowed in a check expression (no subqueries, parameters or other constructs)")
+
+    walk(top)
+    if errs:
+        return errs
+
+    # must be boolean: a comparison/logic/null-test node, a boolean constant, or a bool column/cast
+    ok = isinstance(top, ast.BoolExpr | ast.NullTest | ast.BooleanTest)
+    if isinstance(top, ast.A_Expr):
+        ok = top.kind != K.AEXPR_OP or op_name(top) in CHECK_COMPARISONS
+    elif isinstance(top, ast.A_Const):
+        ok = isinstance(top.val, ast.Boolean)
+    elif isinstance(top, ast.TypeCast):
+        ok = top.typeName.names[-1].sval == "bool"
+    if not ok:
+        return ["expression must be a boolean condition (for example a comparison)"]
+    return []
 
 
 def _check_where(w, errs: list[str], where: str) -> None:
@@ -192,7 +324,8 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
             if "unique" in op and not isinstance(op["unique"], bool):
                 errs.append(f"{where}: unique must be true or false")
         elif kind == "add_foreign_key":
-            keys("table", "column", "ref_table", "ref_column", "name")
+            keys("table", "column", "ref_table", "ref_column", "name", "on_delete")
+            _on_delete(op, errs, where)
             _ident(op.get("table"), "table", errs, where)
             _ident(op.get("column"), "column", errs, where)
             _ident(op.get("ref_table"), "ref_table", errs, where)
@@ -200,6 +333,17 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
                 _ident(op["ref_column"], "ref_column", errs, where)
             if op.get("name") is not None:
                 _ident(op["name"], "name", errs, where)
+        elif kind == "add_check":
+            keys("table", "name", "expression")
+            _ident(op.get("table"), "table", errs, where)
+            _ident(op.get("name"), "name", errs, where)
+            if not isinstance(op.get("expression"), str) or not op["expression"].strip():
+                errs.append(f"{where}: expression must be non-empty text")
+        elif kind == "set_table_comment":
+            keys("table", "comment")
+            _ident(op.get("table"), "table", errs, where)
+            if not isinstance(op.get("comment"), str):
+                errs.append(f"{where}: comment must be text")
         elif kind == "drop_column":
             keys("table", "column", "reason")
             _ident(op.get("table"), "table", errs, where)

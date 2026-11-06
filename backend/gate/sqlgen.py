@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
-from .operations import DEFAULT_FUNCS, normalize_type
+from .operations import DEFAULT_FUNCS, ON_DELETE_VALUES, normalize_type
 from .conventions import Conventions
 from .state import fk_name, index_name, pk_of, ref_column, role_of, unique_name, walk
 
@@ -35,6 +35,15 @@ def lit(v):
     return sql.Literal(v)
 
 
+def _on_delete(d: dict) -> sql.Composable:
+    """ON DELETE clause from an allow-listed value (checked in gate.operations), or nothing."""
+    v = d.get("on_delete")
+    if v is None:
+        return sql.SQL("")
+    assert v in ON_DELETE_VALUES
+    return sql.SQL(" ON DELETE " + v.upper())
+
+
 def _col_def(table: str, c: dict, state: dict | None = None, own_cols=None,
              conv: Conventions | None = None) -> sql.Composable:
     parts = [sql.Identifier(c["name"]), sql.SQL(normalize_type(c["type"]))]
@@ -53,10 +62,11 @@ def _col_def(table: str, c: dict, state: dict | None = None, own_cols=None,
     ref = c.get("references")
     if ref:
         parts.append(
-            sql.SQL("CONSTRAINT {} REFERENCES {} ({})").format(
+            sql.SQL("CONSTRAINT {} REFERENCES {} ({}){}").format(
                 sql.Identifier(fk_name(table, c["name"])),
                 tbl(ref["table"]),
                 sql.Identifier(ref.get("column") or ref_column(state or {}, ref, conv, table, own_cols)),
+                _on_delete(ref),
             )
         )
     return sql.SQL(" ").join(parts)
@@ -151,12 +161,26 @@ def statements_for(op: dict, state_before: dict, actor: str | None, conv: Conven
         name = op.get("name") or fk_name(op["table"], op["column"])
         return [
             Stmt(
-                S("ALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({})").format(
+                S("ALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({}){}").format(
                     tbl(op["table"]), I(name), I(op["column"]),
                     tbl(op["ref_table"]), I(op.get("ref_column") or pk_of(state_before, op["ref_table"])),
+                    _on_delete(op),
                 )
             )
         ]
+
+    if k == "add_check":
+        # op["expression"] already passed gate.operations.check_expression (state.apply_op) before reaching here
+        return [
+            Stmt(
+                S("ALTER TABLE {} ADD CONSTRAINT {} CHECK (").format(tbl(op["table"]), I(op["name"]))
+                + S(op["expression"].strip())
+                + S(")")
+            )
+        ]
+
+    if k == "set_table_comment":
+        return [Stmt(S("COMMENT ON TABLE {} IS {}").format(tbl(op["table"]), lit(op["comment"])))]
 
     if k == "drop_column":
         return [Stmt(S("ALTER TABLE {} DROP COLUMN {}").format(tbl(op["table"]), I(op["column"])))]
@@ -259,7 +283,12 @@ def describe(op: dict) -> str:
     if k == "add_unique":
         return f"+ add unique constraint on {op['table']} ({', '.join(op['columns'])})"
     if k == "add_foreign_key":
-        return f"+ add foreign key {op['table']}.{op['column']} -> {op['ref_table']}.{op.get('ref_column') or '<primary key>'}"
+        return f"+ add foreign key {op['table']}.{op['column']} -> {op['ref_table']}.{op.get('ref_column') or '<primary key>'}" + (
+            f" on delete {op['on_delete']}" if op.get("on_delete") else "")
+    if k == "add_check":
+        return f"+ add check {op['name']} on {op['table']}: {op['expression']}"
+    if k == "set_table_comment":
+        return f"~ set comment on table {op['table']}"
     if k == "drop_column":
         return f"- drop column {op['table']}.{op['column']}  (reason: {op['reason']})"
     if k == "drop_table":

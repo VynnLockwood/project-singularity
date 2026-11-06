@@ -11,7 +11,7 @@ import copy
 from typing import Iterator
 
 from .conventions import Conventions
-from .operations import normalize_type
+from .operations import check_expression, normalize_type
 
 
 def _trim(s: str) -> str:
@@ -119,7 +119,8 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
                 elif rt == name and rc not in {x["name"] for x in op["columns"]}:
                     err(f"column {c['name']} references missing column {rt}.{rc}")
                 constraints.add(fk_name(name, c["name"]))
-        state[name] = {"columns": cols, "indexes": set(), "constraints": constraints, "pk": pk}
+        state[name] = {"columns": cols, "indexes": set(), "constraints": constraints, "pk": pk,
+                       "comment": op.get("comment")}
         refresh_roles(state, name, conv)
 
     elif kind == "add_column":
@@ -196,6 +197,19 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
             if n in state[t]["constraints"]:
                 err(f"constraint {n!r} already exists")
             state[t]["constraints"].add(n)
+
+    elif kind == "add_check":
+        t, n = op["table"], op["name"]
+        if need_table(t):
+            for problem in check_expression(op["expression"], set(state[t]["columns"])):
+                err(problem)
+            if n in state[t]["constraints"]:
+                err(f"constraint {n!r} already exists")
+            state[t]["constraints"].add(n)
+
+    elif kind == "set_table_comment":
+        if need_table(op["table"]):
+            state[op["table"]]["comment"] = op["comment"]
 
     elif kind == "drop_column":
         t, c = op["table"], op["column"]
