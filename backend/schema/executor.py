@@ -7,6 +7,7 @@ change through the gate.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable, Iterator
 
 import psycopg
 from psycopg import sql
@@ -78,10 +79,124 @@ def _col_comment(conn, table: str, column: str) -> str:
     return (row["c"] if row else None) or ""
 
 
-def _run_op(conn, op: dict, before: dict, stmts, max_rows: int):
+def _table_comment(conn, table: str) -> str:
+    row = conn.execute(
+        "SELECT obj_description(format('master.%%I', %s::text)::regclass) AS c", (table,)
+    ).fetchone()
+    return (row["c"] if row else None) or ""
+
+
+TMP = sql.Identifier("_bulk_src")
+ROWNO = sql.Identifier("__row")
+TEXTY = ("text", "character varying", "character", "bpchar")
+
+
+def _cast(col: sql.Composable, pg_type: str) -> sql.Composable:
+    """tmp column -> target type; empty text means NULL for every non-text type.
+
+    `pg_type` is never user input: it is format_type() output for an existing column
+    (introspected in this transaction), so pasting it as SQL is safe.
+    """
+    if pg_type.split("(")[0] in TEXTY:
+        return sql.SQL("{}::{}").format(col, sql.SQL(pg_type))
+    return sql.SQL("NULLIF({}, '')::{}").format(col, sql.SQL(pg_type))
+
+
+def _bulk_insert(conn, op: dict, before: dict, actor: str | None, row_source) -> list[dict] | None:
+    """COPY the rows into a temp table of text columns, then INSERT ... SELECT into the target.
+
+    Temp-table columns are exactly op["columns"], in that order, and row_source(op) must yield
+    tuples (str | None) in that order (more than expected_rows rows aborts early). Empty strings
+    load as NULL for every non-text target type (text, varchar, char keep ''). Columns named as a ref's source_column only feed the join;
+    every other column is inserted directly into the column of the same name.
+    """
+    t = op["table"]
+    if row_source is None:
+        raise ApplyError("bulk_insert needs a row source (it only runs from script intake)")
+    pk = pk_of(before, t)
+    refs = op.get("refs", [])
+    carriers = {r["source_column"] for r in refs}
+    direct = [c for c in op["columns"] if c not in carriers]
+    I = sql.Identifier
+
+    conn.execute(sql.SQL("CREATE TEMP TABLE {} ({}, {} bigserial) ON COMMIT DROP").format(
+        TMP, sql.SQL(", ").join(sql.SQL("{} text").format(I(c)) for c in op["columns"]), ROWNO))
+    width = len(op["columns"])
+    with conn.cursor() as cur:
+        with cur.copy(sql.SQL("COPY {} ({}) FROM STDIN").format(TMP, sql.SQL(", ").join(I(c) for c in op["columns"]))) as cp:
+            for n, row in enumerate(row_source(op), 1):
+                if n > op["expected_rows"]:
+                    raise ApplyError(f"bulk_insert into {t}: source has more than the expected {op['expected_rows']} rows")
+                if len(row) != width:
+                    raise ApplyError(f"bulk_insert source row has {len(row)} values, expected {width}")
+                cp.write_row(row)
+    loaded = conn.execute(sql.SQL("SELECT count(*) AS n FROM {}").format(TMP)).fetchone()["n"]
+    if loaded != op["expected_rows"]:
+        raise ApplyError(f"bulk_insert into {t}: source has {loaded} rows, expected {op['expected_rows']}")
+
+    targets: list[sql.Composable] = []
+    names = [*direct, *(r["column"] for r in refs)]
+    values: list[sql.Composable] = []
+    joins: list[sql.Composable] = []
+    for c in direct:
+        ty = _col_type(conn, t, c)
+        if ty is None:
+            raise ApplyError(f"column {t}.{c} does not exist")
+        targets.append(I(c))
+        values.append(_cast(sql.SQL("s.{}").format(I(c)), ty))
+    for i, r in enumerate(refs):
+        pt, pkey = r["parent_table"], r["parent_key"]
+        ppk = pk_of(before, pt)
+        kty = _col_type(conn, pt, pkey)
+        if ppk is None or kty is None:
+            raise ApplyError(f"cannot resolve {pt}.{pkey}")
+        key = _cast(sql.SQL("s.{}").format(I(r["source_column"])), kty)
+        alias = sql.Identifier(f"p{i}")
+        on = sql.SQL("{}.{} = {}").format(alias, I(pkey), key)
+        orphans = conn.execute(
+            sql.SQL("SELECT count(*) AS n, min(s.{src}) AS example FROM {tmp} s LEFT JOIN {pt} {a} ON {on} "
+                    "WHERE s.{src} IS NOT NULL AND s.{src} <> '' AND {a}.{ppk} IS NULL").format(
+                src=I(r["source_column"]), tmp=TMP, pt=sqlgen.tbl(pt), a=alias, on=on, ppk=I(ppk))
+        ).fetchone()
+        if orphans["n"]:
+            raise ApplyError(
+                f"bulk_insert into {t}: {orphans['n']} row(s) refer to a missing {pt}.{pkey} (for example {orphans['example']!r})")
+        targets.append(I(r["column"]))
+        values.append(sql.SQL("{}.{}").format(alias, I(ppk)))
+        joins.append(sql.SQL("LEFT JOIN {} {} ON {}").format(sqlgen.tbl(pt), alias, on))
+    by = role_of(before, t, "created_by")
+    if actor and by and by not in names:
+        targets.append(I(by))
+        values.append(sql.Literal(actor))
+
+    stmt = sql.SQL("INSERT INTO {} ({}) SELECT {} FROM {} s {} ORDER BY s.{}{}").format(
+        sqlgen.tbl(t), sql.SQL(", ").join(targets), sql.SQL(", ").join(values), TMP, sql.SQL(" ").join(joins), ROWNO,
+        sql.SQL(" RETURNING {}").format(I(pk)) if pk else sql.SQL(""))
+    cur = conn.execute(stmt)
+    ids = [r[pk] for r in cur.fetchall()] if pk else []
+    if cur.rowcount != op["expected_rows"]:
+        raise ApplyError(f"bulk_insert into {t}: inserted {cur.rowcount} rows, expected {op['expected_rows']}")
+    conn.execute(sql.SQL("DROP TABLE {}").format(TMP))
+
+    if pk:
+        # explicit ids (identity BY DEFAULT / serial) leave the sequence behind: move it up to max(pk)
+        seq = conn.execute("SELECT pg_get_serial_sequence(format('master.%%I', %s::text), %s) AS s", (t, pk)).fetchone()["s"]
+        if seq:
+            conn.execute(
+                sql.SQL("SELECT setval(%s::regclass, m) FROM (SELECT max({}) AS m FROM {}) x "
+                        "WHERE m IS NOT NULL AND m > coalesce(pg_sequence_last_value(%s::regclass), 0)").format(
+                    I(pk), sqlgen.tbl(t)), (seq, seq))
+    if ids and role_of(before, t, "is_active"):
+        return [{"op": "deactivate_rows", "table": t, "where": {pk: ids}}]
+    return None
+
+
+def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_source=None):
     """Execute one operation; return its reverse op(s) (a list) or None if irreversible."""
     k = op["op"]
     t = op.get("table")
+    if k == "bulk_insert":
+        return _bulk_insert(conn, op, before, actor, row_source)
 
     # --- capture what we need before changing anything
     prev_type = prev_comment = rows_before = None
@@ -89,6 +204,8 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int):
         prev_type = _col_type(conn, t, op["column"])
     elif k == "set_column_comment":
         prev_comment = _col_comment(conn, t, op["column"])
+    elif k == "set_table_comment":
+        prev_comment = _table_comment(conn, t)
     elif k == "update_rows" and pk_of(before, t):
         rows_before = _before_rows(conn, t, op["where"], list(op["set"]), max_rows, pk_of(before, t))
     elif k == "deactivate_rows" and pk_of(before, t):
@@ -124,6 +241,10 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int):
         return [{"op": "alter_column_type", "table": t, "column": op["column"], "type": allowed}] if allowed else None
     if k == "set_column_comment":
         return [{"op": "set_column_comment", "table": t, "column": op["column"], "comment": prev_comment}]
+    if k == "set_table_comment":
+        return [{"op": "set_table_comment", "table": t, "comment": prev_comment}]
+    if k == "add_check":
+        return [{"op": "drop_constraint", "table": t, "name": op["name"], "reason": why}]
     if k == "add_index":
         return [{"op": "drop_index", "name": op.get("name") or index_name(t, op["columns"]), "reason": why}]
     if k == "add_unique":
@@ -147,18 +268,86 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int):
     return None
 
 
+LOCK_TIMEOUT = "5s"
+STATEMENT_TIMEOUT = "120s"
+
+
+def _sequence_states(conn, tables: list[str]) -> list[dict]:
+    """Name, last value and start value of every sequence owned by (serial or identity) one of `tables`."""
+    out = []
+    for t in tables:
+        out += conn.execute(
+            "SELECT format('%%I.%%I', n.nspname, c.relname) AS name, pg_sequence_last_value(c.oid) AS last_value, "
+            "s.seqstart AS start_value FROM pg_depend d "
+            "JOIN pg_class c ON c.oid = d.objid AND c.relkind = 'S' "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_sequence s ON s.seqrelid = c.oid "
+            "WHERE d.classid = 'pg_class'::regclass AND d.refclassid = 'pg_class'::regclass "
+            "AND d.refobjid = format('master.%%I', %s::text)::regclass AND d.deptype IN ('a', 'i')",
+            (t, )).fetchall()
+    return out
+
+
+def _restore_sequences(conn, states: list[dict]) -> None:
+    """Sequences are not rolled back with a transaction: put each one back as it was.
+
+    Only safe while the caller still holds a lock that keeps other writers out of the owning tables.
+    """
+    for s in states:
+        if s["last_value"] is None:
+            conn.execute("SELECT setval(%s::regclass, %s, false)", (s["name"], s["start_value"]))
+        else:
+            conn.execute("SELECT setval(%s::regclass, %s, true)", (s["name"], s["last_value"]))
+
+
+def _insert_targets(ops: list[dict], state: dict) -> list[str]:
+    """Existing tables that insert_rows / bulk_insert write to (the ones whose sequences a run advances)."""
+    seen: list[str] = []
+    for op in ops:
+        t = op.get("table")
+        if op["op"] in ("insert_rows", "bulk_insert") and t in state and t not in seen:
+            seen.append(t)
+    return seen
+
+
 def execute(ops: list[dict], state: dict, actor: str | None, *, max_rows: int = 1000,
-            rules: list[dict]) -> ExecResult:
-    """Run `ops` in one transaction as the read/write role. Raises ApplyError on any failure."""
+            rules: list[dict], row_source: Callable[[dict], Iterator[tuple]] | None = None,
+            dry_run: bool = False) -> ExecResult:
+    """Run `ops` in one transaction as the read/write role. Raises ApplyError on any failure.
+
+    row_source(op) feeds bulk_insert ops (see _bulk_insert).
+
+    dry_run runs everything, then rolls back, and returns the same ExecResult a real run would.
+    Sequences are not transactional, so a dry run first takes SHARE ROW EXCLUSIVE locks on every
+    existing table that insert_rows / bulk_insert write to (blocking concurrent writers; a busy
+    table fails with ApplyError after LOCK_TIMEOUT), snapshots the sequences those tables own,
+    and restores them before rolling back, also when an operation fails part-way.
+    """
     reverse: list[list[dict] | None] = []
     count = 0
     try:
         with rw_connection() as conn:
-            conn.execute("SET LOCAL lock_timeout = '5s'")
-            conn.execute("SET LOCAL statement_timeout = '120s'")
-            for op, before, stmts in sqlgen.plan(ops, state, actor, Conventions.from_rules(rules)):
-                reverse.append(_run_op(conn, op, before, stmts, max_rows))
-                count += len(stmts)
+            conn.execute(sql.SQL("SET LOCAL lock_timeout = {}").format(sql.Literal(LOCK_TIMEOUT)))
+            conn.execute(sql.SQL("SET LOCAL statement_timeout = {}").format(sql.Literal(STATEMENT_TIMEOUT)))
+            seqs: list[dict] = []
+            if dry_run:
+                targets = _insert_targets(ops, state)
+                for t in targets:
+                    conn.execute(sql.SQL("LOCK TABLE {} IN SHARE ROW EXCLUSIVE MODE").format(sqlgen.tbl(t)))
+                seqs = _sequence_states(conn, targets)
+                conn.execute("SAVEPOINT dry_run_ops")
+            try:
+                for op, before, stmts in sqlgen.plan(ops, state, actor, Conventions.from_rules(rules)):
+                    reverse.append(_run_op(conn, op, before, stmts, max_rows, actor, row_source))
+                    count += len(stmts) or 1
+            except BaseException:
+                if dry_run:
+                    # leave the aborted state (locks stay held), then undo the sequence moves
+                    conn.execute("ROLLBACK TO SAVEPOINT dry_run_ops")
+                    _restore_sequences(conn, seqs)
+                raise
+            if dry_run:
+                _restore_sequences(conn, seqs)
+                conn.rollback()
     except ApplyError:
         raise
     except psycopg.Error as exc:

@@ -27,6 +27,7 @@ INSTALLED_APPS = [
     "chat",
     "search",
     "duplicates",
+    "scripts",
 ]
 
 MIDDLEWARE = [
@@ -76,6 +77,8 @@ MASTER_DB = {
     "rw_password": os.environ.get("DB_MASTER_RW_PASSWORD", ""),
 }
 BACKUP_DIR = os.environ.get("BACKUP_DIR", "/backups")
+# Uploaded SQL scripts (mode 0700 directory, random file names).
+SCRIPT_DIR = os.environ.get("SCRIPT_DIR", "/scripts")
 
 # WebSocket events (approval popups, queue counts). Redis in the stack; in memory for local dev and tests.
 _redis = os.environ.get("REDIS_URL")

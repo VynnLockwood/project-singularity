@@ -12,11 +12,44 @@ from dataclasses import dataclass
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
-from .operations import DEFAULT_FUNCS, normalize_type
+from .operations import DEFAULT_FUNCS, check_expression, ON_DELETE_VALUES, normalize_type
 from .conventions import Conventions
 from .state import fk_name, index_name, pk_of, ref_column, role_of, unique_name, walk
 
 SCHEMA = sql.Identifier("master")
+
+
+class UnsafeOp(ValueError):
+    """An operation reached SQL generation without passing the gate's checks."""
+
+
+def _render_check(op: dict, state_before: dict) -> sql.Composable:
+    """ADD CONSTRAINT ... CHECK, re-verifying the expression here rather than trusting earlier validation."""
+    import pglast
+    from pglast import ast, enums
+
+    t = op["table"]
+    if t not in state_before:
+        raise UnsafeOp(f"table {t!r} does not exist")
+    problems = check_expression(op["expression"], set(state_before[t]["columns"]))
+    if problems:
+        raise UnsafeOp("; ".join(problems))
+    stmt = (
+        sql.SQL("ALTER TABLE {} ADD CONSTRAINT {} CHECK (").format(tbl(t), sql.Identifier(op["name"]))
+        + sql.SQL(op["expression"].strip())
+        + sql.SQL(")")
+    )
+    try:
+        parsed = pglast.parse_sql(stmt.as_string(None))
+        a = parsed[0].stmt
+        cons = [c.def_ for c in a.cmds] if len(parsed) == 1 and isinstance(a, ast.AlterTableStmt) else []
+        ok = (len(cons) == 1 and isinstance(cons[0], ast.Constraint)
+              and cons[0].contype == enums.ConstrType.CONSTR_CHECK and cons[0].conname == op["name"])
+    except Exception as exc:  # parse errors and surprises alike are refusals
+        raise UnsafeOp(f"check expression could not be rendered safely: {exc}") from exc
+    if not ok:
+        raise UnsafeOp("check expression could not be rendered safely")
+    return stmt
 
 
 @dataclass
@@ -33,6 +66,15 @@ def lit(v):
     if isinstance(v, (dict, list)):
         return sql.Literal(Jsonb(v))
     return sql.Literal(v)
+
+
+def _on_delete(d: dict) -> sql.Composable:
+    """ON DELETE clause from an allow-listed value (checked in gate.operations), or nothing."""
+    v = d.get("on_delete")
+    if v is None:
+        return sql.SQL("")
+    assert v in ON_DELETE_VALUES
+    return sql.SQL(" ON DELETE " + v.upper())
 
 
 def _col_def(table: str, c: dict, state: dict | None = None, own_cols=None,
@@ -53,10 +95,11 @@ def _col_def(table: str, c: dict, state: dict | None = None, own_cols=None,
     ref = c.get("references")
     if ref:
         parts.append(
-            sql.SQL("CONSTRAINT {} REFERENCES {} ({})").format(
+            sql.SQL("CONSTRAINT {} REFERENCES {} ({}){}").format(
                 sql.Identifier(fk_name(table, c["name"])),
                 tbl(ref["table"]),
                 sql.Identifier(ref.get("column") or ref_column(state or {}, ref, conv, table, own_cols)),
+                _on_delete(ref),
             )
         )
     return sql.SQL(" ").join(parts)
@@ -151,12 +194,19 @@ def statements_for(op: dict, state_before: dict, actor: str | None, conv: Conven
         name = op.get("name") or fk_name(op["table"], op["column"])
         return [
             Stmt(
-                S("ALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({})").format(
+                S("ALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({}){}").format(
                     tbl(op["table"]), I(name), I(op["column"]),
                     tbl(op["ref_table"]), I(op.get("ref_column") or pk_of(state_before, op["ref_table"])),
+                    _on_delete(op),
                 )
             )
         ]
+
+    if k == "add_check":
+        return [Stmt(_render_check(op, state_before))]
+
+    if k == "set_table_comment":
+        return [Stmt(S("COMMENT ON TABLE {} IS {}").format(tbl(op["table"]), lit(op["comment"])))]
 
     if k == "drop_column":
         return [Stmt(S("ALTER TABLE {} DROP COLUMN {}").format(tbl(op["table"]), I(op["column"])))]
@@ -193,6 +243,9 @@ def statements_for(op: dict, state_before: dict, actor: str | None, conv: Conven
                 )
             )
         return out
+
+    if k == "bulk_insert":
+        return []  # loaded by schema.executor (COPY + temp table); there is no per-row SQL to show
 
     if k == "update_rows":
         t = op["table"]
@@ -259,7 +312,12 @@ def describe(op: dict) -> str:
     if k == "add_unique":
         return f"+ add unique constraint on {op['table']} ({', '.join(op['columns'])})"
     if k == "add_foreign_key":
-        return f"+ add foreign key {op['table']}.{op['column']} -> {op['ref_table']}.{op.get('ref_column') or '<primary key>'}"
+        return f"+ add foreign key {op['table']}.{op['column']} -> {op['ref_table']}.{op.get('ref_column') or '<primary key>'}" + (
+            f" on delete {op['on_delete']}" if op.get("on_delete") else "")
+    if k == "add_check":
+        return f"+ add check {op['name']} on {op['table']}: {op['expression']}"
+    if k == "set_table_comment":
+        return f"~ set comment on table {op['table']}"
     if k == "drop_column":
         return f"- drop column {op['table']}.{op['column']}  (reason: {op['reason']})"
     if k == "drop_table":
@@ -270,6 +328,8 @@ def describe(op: dict) -> str:
         return f"- drop constraint {op['table']}.{op['name']}  (reason: {op['reason']})"
     if k == "insert_rows":
         return f"~ insert {len(op['rows'])} row(s) into {op['table']}"
+    if k == "bulk_insert":
+        return f"~ bulk load {op['expected_rows']} row(s) into {op['table']} from script {op['source']['script_id']} ({op['source']['stream']})"
     if k == "update_rows":
         return f"~ update {op['table']} set {sorted(op['set'])} where {op['where']}"
     if k == "deactivate_rows":

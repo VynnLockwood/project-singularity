@@ -10,9 +10,11 @@ _OPS = (
     "create_table{name,columns[{name,type,nullable?,unique?,default?,comment?,references?{table,column?}}],comment?}, "
     "add_column{table,column}, rename_table{table,new_name}, rename_column{table,column,new_name}, "
     "alter_column_type{table,column,type}, set_column_comment{table,column,comment}, add_index{table,columns,unique?}, "
-    "add_unique{table,columns}, add_foreign_key{table,column,ref_table,ref_column?}, "
+    "add_unique{table,columns}, add_foreign_key{table,column,ref_table,ref_column?,on_delete?(restrict|cascade|set null|no action)}, "
+    "add_check{table,name,expression}, set_table_comment{table,comment}, "
     "drop_column{table,column,reason}, drop_table{table,reason}, drop_index{name,reason}, drop_constraint{table,name,reason}, "
     "insert_rows{table,rows[]}, update_rows{table,where{},set{}}, deactivate_rows{table,where{}}. "
+    "(bulk_insert exists but is produced by script intake only; never write it yourself, the gate refuses it.) "
     "Types: text, integer, bigint, smallint, boolean, date, timestamptz, timestamp, uuid, jsonb, real, "
     "double precision, numeric, numeric(p,s), varchar(n). Audit columns are added automatically."
 )

@@ -423,3 +423,26 @@ def test_naming_style_is_config_driven(approver):
     bad = service.propose(approver, [{"op": "create_table", "name": "supplierContact",
                                       "columns": [col("contact_code", unique=True)]}], source="web")
     assert bad.status == "rejected"
+
+
+def test_revert_of_large_bulk_load_uses_script_cap(approver):
+    from gate import check as gcheck
+    from schema import executor
+    ops = [{"op": "create_table", "name": "big", "columns": [col("label")]}]
+    service.approve(approver, service.propose(approver, ops, source="web").pk)
+    st = introspect.snapshot()
+    op = {"op": "bulk_insert", "table": "big", "columns": ["label"], "source": {"script_id": 1, "stream": "s", "columns": ["label"]},
+          "refs": [], "expected_rows": 1500}
+    res = gcheck.run([op], st, rules_service_active(), actor=approver.email, allow_bulk=True)
+    assert res.ok, res.errors
+    r = executor.execute(res.operations, st, approver.email, rules=rules_service_active(),
+                         row_source=lambda o: iter((str(i),) for i in range(1500)))
+    orig = Change.objects.create(requester=approver, source="script", kind="data", status=Change.Status.APPLIED,
+                                 original_operations=[op], operations=[op], reverse_operations=r.reverse_ops)
+    rev = service.revert(approver, orig.pk)
+    assert rev.status == Change.Status.APPLIED, rev.error
+    assert query.run_select("SELECT count(*) FROM master.big WHERE is_active")["rows"][0][0] == 0
+
+
+def rules_service_active():
+    return rules_service.active_rules()
