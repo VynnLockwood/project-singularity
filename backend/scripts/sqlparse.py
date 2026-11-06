@@ -26,7 +26,7 @@ import math
 import re
 from decimal import Decimal, InvalidOperation
 from dataclasses import dataclass, field
-from itertools import chain
+from itertools import chain, count, repeat
 from typing import Callable, Iterator
 
 import pglast
@@ -40,10 +40,21 @@ from gate.operations import DEFAULT_FUNCS, IDENT_RE, TYPE_RE, check_expression, 
 
 @dataclass
 class RowStream:
-    """Rows of one table from the script. `rows()` returns a fresh iterator each call."""
+    """Rows of one table from the script. `rows()` returns a fresh iterator each call.
+
+    `lines()` (when set) yields the script line of each row, in the same order as `rows()`: a COPY
+    data row is one line; every row of an INSERT ... VALUES has the INSERT's line.
+    """
     table: str
     columns: list[str]
     rows: Callable[[], Iterator[list[str | None]]]
+    lines: Callable[[], Iterator[int]] | None = None
+
+    def numbered_rows(self) -> Iterator[tuple[int | None, list[str | None]]]:
+        """(script line or None, row) pairs, lazily."""
+        if self.lines is None:
+            return ((None, r) for r in self.rows())
+        return zip(self.lines(), self.rows())
 
 
 @dataclass
@@ -52,6 +63,7 @@ class ParsedScript:
     streams: dict[str, RowStream] = field(default_factory=dict)
     ignored: list[str] = field(default_factory=list)
     errors: list[ScriptIssue] = field(default_factory=list)
+    statements: int = 0  # statements and psql meta lines seen (lone `;` not counted)
 
 
 # ---------------------------------------------------------------- splitter
@@ -390,6 +402,7 @@ class _Translator:
         self.comments: list[dict] = []
         self.stream_cols: dict[str, list[str]] = {}
         self.stream_src: dict[str, list[Callable[[], Iterator[list[str | None]]]]] = {}
+        self.stream_lines: dict[str, list[Callable[[], Iterator[int]]]] = {}
         self.out = ParsedScript()
 
     # --- names and schema
@@ -664,7 +677,7 @@ class _Translator:
             raise _Reject(f"{what} without a column list needs CREATE TABLE {table} earlier in the script")
         return [c["name"] for c in t["columns"]]
 
-    def _add_stream(self, table: str, columns: list[str], src) -> None:
+    def _add_stream(self, table: str, columns: list[str], src, lines) -> None:
         for c in columns:
             _ident(c, "column")
         if len(columns) != len(set(columns)):
@@ -675,6 +688,7 @@ class _Translator:
                           "all data for a table must use the same column list")
         self.stream_cols[table] = columns
         self.stream_src.setdefault(table, []).append(src)
+        self.stream_lines.setdefault(table, []).append(lines)
 
     def copy(self, s: ast.CopyStmt, data: _Data | None) -> None:
         if s.query or not s.relation:
@@ -689,9 +703,10 @@ class _Translator:
             raise _Reject("COPY has no data block")
         text, start, end, first, width = self.text, data.start, data.end, data.line, len(cols)
         self._add_stream(table, cols, lambda: iter_copy_rows(_iter_lines(text, start, end), width=width,
-                                                              first_line=first))
+                                                              first_line=first),
+                         lambda: count(first))
 
-    def insert(self, s: ast.InsertStmt) -> None:
+    def insert(self, s: ast.InsertStmt, line: int) -> None:
         if s.withClause or s.onConflictClause or s.returningClause:
             raise _Reject("INSERT with WITH / ON CONFLICT / RETURNING is not supported")
         table = self._rel(s.relation)
@@ -717,7 +732,7 @@ class _Translator:
                     raise _Reject(f"INSERT values must be constants (found {_sql(v)})")
                 row.append(None if val is None else ("true" if val is True else "false" if val is False else str(val)))
             rows.append(row)
-        self._add_stream(table, cols, lambda: iter(rows))
+        self._add_stream(table, cols, lambda: iter(rows), lambda: repeat(line, len(rows)))
 
     def create_schema(self, s: ast.CreateSchemaStmt) -> None:
         if s.schemaElts:
@@ -787,7 +802,7 @@ class _Translator:
         elif isinstance(s, ast.CopyStmt):
             self.copy(s, piece.data)
         elif isinstance(s, ast.InsertStmt):
-            self.insert(s)
+            self.insert(s, piece.line)
         elif isinstance(s, ast.SelectStmt):
             raise _Reject("SELECT is not allowed in a script (only pg_dump's set_config('search_path', ...) and "
                           "setval(...) with constant arguments are ignored)")
@@ -903,9 +918,10 @@ class _Translator:
         self.out.ops = ([self.tables[t] for t in done] + self.uniques + unique_idx + self.checks + self.fks
                         + plain_idx + self.comments)
         for table, cols in self.stream_cols.items():
-            srcs = self.stream_src[table]
+            srcs, lines = self.stream_src[table], self.stream_lines[table]
             self.out.streams[table] = RowStream(
-                table, cols, (lambda srcs=srcs: chain.from_iterable(src() for src in srcs)))
+                table, cols, (lambda srcs=srcs: chain.from_iterable(src() for src in srcs)),
+                (lambda lines=lines: chain.from_iterable(ln() for ln in lines)))
         return self.out
 
 
@@ -960,4 +976,6 @@ def parse_script(text: str) -> ParsedScript:
                                              "COPY data is not terminated by a line containing only \\."))
     if not seen:
         tr.out.errors.append(ScriptIssue(1, "", "no statements"))
-    return tr.finish()
+    out = tr.finish()
+    out.statements = seen
+    return out
