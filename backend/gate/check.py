@@ -51,7 +51,10 @@ def run(raw_ops, schema_state: dict, rule_list: list[dict], *, actor: str | None
     errors, _ = state_mod.validate(ops_out, schema_state, conv)
     res = CheckResult(ok=False, operations=ops_out, errors=errors, violations=violations, auto_added=auto)
     if not errors:
-        res.sql = sqlgen.render(ops_out, schema_state, actor, conv)
-        res.diff = [sqlgen.describe(o) for o in ops_out]
+        try:
+            res.sql = sqlgen.render(ops_out, schema_state, actor, conv)
+            res.diff = [sqlgen.describe(o) for o in ops_out]
+        except sqlgen.UnsafeOp as exc:
+            res.errors.append(str(exc))
     res.ok = not res.blocked
     return res

@@ -101,6 +101,9 @@ def _on_delete(d: dict, errs: list[str], where: str) -> None:
         errs.append(f"{where}: on_delete must be one of {list(ON_DELETE_VALUES)}")
 
 
+_ESCAPE_FUNCS = None  # filled lazily with pglast enums (see check_expression)
+
+
 def check_expression(expr: str, columns: set[str]) -> list[str]:
     """Problems with a CHECK expression (empty list = safe to render).
 
@@ -115,6 +118,7 @@ def check_expression(expr: str, columns: set[str]) -> list[str]:
         return ["expression must be non-empty text"]
     if len(expr) > MAX_CHECK_LEN:
         return [f"expression is longer than {MAX_CHECK_LEN} characters"]
+    # Intentionally conservative: comment markers are refused anywhere, even inside string literals.
     if "--" in expr or "/*" in expr:
         return ["expression must not contain comments"]
     try:
@@ -131,10 +135,16 @@ def check_expression(expr: str, columns: set[str]) -> list[str]:
     )
     if not plain:
         return ["expression must be a single expression"]
+    if sel.targetList[0].name is not None:
+        return ["expression must be a single expression (no alias)"]
     top = sel.targetList[0].val
 
     errs: list[str] = []
     K = enums.A_Expr_Kind
+    global _ESCAPE_FUNCS
+    if _ESCAPE_FUNCS is None:
+        _ESCAPE_FUNCS = {K.AEXPR_LIKE: "like_escape", K.AEXPR_ILIKE: "like_escape",
+                         K.AEXPR_SIMILAR: "similar_to_escape"}
 
     def bad(msg):
         if msg not in errs:
@@ -163,7 +173,9 @@ def check_expression(expr: str, columns: set[str]) -> list[str]:
                 walk(a)
         elif isinstance(n, ast.TypeCast):
             t = [x.sval for x in n.typeName.names if isinstance(x, ast.String)]
-            if n.typeName.setof or n.typeName.arrayBounds or t[-1:] and t[-1] not in CHECK_CAST_TYPES or len(t) > 2:
+            qualified_ok = len(t) == 1 or (len(t) == 2 and t[0] == "pg_catalog")
+            if (n.typeName.setof or n.typeName.arrayBounds or not qualified_ok
+                    or t[-1] not in CHECK_CAST_TYPES):
                 bad("type cast to this type is not allowed")
             walk(n.arg)
         elif isinstance(n, ast.FuncCall):
@@ -189,7 +201,15 @@ def check_expression(expr: str, columns: set[str]) -> list[str]:
             else:
                 bad("this operator form is not allowed")
             walk(n.lexpr)
-            if isinstance(n.rexpr, tuple | list):
+            esc = _ESCAPE_FUNCS.get(n.kind)
+            rx = n.rexpr
+            if (esc and isinstance(rx, ast.FuncCall) and not rx.agg_order and not rx.over
+                    and [x.sval for x in rx.funcname if isinstance(x, ast.String)] == ["pg_catalog", esc]
+                    and len(rx.funcname) == 2):
+                # LIKE ... ESCAPE / SIMILAR TO: the parser wraps the pattern in this function; only that spot is exempt
+                for a in rx.args or ():
+                    walk(a)
+            elif isinstance(n.rexpr, tuple | list):
                 for a in n.rexpr:
                     walk(a)
             else:
@@ -203,7 +223,8 @@ def check_expression(expr: str, columns: set[str]) -> list[str]:
     if errs:
         return errs
 
-    # must be boolean: a comparison/logic/null-test node, a boolean constant, or a bool column/cast
+    # must be boolean: a comparison/logic/null-test node, a boolean constant, or a cast to bool
+    # (a bare column is refused because types are unknown here; write `flag IS TRUE`)
     ok = isinstance(top, ast.BoolExpr | ast.NullTest | ast.BooleanTest)
     if isinstance(top, ast.A_Expr):
         ok = top.kind != K.AEXPR_OP or op_name(top) in CHECK_COMPARISONS

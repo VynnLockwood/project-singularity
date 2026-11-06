@@ -12,11 +12,44 @@ from dataclasses import dataclass
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
-from .operations import DEFAULT_FUNCS, ON_DELETE_VALUES, normalize_type
+from .operations import DEFAULT_FUNCS, check_expression, ON_DELETE_VALUES, normalize_type
 from .conventions import Conventions
 from .state import fk_name, index_name, pk_of, ref_column, role_of, unique_name, walk
 
 SCHEMA = sql.Identifier("master")
+
+
+class UnsafeOp(ValueError):
+    """An operation reached SQL generation without passing the gate's checks."""
+
+
+def _render_check(op: dict, state_before: dict) -> sql.Composable:
+    """ADD CONSTRAINT ... CHECK, re-verifying the expression here rather than trusting earlier validation."""
+    import pglast
+    from pglast import ast, enums
+
+    t = op["table"]
+    if t not in state_before:
+        raise UnsafeOp(f"table {t!r} does not exist")
+    problems = check_expression(op["expression"], set(state_before[t]["columns"]))
+    if problems:
+        raise UnsafeOp("; ".join(problems))
+    stmt = (
+        sql.SQL("ALTER TABLE {} ADD CONSTRAINT {} CHECK (").format(tbl(t), sql.Identifier(op["name"]))
+        + sql.SQL(op["expression"].strip())
+        + sql.SQL(")")
+    )
+    try:
+        parsed = pglast.parse_sql(stmt.as_string(None))
+        a = parsed[0].stmt
+        cons = [c.def_ for c in a.cmds] if len(parsed) == 1 and isinstance(a, ast.AlterTableStmt) else []
+        ok = (len(cons) == 1 and isinstance(cons[0], ast.Constraint)
+              and cons[0].contype == enums.ConstrType.CONSTR_CHECK and cons[0].conname == op["name"])
+    except Exception as exc:  # parse errors and surprises alike are refusals
+        raise UnsafeOp(f"check expression could not be rendered safely: {exc}") from exc
+    if not ok:
+        raise UnsafeOp("check expression could not be rendered safely")
+    return stmt
 
 
 @dataclass
@@ -170,14 +203,7 @@ def statements_for(op: dict, state_before: dict, actor: str | None, conv: Conven
         ]
 
     if k == "add_check":
-        # op["expression"] already passed gate.operations.check_expression (state.apply_op) before reaching here
-        return [
-            Stmt(
-                S("ALTER TABLE {} ADD CONSTRAINT {} CHECK (").format(tbl(op["table"]), I(op["name"]))
-                + S(op["expression"].strip())
-                + S(")")
-            )
-        ]
+        return [Stmt(_render_check(op, state_before))]
 
     if k == "set_table_comment":
         return [Stmt(S("COMMENT ON TABLE {} IS {}").format(tbl(op["table"]), lit(op["comment"])))]

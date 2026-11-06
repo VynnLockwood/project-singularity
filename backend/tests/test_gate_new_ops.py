@@ -202,3 +202,55 @@ def test_live_execute_reverse_and_snapshot():
     assert r.reverse_ops[0]["name"] == "fk_address_country_id"
     assert "ON DELETE CASCADE" in next(
         c["definition"] for c in introspect.describe_table("address")["constraints"] if c["name"] == "fk_address_country_id")
+
+
+# ---- fix round 1 -------------------------------------------------------------------
+
+@pytest.mark.parametrize("expr", [
+    "postcode SIMILAR TO '[0-9]{5}'",
+    "postcode NOT SIMILAR TO '[0-9]+'",
+    "postcode SIMILAR TO '[0-9]!%' ESCAPE '!'",
+    "city LIKE 'a!%' ESCAPE '!'",
+    "city ILIKE 'a!%' ESCAPE '!'",
+    "city NOT LIKE 'a%'",
+    "postcode::pg_catalog.text = 'x'",
+    "(length(city) > 1)::bool",
+])
+def test_check_expression_accepts_similar_and_like_escape(expr):
+    assert check_expr(expr) == [], expr
+    res = run([add_check(expr)])
+    assert res.ok, res.errors
+
+
+@pytest.mark.parametrize("expr", [
+    "city COLLATE \"C\" = 'x'",
+    "city = ANY(ARRAY['a','b'])",
+    "ROW(city, postcode) = ROW('a','b')",
+    "postcode::master.text = 'x'",
+    "city::pg_catalog.pg_class = 'x'",
+    "length(city) > 1) AS z, (1",
+    "like_escape(city, 'x') = 'y'",
+    "pg_catalog.similar_to_escape(city) = 'y'",
+    "city = pg_catalog.like_escape('a', 'b')",
+    "city LIKE pg_catalog.similar_to_escape('a')",
+    "city SIMILAR TO pg_catalog.like_escape('a', 'b')",
+    "city LIKE (SELECT 'a')",
+    "city LIKE 'a' ESCAPE (SELECT '!')",
+    "city",
+])
+def test_check_expression_rejects_more_forms(expr):
+    assert check_expr(expr), expr
+
+
+def test_sqlgen_never_renders_unvalidated_expression():
+    from gate import sqlgen
+    op = add_check("(SELECT 1) = 1")
+    with pytest.raises(sqlgen.UnsafeOp):
+        sqlgen.statements_for(op, BASE, None)
+    with pytest.raises(sqlgen.UnsafeOp):
+        sqlgen.statements_for(add_check("nope > 1"), BASE, None)
+    # and check.run turns a late refusal into a gate error rather than raising
+    from unittest import mock
+    with mock.patch.object(sqlgen, "_render_check", side_effect=sqlgen.UnsafeOp("boom")):
+        res = run([add_check("length(city) > 1")])
+    assert res.errors == ["boom"] and not res.ok
