@@ -5,8 +5,7 @@ from psycopg import sql
 from approvals import service as changes
 from approvals.models import Change
 from config.siconfig import get_config
-from gate.conventions import audit_column, pk_column
-from schema import introspect, rows as rows_mod
+from schema import introspect, roles, rows as rows_mod
 from schema.conn import ro_connection
 from schema.util import jsonable
 
@@ -38,12 +37,12 @@ def _text(c: dict) -> bool:
     return c["type"] == "text" or c["type"].startswith("character varying")
 
 
-def default_fields(columns: dict) -> list[str]:
-    names = [n for n, c in columns.items() if n not in rows_mod.AUDIT and _text(c)]
+def default_fields(columns: dict, skip: set[str] = frozenset()) -> list[str]:
+    names = [n for n, c in columns.items() if n not in skip and _text(c)]
     named = [n for n in names if "name" in n.lower()]
     if named:
         return named
-    label = rows_mod.label_column(columns)
+    label = rows_mod.label_column(columns, skip)
     return [label] if label else []
 
 
@@ -54,10 +53,11 @@ def group_key(table: str, ids: list[int]) -> str:
 def scan(table: str, user, *, fields: list[str] | None = None, threshold: float | None = None) -> dict:
     d = _describe(table)
     columns = {c["name"]: c for c in d["columns"]}
-    pk = pk_column(columns, table, rows_mod._primary_key(d))
+    role_cols = roles.roles_of(d)
+    pk = role_cols.get("primary_key")
     if pk is None:
         raise DuplicateError("this table has no primary key column")
-    fields = fields or default_fields(columns)
+    fields = fields or default_fields(columns, set(role_cols.values()) | roles.hidden_columns())
     if not fields:
         raise DuplicateError("this table has no text column to compare")
     for f in fields:
@@ -69,7 +69,7 @@ def scan(table: str, user, *, fields: list[str] | None = None, threshold: float 
         raise DuplicateError("threshold must be between 0.5 and 1")
     max_rows = cfg["maxRows"]
 
-    active = audit_column(columns, "is_active")
+    active = role_cols.get("is_active")
     q = sql.SQL("SELECT {pk} AS pk, {cols} FROM {t}{w} ORDER BY {pk} LIMIT {n}").format(
         pk=sql.Identifier(pk),
         cols=sql.SQL(", ").join(sql.Identifier(f) for f in fields), t=sql.Identifier("master", table),
@@ -131,7 +131,7 @@ def detail(g: DuplicateGroup) -> dict:
 
 def _table_pk(table: str) -> str:
     d = _describe(table)
-    pk = pk_column({c["name"] for c in d["columns"]}, table, rows_mod._primary_key(d))
+    pk = roles.roles_of(d).get("primary_key")
     if pk is None:
         raise DuplicateError("this table has no primary key column")
     return pk

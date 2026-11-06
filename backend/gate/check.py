@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from . import operations, rules, sqlgen, state as state_mod
+from .conventions import Conventions
 
 
 @dataclass
@@ -46,10 +47,11 @@ def run(raw_ops, schema_state: dict, rule_list: list[dict], *, actor: str | None
     else:
         ops_out, violations, auto = rules.evaluate(ops, rule_list)
 
-    errors, _ = state_mod.validate(ops_out, schema_state)
+    conv = Conventions.from_rules(rule_list)
+    errors, _ = state_mod.validate(ops_out, schema_state, conv)
     res = CheckResult(ok=False, operations=ops_out, errors=errors, violations=violations, auto_added=auto)
     if not errors:
-        res.sql = sqlgen.render(ops_out, schema_state, actor)
+        res.sql = sqlgen.render(ops_out, schema_state, actor, conv)
         res.diff = [sqlgen.describe(o) for o in ops_out]
     res.ok = not res.blocked
     return res

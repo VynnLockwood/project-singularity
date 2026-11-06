@@ -3,11 +3,15 @@
 RESERVED = ["user", "order", "group", "table", "column", "select", "from", "where", "index", "primary", "check"]
 
 REQUIRED = [
-    {"name": "{table}_id", "type": "integer", "primary_key": True, "identity": True, "nullable": False},
-    {"name": "created_at", "type": "timestamptz", "nullable": False, "default": "now()"},
-    {"name": "updated_at", "type": "timestamptz", "nullable": False, "default": "now()"},
-    {"name": "created_by", "type": "text"},
-    {"name": "is_active", "type": "boolean", "nullable": False, "default": True},
+    {"name": "{table}_id", "role": "primary_key", "aliases": ["id"],
+     "type": "integer", "primary_key": True, "identity": True, "nullable": False},
+    {"name": "created_at", "role": "created_at", "aliases": ["createdAt"],
+     "type": "timestamptz", "nullable": False, "default": "now()"},
+    {"name": "updated_at", "role": "updated_at", "aliases": ["updatedAt"],
+     "type": "timestamptz", "nullable": False, "default": "now()"},
+    {"name": "created_by", "role": "created_by", "aliases": ["createdBy"], "type": "text"},
+    {"name": "is_active", "role": "is_active", "aliases": ["isActive"],
+     "type": "boolean", "nullable": False, "default": True},
 ]
 
 DEFAULT_RULES = [

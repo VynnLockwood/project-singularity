@@ -349,3 +349,41 @@ def test_renaming_the_primary_key_keeps_track_of_it():
     errs, after = state.validate([{"op": "rename_column", "table": "province", "column": "id",
                                    "new_name": "province_id"}], st)
     assert not errs and state.pk_of(after, "province") == "province_id"
+
+
+# ---- the rules decide, not the code ------------------------------------------
+
+def _with(rule_name, **param_changes):
+    out = []
+    for r in RULES:
+        if r["name"] == rule_name:
+            r = {**r, "params": {**r["params"], **param_changes}}
+        out.append(r)
+    return out
+
+
+def test_renaming_an_audit_role_in_the_rule_changes_the_generated_sql():
+    cols = [{**c, "name": "modified_on"} if c.get("role") == "updated_at" else c
+            for c in RULES[2]["params"]["columns"]]
+    assert RULES[2]["name"] == "auditColumns"
+    rl = _with("auditColumns", columns=cols)
+    st = {"t": {"columns": {"t_id": {}, "name": {}, "modified_on": {}, "is_active": {}}, "indexes": set(),
+                "constraints": set(), "pk": "t_id"}}
+    upd = run([{"op": "update_rows", "table": "t", "where": {"t_id": 1}, "set": {"name": "x"}}], st, rl=rl)
+    assert '"modified_on" = now()' in upd.sql[0]
+
+
+def test_kebab_case_is_just_a_custom_naming_rule():
+    pattern = r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
+    rl = _with("tableNaming", style="custom", pattern=pattern)
+    assert "tableNaming" not in names(run([create("customer-order")], rl=rl))
+    assert "tableNaming" in names(run([create("customer_order")], rl=rl), "block")
+
+
+def test_fk_must_be_named_like_the_primary_key_it_points_at():
+    st = {"customer": {"columns": {"customer_id": {"type": "integer", "nullable": False}},
+                       "indexes": set(), "constraints": set(), "pk": "customer_id"}}
+    bad = run([create("invoice", [col("invoice_code", unique=True),
+                                  col("buyer", "integer", references={"table": "customer"})])], st)
+    v = next(v for v in bad.violations if v["rule"] == "foreignKeyNaming")
+    assert v["suggestion"] == "customer_id"

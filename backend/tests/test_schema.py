@@ -21,7 +21,7 @@ def apply(ops, *, skip_rules=False, max_rows=1000):
     st = introspect.snapshot()
     res = check.run(ops, st, RULES, actor=ME, skip_rules=skip_rules)
     assert res.ok, (res.errors, res.violations)
-    return executor.execute(res.operations, st, ME, max_rows=max_rows)
+    return executor.execute(res.operations, st, ME, max_rows=max_rows, rules=RULES)
 
 
 def make_customer(extra=None):

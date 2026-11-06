@@ -12,8 +12,8 @@ import psycopg
 from psycopg import sql
 
 from gate import sqlgen
-from gate.conventions import audit_column
-from gate.state import fk_name, index_name, pk_of, unique_name
+from gate.conventions import Conventions
+from gate.state import fk_name, index_name, pk_of, role_of, unique_name
 
 from .conn import rw_connection
 from .util import jsonable, pg_type_to_allowed
@@ -92,7 +92,9 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int):
     elif k == "update_rows" and pk_of(before, t):
         rows_before = _before_rows(conn, t, op["where"], list(op["set"]), max_rows, pk_of(before, t))
     elif k == "deactivate_rows" and pk_of(before, t):
-        active_col = audit_column(before[t]["columns"], "is_active") or "is_active"
+        active_col = role_of(before, t, "is_active")
+        if active_col is None:
+            raise ApplyError(f"table {t!r} has no column with the is_active role")
         rows_before = _before_rows(conn, t, op["where"], [active_col], max_rows, pk_of(before, t))
 
     # --- run
@@ -131,7 +133,7 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int):
     if k in ("drop_column", "drop_table", "drop_index", "drop_constraint"):
         return None
     if k == "insert_rows":
-        if inserted_ids and audit_column(before[t]["columns"], "is_active"):
+        if inserted_ids and role_of(before, t, "is_active"):
             return [{"op": "deactivate_rows", "table": t, "where": {pk_of(before, t): inserted_ids}}]
         return None
     if k == "update_rows":
@@ -139,13 +141,14 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int):
     if k == "deactivate_rows":
         if rows_before is None:
             return None
-        active_col = audit_column(before[t]["columns"], "is_active") or "is_active"
+        active_col = role_of(before, t, "is_active")
         ids = [r["pk"] for r in rows_before if r[active_col]]
         return [{"op": "update_rows", "table": t, "where": {pk_of(before, t): ids}, "set": {active_col: True}}] if ids else []
     return None
 
 
-def execute(ops: list[dict], state: dict, actor: str | None, *, max_rows: int = 1000) -> ExecResult:
+def execute(ops: list[dict], state: dict, actor: str | None, *, max_rows: int = 1000,
+            rules: list[dict]) -> ExecResult:
     """Run `ops` in one transaction as the read/write role. Raises ApplyError on any failure."""
     reverse: list[list[dict] | None] = []
     count = 0
@@ -153,7 +156,7 @@ def execute(ops: list[dict], state: dict, actor: str | None, *, max_rows: int = 
         with rw_connection() as conn:
             conn.execute("SET LOCAL lock_timeout = '5s'")
             conn.execute("SET LOCAL statement_timeout = '120s'")
-            for op, before, stmts in sqlgen.plan(ops, state, actor):
+            for op, before, stmts in sqlgen.plan(ops, state, actor, Conventions.from_rules(rules)):
                 reverse.append(_run_op(conn, op, before, stmts, max_rows))
                 count += len(stmts)
     except ApplyError:

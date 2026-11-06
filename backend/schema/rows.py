@@ -5,14 +5,12 @@ import psycopg
 from psycopg import sql
 
 from config.siconfig import get_config
-from gate.conventions import audit_column, audit_names, pk_column
 
-from . import introspect
+from . import introspect, roles
 from .conn import ro_connection
 from .util import jsonable
 
 MAX_PAGE = 200
-AUDIT = {"id", *audit_names()}
 
 
 class RowsError(Exception):
@@ -26,16 +24,6 @@ def _describe(table: str) -> dict:
     if d is None:
         raise RowsError("table not found", 404)
     return d
-
-
-def _primary_key(d: dict) -> str | None:
-    """Primary key column named in a describe_table result."""
-    import re
-    for c in d["constraints"]:
-        if c["kind"] == "primary_key":
-            m = re.search(r'\(\"?([^")]+)\"?\)', c["definition"])
-            return m.group(1) if m else None
-    return None
 
 
 def _like(text: str) -> str:
@@ -73,12 +61,15 @@ def read_rows(table: str, *, offset: int = 0, limit: int = 50, sort: str | None 
         if text:
             where.append(sql.SQL("{}::text ILIKE %s").format(sql.Identifier(col)))
             params.append(_like(text))
-    active = audit_column(cols, "is_active")
+    conv = roles.conventions()
+    role_cols = roles.roles_of(d, conv)
+    hidden = roles.hidden_columns(conv)
+    active = role_cols.get("is_active")
     if active and not include_inactive:
         where.append(sql.SQL("{} IS DISTINCT FROM false").format(sql.Identifier(active)))
     clause = sql.SQL(" WHERE ") + sql.SQL(" AND ").join(where) if where else sql.SQL("")
 
-    pk = pk_column(cols, table, _primary_key(d))
+    pk = role_cols.get("primary_key")
     order_col = sort or pk or next(iter(cols))
     order = sql.SQL("{} {}").format(sql.Identifier(order_col), sql.SQL(direction.upper()))
     if pk and order_col != pk:
@@ -89,22 +80,22 @@ def read_rows(table: str, *, offset: int = 0, limit: int = 50, sort: str | None 
     rows = _run(sql.SQL("SELECT * FROM {}{} ORDER BY {} LIMIT {} OFFSET {}").format(
         t, clause, order, sql.Literal(limit), sql.Literal(offset)), params)
 
-    refs = {r["from"]["column"]: r["to"] for r in introspect.graph()["relations"] if r["from"]["table"] == table}
+    refs = {x["from"]["column"]: x["to"] for x in introspect.graph()["relations"] if x["from"]["table"] == table}
     return {
         "table": table, "total": total, "offset": offset, "limit": limit, "primaryKey": pk,
         "columns": [{
             "name": c["name"], "type": c["type"], "nullable": c["nullable"],
-            "readOnly": c["identity"] or c["name"] in AUDIT,
+            "readOnly": c["identity"] or c["name"] in hidden or c["name"] in role_cols.values(),
             "references": refs.get(c["name"]),
         } for c in d["columns"]],
-        "rows": [{k: jsonable(v) for k, v in r.items()} for r in rows],
+        "rows": [{k: jsonable(v) for k, v in row.items()} for row in rows],
     }
 
 
-def label_column(columns: dict) -> str | None:
+def label_column(columns: dict, skip: set[str] | frozenset[str] = frozenset()) -> str | None:
     """The column that best names a row: *name, then *code, then the first other text column."""
     texts = [n for n, c in columns.items()
-             if n not in AUDIT and (c["type"] == "text" or c["type"].startswith("character varying"))]
+             if n not in skip and (c["type"] == "text" or c["type"].startswith("character varying"))]
     for suffix in ("name", "code"):
         for n in texts:
             if n.lower().endswith(suffix):
@@ -116,10 +107,12 @@ def options(table: str, *, q: str = "", limit: int = 100) -> dict:
     """id + label pairs for a reference dropdown."""
     d = _describe(table)
     cols = {c["name"]: c for c in d["columns"]}
-    pk = pk_column(cols, table, _primary_key(d))
+    conv = roles.conventions()
+    role_cols = roles.roles_of(d, conv)
+    pk = role_cols.get("primary_key")
     if pk is None:
         raise RowsError("this table has no primary key column to reference")
-    label = label_column(cols)
+    label = label_column(cols, set(role_cols.values()) | roles.hidden_columns(conv))
     limit = max(1, min(int(limit), MAX_PAGE))
     t = sql.Identifier("master", table)
     label_expr = sql.Identifier(label) if label else sql.SQL("{}::text").format(sql.Identifier(pk))
@@ -128,7 +121,7 @@ def options(table: str, *, q: str = "", limit: int = 100) -> dict:
     if q:
         conds.append(sql.SQL("{}::text ILIKE %s").format(label_expr))
         params.append(_like(q))
-    active = audit_column(cols, "is_active")
+    active = role_cols.get("is_active")
     if active:
         conds.append(sql.SQL("{} IS DISTINCT FROM false").format(sql.Identifier(active)))
     if conds:

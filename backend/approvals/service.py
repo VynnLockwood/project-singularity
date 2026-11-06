@@ -177,7 +177,8 @@ def approve(user, change_id: int) -> Change:
 
         try:
             result = executor.execute(
-                change.operations, state, change.requester.email, max_rows=cfg["limits"]["maxRowsPerDataOp"]
+                change.operations, state, change.requester.email, max_rows=cfg["limits"]["maxRowsPerDataOp"],
+                rules=rule_service.active_rules(),
             )
         except executor.ApplyError as exc:
             return _fail(change, user, str(exc))

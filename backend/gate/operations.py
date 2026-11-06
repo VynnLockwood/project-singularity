@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import re
 
-IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
+# Any name that is safe to quote: the naming *style* is a rule (change it through the MCP), not a regex here.
+IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,62}$")
 
 # Only these column types may be created. Anything else is rejected, so a type
 # string can never smuggle SQL into a statement.
@@ -46,7 +47,7 @@ def normalize_type(t: str) -> str:
 
 def _ident(v, what: str, errs: list[str], where: str) -> None:
     if not isinstance(v, str) or not IDENT_RE.match(v):
-        errs.append(f"{where}: {what} must be an identifier (letters, digits, underscore; max 63 chars)")
+        errs.append(f"{where}: {what} must be an identifier (letters, digits, underscore or hyphen; max 63 chars)")
 
 
 def _check_column(col, errs: list[str], where: str, *, allow_references: bool = True) -> None:
