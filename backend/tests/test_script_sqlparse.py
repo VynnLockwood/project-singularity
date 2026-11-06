@@ -299,3 +299,214 @@ def test_referenced_table_created_first_even_if_declared_later():
 def test_iter_copy_rows_unescapes_and_stops_at_terminator():
     lines = ["a\\tb\tline\\nbreak\t\\\\x\t\\N", "\\r\t", "\\.", "never"]
     assert list(iter_copy_rows(lines)) == [["a\tb", "line\nbreak", "\\x", None], ["\r", ""]]
+
+
+# ---------- fix round 1 ----------
+
+def test_text_after_copy_on_same_line_is_an_error():
+    p = parse_script("CREATE TABLE a (id integer);\nCOPY a (id) FROM stdin; DROP TABLE zz;\n1\n\\.\n")
+    assert [(e.line, e.statement) for e in p.errors] == [(2, "DROP TABLE zz;")]
+    assert "same line" in p.errors[0].message
+    ok = parse_script("CREATE TABLE a (id integer);\nCOPY a (id) FROM stdin; -- fine /* x */\n1\n\\.\n")
+    assert ok.errors == [] and list(ok.streams["a"].rows()) == [["1"]]
+    ok2 = parse_script("CREATE TABLE a (id integer);\nCOPY a (id) FROM stdin; /* c */  \n1\n\\.\n")
+    assert ok2.errors == []
+
+
+def test_schema_checked_on_ignored_statements():
+    text = (
+        "CREATE TABLE s.a (id integer);\n"
+        "ALTER TABLE other.a OWNER TO x;\n"
+        "ALTER SCHEMA other OWNER TO x;\n"
+        "ALTER FUNCTION other.f() OWNER TO x;\n"
+        "COMMENT ON SCHEMA other IS 'x';\n"
+        "ALTER TABLE s.a OWNER TO x;\n"
+        "ALTER SCHEMA s OWNER TO x;\n"
+        "COMMENT ON SCHEMA s IS 'mine';\n"
+    )
+    p = parse_script(text)
+    assert [e.line for e in p.errors] == [2, 3, 4, 5]
+    assert all("other" in e.message for e in p.errors)
+    assert [i.split(":")[0] for i in p.ignored] == ["line 6", "line 7", "line 8"]
+
+
+def test_comment_on_schema_fixes_the_source_schema():
+    p = parse_script("COMMENT ON SCHEMA other IS 'x';\nCREATE TABLE s.a (id integer);\n")
+    assert [e.line for e in p.errors] == [2]
+
+
+def test_set_search_path_rules():
+    p = parse_script(
+        "CREATE TABLE s.a (id integer);\n"
+        "SET search_path = s;\n"
+        "SET search_path = '';\n"
+        "SET search_path = evil, public;\n"
+        "SET search_path TO DEFAULT;\n"
+    )
+    assert [e.line for e in p.errors] == [4, 5]
+
+
+def test_string_semantics_settings_are_errors():
+    p = parse_script(
+        "SET standard_conforming_strings = on;\n"
+        "SET standard_conforming_strings = off;\n"
+        "SET backslash_quote = on;\n"
+        "SET client_encoding = 'UTF8';\n"
+        "SET client_encoding = 'LATIN1';\n"
+        "SET escape_string_warning = off;\n"
+        "CREATE TABLE a (id integer);\n"
+    )
+    assert [e.line for e in p.errors] == [2, 3, 5]
+    assert "standard_conforming_strings" in p.errors[0].message
+
+
+def test_set_config_only_search_path():
+    p = parse_script(
+        "SELECT pg_catalog.set_config('search_path', '', false);\n"
+        "SELECT pg_catalog.set_config('role', 'postgres', false);\n"
+        "CREATE TABLE s.a (id integer);\n"
+        "SELECT set_config('search_path', 'evil', false);\n"
+        "SELECT set_config('search_path', 's', false);\n"
+    )
+    assert [e.line for e in p.errors] == [2, 4]
+
+
+def test_setval_forms_ignored_others_error():
+    p = parse_script(
+        "CREATE TABLE s.t (c integer);\n"
+        "SELECT pg_catalog.setval(pg_catalog.pg_get_serial_sequence('s.t', 'c'), 77, true);\n"
+        "SELECT pg_catalog.setval('s.t_c_seq', 5, false);\n"
+        "SELECT setval('t_c_seq', 5);\n"
+        "SELECT pg_catalog.setval('x', pg_catalog.nextval('y'));\n"
+        "SELECT setval(pg_get_serial_sequence('other.t', 'c'), 1);\n"
+        "SELECT 1;\n"
+    )
+    assert [e.line for e in p.errors] == [5, 6, 7]
+    assert len(p.ignored) == 3
+
+
+def test_numbers_keep_their_literal_text():
+    p = parse_script(
+        "CREATE TABLE a (id integer, f numeric);\n"
+        "INSERT INTO a VALUES (1, 123456789012345678901234.55), (2, 1.10), (3, 1e400), "
+        "(123456789012345678901234567890, -0.5);\n"
+    )
+    assert p.errors == []
+    assert list(p.streams["a"].rows()) == [["1", "123456789012345678901234.55"], ["2", "1.10"],
+                                           ["3", "1e400"], ["123456789012345678901234567890", "-0.5"]]
+
+
+def test_numeric_defaults_are_exact():
+    p = parse_script(
+        "CREATE TABLE a (a numeric(5,2) DEFAULT 1.5, b numeric DEFAULT 123456789012345678901234.55,"
+        " c numeric DEFAULT 1e400, d numeric DEFAULT 0.1, e bigint DEFAULT 123456789012345678901234567890);")
+    assert p.errors == []
+    assert [c["default"] for c in table(p, "a")["columns"]] == [
+        1.5, "123456789012345678901234.55", "1e400", 0.1, 123456789012345678901234567890]
+
+
+def test_unique_index_comes_before_foreign_keys():
+    text = (
+        "CREATE TABLE p (id integer, code text);\n"
+        "CREATE TABLE c (id integer, p_code text);\n"
+        "ALTER TABLE c ADD CONSTRAINT c_p FOREIGN KEY (p_code) REFERENCES p (code);\n"
+        "CREATE UNIQUE INDEX p_code_idx ON p (code);\n"
+        "CREATE INDEX c_p_code_idx ON c (p_code);\n"
+    )
+    p = parse_script(text)
+    assert p.errors == []
+    kinds = [(o["op"], o.get("name")) for o in p.ops]
+    assert kinds.index(("add_index", "p_code_idx")) < kinds.index(("add_foreign_key", "c_p"))
+    assert {"op": "add_index", "table": "p", "columns": ["code"], "name": "p_code_idx", "unique": True} in p.ops
+
+
+def test_rejected_statement_does_not_fix_the_schema():
+    p = parse_script(
+        "CREATE TABLE evil.z (x geometry);\n"
+        "DROP TABLE evil.x;\n"
+        "CREATE TABLE good.a (id integer);\n"
+    )
+    assert [e.line for e in p.errors] == [1, 2]
+    assert [o["name"] for o in ops_of(p, "create_table")] == ["a"]
+
+
+def test_identifiers_must_match_gate_rule():
+    p = parse_script(
+        'CREATE TABLE "a b" (id integer);\n'
+        'CREATE TABLE ok ("x y" integer);\n'
+        'CREATE TABLE ok2 (id integer, CONSTRAINT "c;x" CHECK (id > 0));\n'
+        'CREATE TABLE ok3 (id integer);\n'
+        'CREATE INDEX "i;x" ON ok3 (id);\n'
+        'COPY ok3 ("z z") FROM stdin;\n\\.\n'
+        'CREATE TABLE ' + "a" * 64 + ' (id integer);\n'
+        'CREATE TABLE ok4 ("' + "b" * 70 + '" integer);\n'
+        'CREATE TABLE ' + "c" * 63 + ' (id integer);\n'
+    )
+    assert [e.line for e in p.errors] == [1, 2, 3, 5, 6, 8, 9]
+    assert "longer than 63" in p.errors[-1].message and "b" * 70 in p.errors[-1].message
+    assert [o["name"] for o in ops_of(p, "create_table")] == ["ok3", "c" * 63]
+
+
+def test_copy_row_width_checked_lazily_with_line():
+    from scripts.sqlparse import RowStreamError
+    import pytest
+    p = parse_script("CREATE TABLE a (id integer, t text);\nCOPY a (id, t) FROM stdin;\n1\tx\n1\t2\t3\n\\.\n")
+    assert p.errors == []
+    it = p.streams["a"].rows()
+    assert next(it) == ["1", "x"]
+    with pytest.raises(RowStreamError) as exc:
+        next(it)
+    assert exc.value.issue.line == 4 and "3 fields, expected 2" in exc.value.issue.message
+
+
+def test_insert_row_width_is_an_error():
+    p = parse_script("CREATE TABLE a (id integer, t text);\nINSERT INTO a VALUES (1);\n")
+    assert [e.line for e in p.errors] == [2]
+
+
+def test_create_index_forms_rejected():
+    p = parse_script(
+        "CREATE TABLE a (id integer);\n"
+        "CREATE INDEX CONCURRENTLY i1 ON a (id);\n"
+        "CREATE INDEX IF NOT EXISTS i2 ON a (id);\n"
+        "CREATE INDEX ON a (id);\n"
+        "CREATE INDEX i4 ON ONLY a (id);\n"
+    )
+    msgs = [e.message for e in p.errors]
+    assert [e.line for e in p.errors] == [2, 3, 4, 5]
+    assert "CONCURRENTLY" in msgs[0] and "IF NOT EXISTS" in msgs[1] and "name" in msgs[2] and "ONLY" in msgs[3]
+
+
+def test_clear_messages_for_create_table_as_and_mixed_owner():
+    p = parse_script(
+        "CREATE TABLE a AS SELECT 1 AS x;\n"
+        "CREATE TABLE b (id integer);\n"
+        "ALTER TABLE b OWNER TO bob, ADD CONSTRAINT b_pk PRIMARY KEY (id);\n"
+    )
+    assert "CREATE TABLE AS" in p.errors[0].message
+    assert "OWNER TO cannot be combined" in p.errors[1].message
+
+
+def test_check_expression_validated_early():
+    p = parse_script("CREATE TABLE a (id integer CHECK (id IN (SELECT 1)));\n"
+                     "CREATE TABLE b (id integer);\nALTER TABLE b ADD CONSTRAINT k CHECK (pg_sleep(1) IS NULL);\n")
+    assert [e.line for e in p.errors] == [1, 3]
+
+
+def test_lexing_edge_cases():
+    text = (
+        "COMMENT ON TABLE a IS E'x\\';DROP TABLE y;--';\n"
+        "/* a /* b */ ; DROP TABLE x; */ CREATE TABLE a (id integer);\n"
+        "CREATE TABLE b (id integer); CREATE TABLE c (id integer); DROP TABLE q;\n"
+        "CREATE TABLE d (t text);\n"
+        "COPY d (t) FROM stdin;\nfoo\\.bar\n\\.x\n\\.\n"
+    )
+    p = parse_script(text)
+    assert [(e.line, e.statement) for e in p.errors] == [(3, "DROP TABLE q;")]
+    assert {"op": "set_table_comment", "table": "a", "comment": "x';DROP TABLE y;--"} in p.ops
+    assert [o["name"] for o in ops_of(p, "create_table")] == ["a", "b", "c", "d"]
+    assert list(p.streams["d"].rows()) == [["foo.bar"], [".x"]]
+
+
+def test_lone_semicolons_are_no_statements():
+    assert [e.message for e in parse_script(";;;\n").errors] == ["no statements"]

@@ -22,7 +22,9 @@ in `master`). Renaming and the load mapping happen later (scripts.mapping).
 from __future__ import annotations
 
 import bisect
+import math
 import re
+from decimal import Decimal, InvalidOperation
 from dataclasses import dataclass, field
 from itertools import chain
 from typing import Callable, Iterable, Iterator
@@ -31,7 +33,7 @@ import pglast
 from pglast import ast, enums
 from pglast.stream import RawStream
 
-from gate.operations import DEFAULT_FUNCS, TYPE_RE, normalize_type
+from gate.operations import DEFAULT_FUNCS, IDENT_RE, TYPE_RE, check_expression, normalize_type
 
 
 @dataclass
@@ -72,15 +74,35 @@ def _copy_unescape(m: re.Match) -> str:
     return _COPY_CHARS.get(s, s)
 
 
-def iter_copy_rows(lines: Iterable[str]) -> Iterator[list[str | None]]:
-    """Rows of a COPY text-format block: tab separated, `\\N` = NULL, backslash escapes; stops at `\\.`."""
-    for line in lines:
+class RowStreamError(Exception):
+    """Raised *while iterating* a RowStream when a data row is bad (e.g. wrong number of fields).
+
+    COPY rows are read lazily, so this cannot be reported by parse_script; consumers (mapping,
+    validation, bulk load) must catch it and report `.issue` (it carries the data line number).
+    """
+
+    def __init__(self, issue: ScriptIssue):
+        super().__init__(f"line {issue.line}: {issue.message}")
+        self.issue = issue
+
+
+def iter_copy_rows(lines: Iterable[str], *, width: int | None = None,
+                   first_line: int = 1) -> Iterator[list[str | None]]:
+    """Rows of a COPY text-format block: tab separated, `\\N` = NULL, backslash escapes; stops at `\\.`.
+
+    With `width`, a row with a different number of fields raises RowStreamError (line numbers count
+    from `first_line`, the script line of the first data line).
+    """
+    for i, line in enumerate(lines):
         if line.endswith("\r"):
             line = line[:-1]
         if line == "\\.":
             return
-        yield [None if f == "\\N" else (_COPY_ESC.sub(_copy_unescape, f) if "\\" in f else f)
-               for f in line.split("\t")]
+        fields = line.split("\t")
+        if width is not None and len(fields) != width:
+            raise RowStreamError(ScriptIssue(first_line + i, _excerpt(line),
+                                             f"row has {len(fields)} fields, expected {width}"))
+        yield [None if f == "\\N" else (_COPY_ESC.sub(_copy_unescape, f) if "\\" in f else f) for f in fields]
 
 
 def _iter_lines(text: str, start: int, end: int) -> Iterator[str]:
@@ -103,6 +125,7 @@ _WS = re.compile(r"\s+")
 _COPY_TERM = re.compile(r"^\\\.$", re.M)
 _COPY_HEAD = re.compile(r"copy\b", re.I)
 _FROM_STDIN = re.compile(r"\bfrom\s+stdin\b", re.I)
+_ONLY_COMMENT = re.compile(r"(?:\s|/\*.*?\*/)*(?:--.*)?", re.S)
 
 
 def _identchar(c: str) -> bool:
@@ -193,6 +216,7 @@ class _Piece:
     line: int
     text: str
     data: _Data | None = None
+    trailing: str | None = None  # text after `COPY ... FROM stdin;` on the same line (not allowed)
 
 
 def _split(text: str, line_of: Callable[[int], int]) -> Iterator[_Piece]:
@@ -213,6 +237,9 @@ def _split(text: str, line_of: Callable[[int], int]) -> Iterator[_Piece]:
         piece = _Piece("stmt", line_of(pos), stmt)
         if _is_copy_from_stdin(stmt):
             j = text.find("\n", end)
+            rest = text[end:n if j == -1 else j]
+            if not _ONLY_COMMENT.fullmatch(rest):
+                piece.trailing = rest.strip()
             ds = n if j == -1 else j + 1
             m = _COPY_TERM.search(text, ds)
             de = m.start() if m else n
@@ -285,8 +312,12 @@ def _map_type(tn: ast.TypeName) -> tuple[str, bool]:
     return out, serial
 
 
+class _Numeric(str):
+    """The exact source text of a non-integer numeric literal (never converted through float)."""
+
+
 def _const(node) -> tuple[bool, object]:
-    """(ok, python value) for a constant, optionally wrapped in a cast."""
+    """(ok, python value) for a constant, optionally wrapped in a cast. Non-integer numbers -> _Numeric."""
     if isinstance(node, ast.TypeCast):
         node = node.arg
     if not isinstance(node, ast.A_Const):
@@ -297,7 +328,7 @@ def _const(node) -> tuple[bool, object]:
     if isinstance(v, ast.Integer):
         return True, v.ival
     if isinstance(v, ast.Float):
-        return True, int(v.fval) if re.fullmatch(r"-?\d+", v.fval) else float(v.fval)
+        return True, int(v.fval) if re.fullmatch(r"-?\d+", v.fval) else _Numeric(v.fval)
     if isinstance(v, ast.Boolean):
         return True, bool(v.boolval)
     if isinstance(v, ast.String):
@@ -310,6 +341,16 @@ _SVF = enums.SQLValueFunctionOp
 
 def _map_default(expr):
     ok, v = _const(expr)
+    if ok and isinstance(v, _Numeric):
+        # a JSON float only when it is exact; otherwise keep the literal text (PostgreSQL casts it exactly)
+        try:
+            exact = Decimal(str(v))
+        except InvalidOperation:
+            raise _Reject(f"default {v} is not a valid number") from None
+        if not exact.is_finite():
+            raise _Reject(f"default {v} is not a finite number")
+        f = float(exact)
+        return f if math.isfinite(f) and Decimal(repr(f)) == exact else str(v)
     if ok:
         if isinstance(v, str) and v in DEFAULT_FUNCS:
             raise _Reject(f"default text {v!r} is not supported (it reads like a function call)")
@@ -343,7 +384,36 @@ def _check_plain_constraint(c: ast.Constraint) -> None:
 
 
 def _keys(c: ast.Constraint) -> list[str]:
-    return [k.sval for k in c.keys or ()]
+    return [_ident(k.sval, "column") for k in c.keys or ()]
+
+
+def _ident(name, what: str) -> str:
+    """Source identifiers must already satisfy the gate's identifier rule (no silent renaming here)."""
+    if not isinstance(name, str) or not IDENT_RE.match(name):
+        raise _Reject(f"{what} {name!r} is not a valid identifier (letters, digits, underscore or hyphen, "
+                      "starting with a letter or underscore, at most 63 characters)")
+    return name
+
+
+def _opt_ident(name):
+    return None if name is None else _ident(name, "constraint name")
+
+
+def _long_identifier(stmt: str) -> str | None:
+    """First identifier longer than 63 bytes in the source text (pglast would truncate it silently)."""
+    try:
+        tokens = pglast.parser.scan(stmt)
+    except pglast.parser.ParseError:
+        return None
+    raw = stmt.encode("utf-8")
+    for t in tokens:
+        if t.name not in ("IDENT", "UIDENT"):
+            continue
+        word = raw[t.start:t.end + 1].decode("utf-8", "replace")
+        name = word[1:-1].replace('""', '"') if word.startswith('"') else word
+        if len(name.encode("utf-8")) > 63:
+            return name
+    return None
 
 
 # ---------------------------------------------------------------- translator
@@ -352,6 +422,8 @@ class _Translator:
     def __init__(self, text: str):
         self.text = text
         self.schema: str | None = None
+        self.pending_schema: str | None = None  # schema first seen in the current statement (kept if accepted)
+        self.new_checks: list[dict] = []  # add_check ops built by the current statement
         self.tables: dict[str, dict] = {}  # name -> create_table op (mutated by later folds)
         self.uniques: list[dict] = []
         self.checks: list[dict] = []
@@ -364,11 +436,18 @@ class _Translator:
 
     # --- names and schema
     def _schema(self, name: str) -> None:
-        if self.schema is None:
-            self.schema = name
-        elif name != self.schema:
-            raise _Reject(f"schema {name!r} is not allowed: this script already uses schema {self.schema!r} "
+        current = self.schema or self.pending_schema
+        if current is None:
+            self.pending_schema = name
+        elif name != current:
+            raise _Reject(f"schema {name!r} is not allowed: this script already uses schema {current!r} "
                           "(only one schema per script; it is loaded into master)")
+
+    def _schema_of_text(self, qualified: str) -> None:
+        """Schema check for a name written inside a string, e.g. setval('sch.seq', ...)."""
+        parts = [x.strip().strip('"') for x in qualified.split(".")]
+        if len(parts) >= 2:
+            self._schema(parts[-2])
 
     def _rel(self, rv: ast.RangeVar) -> str:
         if rv.catalogname:
@@ -377,16 +456,16 @@ class _Translator:
             raise _Reject("temporary and unlogged tables are not allowed")
         if rv.schemaname:
             self._schema(rv.schemaname)
-        return rv.relname
+        return _ident(rv.relname, "table name")
 
     def _qualified(self, names: list[str], parts: int) -> list[str]:
         """Strip the schema from a dotted name of `parts` parts (+1 optional schema)."""
         if len(names) == parts + 1:
             self._schema(names[0])
-            return names[1:]
-        if len(names) != parts:
+            names = names[1:]
+        elif len(names) != parts:
             raise _Reject("name has too many parts")
-        return names
+        return [_ident(n, "name") for n in names]
 
     def _script_table(self, name: str, what: str) -> dict:
         t = self.tables.get(name)
@@ -415,15 +494,24 @@ class _Translator:
         if c.fk_del_action not in _ON_DELETE or c.fk_del_set_cols:
             raise _Reject("ON DELETE SET DEFAULT and column lists are not supported "
                           "(allowed: RESTRICT, CASCADE, SET NULL, NO ACTION)")
-        return {"op": "add_foreign_key", "table": table, "column": cols[0], "ref_table": self._rel(c.pktable),
-                "ref_column": refs[0] if refs else None, "name": c.conname,
+        return {"op": "add_foreign_key", "table": table, "column": _ident(cols[0], "column"),
+                "ref_table": self._rel(c.pktable), "ref_column": _ident(refs[0], "column") if refs else None,
+                "name": _opt_ident(c.conname),
                 "on_delete": _ON_DELETE[c.fk_del_action]}
 
-    @staticmethod
-    def _check(table: str, c: ast.Constraint, column: str | None = None) -> dict:
+    def _check(self, table: str, c: ast.Constraint, column: str | None = None) -> dict:
         _check_plain_constraint(c)
-        name = c.conname or (f"{table}_{column}_check" if column else f"{table}_check")[:63]
-        return {"op": "add_check", "table": table, "name": name, "expression": _sql(c.raw_expr)}
+        name = _opt_ident(c.conname) or (f"{table}_{column}_check" if column else f"{table}_check")[:63]
+        op = {"op": "add_check", "table": table, "name": name, "expression": _sql(c.raw_expr)}
+        self.new_checks.append(op)
+        return op
+
+    def _validate_checks(self, columns: list[str]) -> None:
+        """Early, line-numbered version of the gate's check_expression test (the gate checks again)."""
+        problems = [f"check {op['name']}: {p}" for op in self.new_checks
+                    for p in check_expression(op["expression"], set(columns))]
+        if problems:
+            raise _Reject("; ".join(problems))
 
     def _table_constraint(self, table: str, c: ast.Constraint, create: dict | None, actions: list) -> None:
         """Queue the effect of a table-level constraint (from CREATE TABLE or ALTER TABLE ADD CONSTRAINT)."""
@@ -446,7 +534,7 @@ class _Translator:
                 col = self._column(create, keys[0])
                 actions.append(lambda: col.update(unique=True))
             else:
-                op = {"op": "add_unique", "table": table, "columns": keys, "name": c.conname}
+                op = {"op": "add_unique", "table": table, "columns": keys, "name": _opt_ident(c.conname)}
                 actions.append(lambda: self.uniques.append(op))
         elif c.contype == _C.CONSTR_FOREIGN:
             op = self._fk(table, c)
@@ -494,6 +582,7 @@ class _Translator:
                 k.contype == _C.CONSTR_PRIMARY for k in c.constraints or ())) + sum(
                 1 for c in later if c.contype == _C.CONSTR_PRIMARY) > 1:
             raise _Reject("a table can have only one primary key")
+        self._validate_checks(names)
         self.tables[name] = op
         for a in actions:
             a()
@@ -502,7 +591,7 @@ class _Translator:
         if cd.collClause or cd.raw_default or cd.cooked_default or cd.fdwoptions or cd.compression:
             raise _Reject("COLLATE / compression / options are not supported")
         typ, serial = _map_type(cd.typeName)
-        col: dict = {"name": cd.colname, "type": typ}
+        col: dict = {"name": _ident(cd.colname, "column name"), "type": typ}
         if serial:
             col["identity"] = True
         for c in cd.constraints or ():
@@ -534,8 +623,13 @@ class _Translator:
 
     def alter_table(self, s: ast.AlterTableStmt) -> bool:
         """Returns True when the statement is only OWNER TO (ignored)."""
-        if all(c.subtype == _AT.AT_ChangeOwner for c in s.cmds):
+        owner = [c.subtype == _AT.AT_ChangeOwner for c in s.cmds]
+        if all(owner):
+            self._rel(s.relation)  # schema check only
             return True
+        if any(owner):
+            raise _Reject("OWNER TO cannot be combined with other actions in one ALTER statement "
+                          "(write it as its own statement; OWNER TO is ignored)")
         if s.objtype != _OBJ.OBJECT_TABLE:
             raise _Reject(f"ALTER {s.objtype.name.removeprefix('OBJECT_')} is not allowed in a script")
         table = self._rel(s.relation)
@@ -544,18 +638,29 @@ class _Translator:
             if cmd.subtype == _AT.AT_AddConstraint:
                 self._table_constraint(table, cmd.def_, None, actions)
             elif cmd.subtype == _AT.AT_AddIdentity:
-                col = self._column(self._script_table(table, "ADD GENERATED AS IDENTITY"), cmd.name)
+                col = self._column(self._script_table(table, "ADD GENERATED AS IDENTITY"),
+                                   _ident(cmd.name, "column"))
                 actions.append(lambda col=col: col.update(identity=True))
             else:
                 what = cmd.subtype.name.removeprefix("AT_")
                 raise _Reject(f"ALTER TABLE {what} is not supported (allowed: ADD CONSTRAINT PRIMARY KEY / "
                               "UNIQUE / FOREIGN KEY / CHECK, ADD GENERATED AS IDENTITY, OWNER TO)")
+        if self.new_checks and table in self.tables:
+            self._validate_checks([c["name"] for c in self.tables[table]["columns"]])
         for a in actions:
             a()
         return False
 
     def create_index(self, s: ast.IndexStmt) -> None:
         table = self._rel(s.relation)
+        if s.concurrent:
+            raise _Reject("CREATE INDEX CONCURRENTLY is not supported (the load runs in one transaction)")
+        if s.if_not_exists:
+            raise _Reject("CREATE INDEX IF NOT EXISTS is not supported")
+        if not s.relation.inh:
+            raise _Reject("CREATE INDEX ON ONLY (partitioned tables) is not supported")
+        if not s.idxname:
+            raise _Reject("CREATE INDEX needs an index name")
         if s.accessMethod not in (None, "btree"):
             raise _Reject(f"index method {s.accessMethod} is not supported (only btree)")
         if s.whereClause or s.indexIncludingParams or s.options or s.tableSpace or s.nulls_not_distinct \
@@ -567,16 +672,16 @@ class _Translator:
                     or e.ordering != enums.SortByDir.SORTBY_DEFAULT
                     or e.nulls_ordering != enums.SortByNulls.SORTBY_NULLS_DEFAULT):
                 raise _Reject("only plain column indexes are supported (no expressions, ordering or operator classes)")
-            cols.append(e.name)
-        op = {"op": "add_index", "table": table, "columns": cols, "name": s.idxname}
+            cols.append(_ident(e.name, "column"))
+        op = {"op": "add_index", "table": table, "columns": cols, "name": _ident(s.idxname, "index name")}
         if s.unique:
             op["unique"] = True
         self.indexes.append(op)
 
     def comment(self, s: ast.CommentStmt) -> bool:
         """Returns True when ignored (comment on the script's schema)."""
-        if s.objtype == _OBJ.OBJECT_SCHEMA and isinstance(s.object, ast.String) and \
-                (self.schema is None or s.object.sval == self.schema):
+        if s.objtype == _OBJ.OBJECT_SCHEMA and isinstance(s.object, ast.String):
+            self._schema(s.object.sval)  # the script's own schema only; ignored
             return True
         if s.objtype not in (_OBJ.OBJECT_TABLE, _OBJ.OBJECT_COLUMN):
             raise _Reject(f"COMMENT ON {s.objtype.name.removeprefix('OBJECT_')} is not allowed "
@@ -602,6 +707,8 @@ class _Translator:
         return [c["name"] for c in t["columns"]]
 
     def _add_stream(self, table: str, columns: list[str], src) -> None:
+        for c in columns:
+            _ident(c, "column")
         if len(columns) != len(set(columns)):
             raise _Reject("duplicate columns")
         have = self.stream_cols.get(table)
@@ -622,8 +729,9 @@ class _Translator:
         cols = self._stream_columns(table, [x.sval for x in s.attlist or ()], "COPY")
         if data is None:  # cannot happen: the splitter marks every COPY FROM stdin
             raise _Reject("COPY has no data block")
-        text, start, end = self.text, data.start, data.end
-        self._add_stream(table, cols, lambda: iter_copy_rows(_iter_lines(text, start, end)))
+        text, start, end, first, width = self.text, data.start, data.end, data.line, len(cols)
+        self._add_stream(table, cols, lambda: iter_copy_rows(_iter_lines(text, start, end), width=width,
+                                                              first_line=first))
 
     def insert(self, s: ast.InsertStmt) -> None:
         if s.withClause or s.onConflictClause or s.returningClause:
@@ -661,38 +769,52 @@ class _Translator:
         self._schema(s.schemaname)
 
     # --- dispatch
-    def statement(self, piece: _Piece) -> None:
+    def statement(self, piece: _Piece) -> bool:
+        """Translate one statement. Returns False for an empty statement (a lone `;`)."""
         excerpt = _excerpt(piece.text)
         try:
             parsed = pglast.parse_sql(piece.text)
         except pglast.parser.ParseError as exc:
             self.out.errors.append(ScriptIssue(piece.line, excerpt, f"not valid SQL: {exc}"))
-            return
+            return True
         if not parsed:
-            return  # empty statement (lone ';')
+            return False
         if len(parsed) != 1:
             self.out.errors.append(ScriptIssue(piece.line, excerpt, "could not split this statement"))
-            return
+            return True
         s = parsed[0].stmt
+        self.pending_schema = None
+        self.new_checks = []
         try:
+            long = _long_identifier(piece.text)
+            if long is not None:
+                raise _Reject(f"identifier {long!r} is longer than 63 characters")
             ignored = self._dispatch(s, piece)
         except _Reject as exc:
             self.out.errors.append(ScriptIssue(piece.line, excerpt, str(exc)))
-            return
+            return True
+        if self.pending_schema is not None:
+            self.schema = self.pending_schema  # only an accepted statement fixes the source schema
         if ignored:
             self.out.ignored.append(f"line {piece.line}: {excerpt}")
+        return True
 
     def _dispatch(self, s, piece: _Piece) -> bool:
         if isinstance(s, ast.VariableSetStmt):
+            self.set_stmt(s)
             return True
-        if isinstance(s, ast.SelectStmt) and _is_boilerplate_select(s):
+        if isinstance(s, ast.SelectStmt) and self.boilerplate_select(s):
             return True
         if isinstance(s, ast.TransactionStmt) and s.kind in (
                 enums.TransactionStmtKind.TRANS_STMT_BEGIN, enums.TransactionStmtKind.TRANS_STMT_START,
                 enums.TransactionStmtKind.TRANS_STMT_COMMIT):
             return True
         if isinstance(s, ast.AlterOwnerStmt):
+            self.alter_owner(s)
             return True
+        if isinstance(s, ast.CreateTableAsStmt):
+            raise _Reject("CREATE TABLE AS / SELECT INTO is not allowed (create the table, then load rows "
+                          "with COPY ... FROM stdin or INSERT ... VALUES)")
         if isinstance(s, ast.CreateSchemaStmt):
             self.create_schema(s)
             return True
@@ -708,12 +830,96 @@ class _Translator:
             self.copy(s, piece.data)
         elif isinstance(s, ast.InsertStmt):
             self.insert(s)
+        elif isinstance(s, ast.SelectStmt):
+            raise _Reject("SELECT is not allowed in a script (only pg_dump's set_config('search_path', ...) and "
+                          "setval(...) with constant arguments are ignored)")
         else:
             words = " ".join(piece.text.split()[:2]).rstrip(";").upper()
             raise _Reject(f"{words} is not allowed in a script (allowed: CREATE TABLE, ALTER TABLE ... ADD "
                           "CONSTRAINT, CREATE INDEX, COMMENT ON TABLE/COLUMN, COPY ... FROM stdin, "
                           "INSERT ... VALUES)")
         return False
+
+    # --- boilerplate that is ignored, with the checks that keep it harmless
+    def set_stmt(self, s: ast.VariableSetStmt) -> None:
+        name = (s.name or "").lower()
+        K = enums.VariableSetKind
+        vals = []
+        for a in s.args or ():
+            ok, v = _const(a)
+            vals.append(str(v).lower() if ok and not isinstance(v, bool) else
+                        ("on" if v is True else "off" if v is False else None))
+        resetting = s.kind in (K.VAR_SET_DEFAULT, K.VAR_RESET)
+        if name == "search_path":
+            if resetting or s.kind != K.VAR_SET_VALUE or any(v is None for v in vals):
+                raise _Reject("SET search_path is only allowed with '' or the script's own schema")
+            for a in s.args:
+                v = _const(a)[1]
+                if v != "":
+                    self._schema(str(v))
+        elif name == "standard_conforming_strings":
+            if not resetting and vals not in (["on"], ["true"], ["yes"], ["1"]):
+                raise _Reject("SET standard_conforming_strings = off is not supported "
+                              "(it changes how string literals are read)")
+        elif name == "backslash_quote":
+            if not resetting and vals != ["safe_encoding"]:
+                raise _Reject("SET backslash_quote is not supported (it changes how string literals are read)")
+        elif name == "client_encoding":
+            if not resetting and (len(vals) != 1 or (vals[0] or "").replace("-", "").replace("_", "")
+                                  not in ("utf8", "unicode")):
+                raise _Reject("the script must be UTF-8 (SET client_encoding to another encoding is not supported)")
+
+    def boilerplate_select(self, s: ast.SelectStmt) -> bool:
+        """pg_dump's `SELECT pg_catalog.set_config('search_path', '', false)` and
+        `SELECT pg_catalog.setval(<'seq' | pg_get_serial_sequence('t', 'c')>, n[, bool])`."""
+        if any(getattr(s, f) for f in ("fromClause", "whereClause", "groupClause", "havingClause", "sortClause",
+                                       "withClause", "larg", "rarg", "valuesLists", "intoClause", "limitCount",
+                                       "limitOffset", "distinctClause", "lockingClause")):
+            return False
+        if not s.targetList or len(s.targetList) != 1:
+            return False
+        f = s.targetList[0].val
+        fname = _catalog_func(f)
+        if fname == "set_config":
+            args = f.args or ()
+            if len(args) != 3 or not all(_const(a)[0] for a in args):
+                raise _Reject("set_config is only allowed as set_config('search_path', '<schema>', false)")
+            key, value = _const(args[0])[1], _const(args[1])[1]
+            if key != "search_path" or not isinstance(value, str):
+                raise _Reject(f"set_config({key!r}, ...) is not supported (only 'search_path')")
+            for part in value.split(","):
+                part = part.strip().strip('"')
+                if part:
+                    self._schema(part)
+            return True
+        if fname == "setval":
+            args = list(f.args or ())
+            if not 2 <= len(args) <= 3 or not all(_const(a)[0] for a in args[1:]):
+                return False
+            first = args[0]
+            ok, seq = _const(first)
+            if not ok and _catalog_func(first) == "pg_get_serial_sequence" and len(first.args or ()) == 2 \
+                    and all(_const(a)[0] for a in first.args):
+                ok, seq = _const(first.args[0])
+            if not ok or not isinstance(seq, str):
+                return False
+            self._schema_of_text(seq)
+            return True
+        return False
+
+    def alter_owner(self, s: ast.AlterOwnerStmt) -> None:
+        obj = s.object
+        if s.objectType == _OBJ.OBJECT_SCHEMA and isinstance(obj, ast.String):
+            self._schema(obj.sval)
+            return
+        if isinstance(obj, ast.ObjectWithArgs):
+            names = [x.sval for x in obj.objname or () if isinstance(x, ast.String)]
+        elif isinstance(obj, (list, tuple)):
+            names = [x.sval for x in obj if isinstance(x, ast.String)]
+        else:
+            names = []
+        if len(names) >= 2:
+            self._schema(names[-2])
 
     # --- result
     def finish(self) -> ParsedScript:
@@ -726,8 +932,11 @@ class _Translator:
             nxt = next((t for t in pending if deps[t] <= set(done)), pending[0])  # cycle: keep script order
             done.append(nxt)
             pending.remove(nxt)
-        self.out.ops = ([self.tables[t] for t in done] + self.uniques + self.checks + self.fks + self.indexes
-                        + self.comments)
+        unique_idx = [o for o in self.indexes if o.get("unique")]
+        plain_idx = [o for o in self.indexes if not o.get("unique")]
+        # unique constraints and unique indexes before foreign keys, which may reference them
+        self.out.ops = ([self.tables[t] for t in done] + self.uniques + unique_idx + self.checks + self.fks
+                        + plain_idx + self.comments)
         for table, cols in self.stream_cols.items():
             srcs = self.stream_src[table]
             self.out.streams[table] = RowStream(
@@ -735,19 +944,14 @@ class _Translator:
         return self.out
 
 
-def _is_boilerplate_select(s: ast.SelectStmt) -> bool:
-    """`SELECT pg_catalog.set_config(...)` / `SELECT pg_catalog.setval(...)` as written by pg_dump."""
-    if any(getattr(s, f) for f in ("fromClause", "whereClause", "groupClause", "havingClause", "sortClause",
-                                   "withClause", "larg", "rarg", "valuesLists", "intoClause")):
-        return False
-    if not s.targetList or len(s.targetList) != 1:
-        return False
-    f = s.targetList[0].val
-    if not isinstance(f, ast.FuncCall):
-        return False
+def _catalog_func(f) -> str | None:
+    """Name of a plain call `f(...)` / `pg_catalog.f(...)`, else None."""
+    if not isinstance(f, ast.FuncCall) or f.agg_star or f.agg_distinct or f.over or f.agg_filter or f.agg_order:
+        return None
     names = [x.sval for x in f.funcname if isinstance(x, ast.String)]
-    return names in (["set_config"], ["pg_catalog", "set_config"], ["setval"], ["pg_catalog", "setval"]) and all(
-        _const(a)[0] for a in f.args or ())
+    if len(names) == 1 or (len(names) == 2 and names[0] == "pg_catalog"):
+        return names[-1]
+    return None
 
 
 # psql meta commands that would pull in content we cannot see; everything else is ignored.
@@ -780,7 +984,12 @@ def parse_script(text: str) -> ParsedScript:
             else:
                 tr.out.ignored.append(f"line {piece.line}: {_excerpt(piece.text)}")
             continue
-        tr.statement(piece)
+        if not tr.statement(piece):
+            seen -= 1
+        if piece.trailing:
+            tr.out.errors.append(ScriptIssue(piece.line, _excerpt(piece.trailing),
+                                             "text after `COPY ... FROM stdin;` on the same line is not allowed "
+                                             "(the data starts on the next line)"))
         if piece.data is not None and not piece.data.terminated:
             tr.out.errors.append(ScriptIssue(piece.line, _excerpt(piece.text),
                                              "COPY data is not terminated by a line containing only \\."))
