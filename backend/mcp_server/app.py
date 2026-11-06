@@ -199,7 +199,7 @@ class BearerAuth:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
-        if scope["path"] == "/healthz":
+        if scope["path"] == "/healthz" or scope["path"] == "/mcp/healthz":
             return await JSONResponse({"ok": True, "tools": len(tools.IMPL)})(scope, receive, send)
 
         headers = {k.decode().lower(): v.decode() for k, v in scope["headers"]}
