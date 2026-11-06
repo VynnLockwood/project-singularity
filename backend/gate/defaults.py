@@ -3,34 +3,38 @@
 RESERVED = ["user", "order", "group", "table", "column", "select", "from", "where", "index", "primary", "check"]
 
 REQUIRED = [
-    {"name": "id", "type": "integer", "primary_key": True, "identity": True, "nullable": False},
-    {"name": "createdAt", "type": "timestamptz", "nullable": False, "default": "now()"},
-    {"name": "updatedAt", "type": "timestamptz", "nullable": False, "default": "now()"},
-    {"name": "createdBy", "type": "text"},
-    {"name": "isActive", "type": "boolean", "nullable": False, "default": True},
+    {"name": "{table}_id", "role": "primary_key", "aliases": ["id"],
+     "type": "integer", "primary_key": True, "identity": True, "nullable": False},
+    {"name": "created_at", "role": "created_at", "aliases": ["createdAt"],
+     "type": "timestamptz", "nullable": False, "default": "now()"},
+    {"name": "updated_at", "role": "updated_at", "aliases": ["updatedAt"],
+     "type": "timestamptz", "nullable": False, "default": "now()"},
+    {"name": "created_by", "role": "created_by", "aliases": ["createdBy"], "type": "text"},
+    {"name": "is_active", "role": "is_active", "aliases": ["isActive"],
+     "type": "boolean", "nullable": False, "default": True},
 ]
 
 DEFAULT_RULES = [
     {
         "name": "tableNaming",
         "type": "naming",
-        "params": {"target": "table", "style": "camelCase", "maxLength": 63, "reserved": RESERVED},
+        "params": {"target": "table", "style": "snake_case", "maxLength": 63, "reserved": RESERVED},
         "severity": "block",
-        "description": "Table names are camelCase.",
+        "description": "Table names are snake_case.",
     },
     {
         "name": "columnNaming",
         "type": "naming",
-        "params": {"target": "column", "style": "camelCase", "maxLength": 63, "reserved": RESERVED},
+        "params": {"target": "column", "style": "snake_case", "maxLength": 63, "reserved": RESERVED},
         "severity": "block",
-        "description": "Column names are camelCase.",
+        "description": "Column names are snake_case.",
     },
     {
         "name": "auditColumns",
         "type": "required_columns",
         "params": {"columns": REQUIRED, "autoAdd": True},
         "severity": "block",
-        "description": "Every table has id, createdAt, updatedAt, createdBy and isActive (added automatically).",
+        "description": "Every table has <table>_id, created_at, updated_at, created_by and is_active (added automatically).",
     },
     {
         "name": "careWithDrops",
@@ -52,9 +56,9 @@ DEFAULT_RULES = [
     {
         "name": "timestampsHaveTimezone",
         "type": "type_map",
-        "params": {"columnPattern": "At$", "allowedTypes": ["timestamptz"]},
+        "params": {"columnPattern": "_at$", "allowedTypes": ["timestamptz"]},
         "severity": "block",
-        "description": "Columns ending in At use timestamptz.",
+        "description": "Columns ending in _at use timestamptz.",
     },
     {
         "name": "noFloat",
@@ -66,22 +70,22 @@ DEFAULT_RULES = [
     {
         "name": "codesNeedLookup",
         "type": "reference_for_codes",
-        "params": {"pattern": ".+Code$"},
+        "params": {"pattern": ".+_code$"},
         "severity": "warn",
         "description": "Code-like text columns should reference a lookup table.",
     },
     {
         "name": "foreignKeyNaming",
         "type": "fk_naming",
-        "params": {"style": "camelCase"},
+        "params": {"style": "snake_case"},
         "severity": "warn",
-        "description": "Foreign key columns are named <referencedTable>Id.",
+        "description": "Foreign key columns are named <referenced_table>_id.",
     },
     {
         "name": "needsBusinessKey",
         "type": "business_key",
         "params": {},
         "severity": "warn",
-        "description": "Every table has a unique business key besides id.",
+        "description": "Every table has a unique business key besides the primary key.",
     },
 ]

@@ -170,12 +170,14 @@ export interface GridColumn {
   readOnly: boolean;
   references: { table: string; column: string } | null;
 }
-export type Row = Record<string, unknown> & { id?: number };
+export type Row = Record<string, unknown>;
 export interface RowsPage {
   table: string;
   total: number;
   offset: number;
   limit: number;
+  /** name of the table's primary key column (e.g. "province_id"); older servers send none, meaning "id" */
+  primaryKey?: string | null;
   columns: GridColumn[];
   rows: Row[];
 }
@@ -222,6 +224,8 @@ export interface DuplicateSummary {
   mergeChange: number | null;
 }
 export interface DuplicateDetail extends DuplicateSummary {
+  /** primary key column of the table; older servers send none, meaning "id" */
+  primaryKey?: string;
   members: Record<string, unknown>[];
   referencedBy: { table: string; column: string }[];
 }

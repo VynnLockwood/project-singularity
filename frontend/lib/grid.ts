@@ -83,7 +83,7 @@ export function validate(columns: GridColumn[], d: Draft): Record<string, string
 }
 
 /** The operations a Save sends: edits grouped by identical change, one insert, one deactivate. */
-export function buildOperations(table: string, columns: GridColumn[], d: Draft): Operation[] {
+export function buildOperations(table: string, columns: GridColumn[], d: Draft, pk = "id"): Operation[] {
   const byName = Object.fromEntries(columns.map((c) => [c.name, c]));
   const ops: Operation[] = [];
 
@@ -102,7 +102,7 @@ export function buildOperations(table: string, columns: GridColumn[], d: Draft):
     groups.set(key, g);
   }
   for (const { set, ids } of groups.values()) {
-    ops.push({ op: "update_rows", table, where: { id: ids.length === 1 ? ids[0] : ids }, set });
+    ops.push({ op: "update_rows", table, where: { [pk]: ids.length === 1 ? ids[0] : ids }, set });
   }
 
   const rows = d.added
@@ -120,12 +120,12 @@ export function buildOperations(table: string, columns: GridColumn[], d: Draft):
   if (rows.length) ops.push({ op: "insert_rows", table, rows });
 
   if (d.removed.length) {
-    ops.push({ op: "deactivate_rows", table, where: { id: d.removed.length === 1 ? d.removed[0] : d.removed } });
+    ops.push({ op: "deactivate_rows", table, where: { [pk]: d.removed.length === 1 ? d.removed[0] : d.removed } });
   }
   return ops;
 }
 
-export function cellText(row: Row, name: string, d: Draft): string {
-  const edited = row.id !== undefined ? d.edits[String(row.id)]?.[name] : undefined;
+export function cellText(row: Row, name: string, d: Draft, pk = "id"): string {
+  const edited = row[pk] !== undefined ? d.edits[String(row[pk])]?.[name] : undefined;
   return edited !== undefined ? edited : show(row[name]);
 }

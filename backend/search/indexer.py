@@ -8,7 +8,7 @@ from django.db import transaction
 from psycopg import sql
 
 from config.siconfig import get_config
-from schema import introspect
+from schema import introspect, roles
 from schema.conn import ro_connection
 
 from . import embedder
@@ -16,7 +16,6 @@ from .models import DIMENSIONS, SchemaEmbedding
 
 log = logging.getLogger(__name__)
 
-AUDIT_COLUMNS = {"id", "createdAt", "updatedAt", "createdBy", "isActive"}
 SAMPLE_TYPES = ("text", "character varying", "integer", "bigint", "smallint", "numeric", "date", "boolean")
 MAX_SAMPLE_LEN = 40
 _lock = threading.Lock()
@@ -38,16 +37,18 @@ def build_docs() -> list[dict]:
     refs = {(r["from"]["table"], r["from"]["column"]): r["to"] for r in g["relations"]}
     n_samples = get_config()["search"]["sampleValues"]
     docs = []
+    conv = roles.conventions()
     for t in g["tables"]:
         d = introspect.describe_table(t["name"])
+        skip = set(roles.roles_of(d, conv).values()) | roles.hidden_columns(conv)
         comments = {c["name"]: c["comment"] for c in d["columns"]}
         text = f"table {t['name']}."
         if d["comment"]:
             text += f" Description: {d['comment']}."
-        text += " Columns: " + ", ".join(c["name"] for c in t["columns"] if c["name"] not in AUDIT_COLUMNS) + "."
+        text += " Columns: " + ", ".join(c["name"] for c in t["columns"] if c["name"] not in skip) + "."
         docs.append({"kind": "table", "table": t["name"], "column": "", "content": text})
         for c in t["columns"]:
-            if c["name"] in AUDIT_COLUMNS:
+            if c["name"] in skip:
                 continue
             text = f"table {t['name']}, column {c['name']} ({c['type']})."
             if comments.get(c["name"]):

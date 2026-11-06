@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 from typing import Iterator
 
+from .conventions import Conventions
 from .operations import normalize_type
 
 
@@ -33,12 +34,50 @@ def has_column(state: dict, table: str, column: str) -> bool:
     return column in state.get(table, {}).get("columns", {})
 
 
+def pk_of(state: dict, table: str) -> str | None:
+    """Primary key column of `table`: the database's own, else the one the rules call primary_key."""
+    t = state.get(table)
+    return (t.get("pk") or t.get("roles", {}).get("primary_key")) if t else None
+
+
+def role_of(state: dict, table: str, role: str) -> str | None:
+    """Column of `table` that plays `role` (updated_at, is_active, ...), as set by the rules."""
+    t = state.get(table)
+    return t.get("roles", {}).get(role) if t else None
+
+
+def refresh_roles(state: dict, table: str, conv: Conventions | None) -> None:
+    if conv is not None and table in state:
+        state[table]["roles"] = conv.table_roles(table, state[table]["columns"], state[table].get("pk"))
+
+
+def with_roles(state: dict, conv: Conventions) -> dict:
+    """Copy of `state` in which every table knows which of its columns play which role."""
+    st = copy.deepcopy(state)
+    for t in st:
+        refresh_roles(st, t, conv)
+    return st
+
+
+def ref_column(state: dict, ref: dict, conv: Conventions | None = None, own_table: str | None = None,
+               own_cols=None) -> str | None:
+    """Column a reference points at: the one given, else the target table's primary key."""
+    if ref.get("column"):
+        return ref["column"]
+    if own_table is not None and ref["table"] == own_table and own_cols is not None:
+        explicit = next((c["name"] for c in own_cols if c.get("primary_key")), None)
+        names = {c["name"] for c in own_cols}
+        return conv.resolve("primary_key", own_table, names, explicit) if conv else explicit
+    return pk_of(state, ref["table"])
+
+
 def _col_entry(col: dict) -> dict:
     nullable = col.get("nullable", True) and not col.get("primary_key", False)
     return {"type": normalize_type(col["type"]), "nullable": nullable}
 
 
-def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str = "") -> None:
+def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str = "",
+             conv: Conventions | None = None) -> None:
     """Apply one operation to `state` in place; append problems to `errors` if given."""
     err = (lambda m: errors.append(f"{label}{m}")) if errors is not None else (lambda m: None)
     kind = op["op"]
@@ -61,15 +100,18 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
             err(f"table {name!r} already exists")
         cols = {}
         constraints = set()
+        pk = None
         for c in op["columns"]:
             cols[c["name"]] = _col_entry(c)
+            if c.get("primary_key"):
+                pk = c["name"]
             if c.get("unique"):
                 constraints.add(_trim(f"{name}_{c['name']}_key"))
             if c.get("primary_key"):
                 constraints.add(_trim(f"{name}_pkey"))
             ref = c.get("references")
             if ref:
-                rt, rc = ref["table"], ref.get("column", "id")
+                rt, rc = ref["table"], ref_column(state, ref, conv, name, op["columns"])
                 if rt != name and rt not in state:
                     err(f"column {c['name']} references missing table {rt!r}")
                 elif rt != name and rc not in state[rt]["columns"]:
@@ -77,7 +119,8 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
                 elif rt == name and rc not in {x["name"] for x in op["columns"]}:
                     err(f"column {c['name']} references missing column {rt}.{rc}")
                 constraints.add(fk_name(name, c["name"]))
-        state[name] = {"columns": cols, "indexes": set(), "constraints": constraints}
+        state[name] = {"columns": cols, "indexes": set(), "constraints": constraints, "pk": pk}
+        refresh_roles(state, name, conv)
 
     elif kind == "add_column":
         t, c = op["table"], op["column"]
@@ -86,7 +129,7 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
                 err(f"column {t}.{c['name']} already exists")
             ref = c.get("references")
             if ref:
-                rt, rc = ref["table"], ref.get("column", "id")
+                rt, rc = ref["table"], ref_column(state, ref)
                 if rt not in state:
                     err(f"column {c['name']} references missing table {rt!r}")
                 elif rc not in state[rt]["columns"]:
@@ -95,6 +138,7 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
             if c.get("unique"):
                 state[t]["constraints"].add(_trim(f"{t}_{c['name']}_key"))
             state[t]["columns"][c["name"]] = _col_entry(c)
+            refresh_roles(state, t, conv)
 
     elif kind == "rename_table":
         t, n = op["table"], op["new_name"]
@@ -111,6 +155,9 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
                 err(f"column {t}.{n} already exists")
             else:
                 state[t]["columns"][n] = state[t]["columns"].pop(c)
+                if state[t].get("pk") == c:
+                    state[t]["pk"] = n
+                refresh_roles(state, t, conv)
 
     elif kind == "alter_column_type":
         t, c = op["table"], op["column"]
@@ -138,7 +185,8 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
 
     elif kind == "add_foreign_key":
         t, c = op["table"], op["column"]
-        rt, rc = op["ref_table"], op.get("ref_column", "id")
+        rt = op["ref_table"]
+        rc = op.get("ref_column") or pk_of(state, rt)
         if need_col(t, c):
             if rt not in state:
                 err(f"referenced table {rt!r} does not exist")
@@ -153,6 +201,7 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
         t, c = op["table"], op["column"]
         if need_col(t, c):
             del state[t]["columns"][c]
+            refresh_roles(state, t, conv)
 
     elif kind == "drop_table":
         t = op["table"]
@@ -190,24 +239,24 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
     elif kind == "deactivate_rows":
         t = op["table"]
         if need_table(t):
-            if "isActive" not in state[t]["columns"]:
-                err(f"table {t!r} has no isActive column, so rows cannot be deactivated")
+            if role_of(state, t, "is_active") is None:
+                err(f"table {t!r} has no column with the is_active role, so rows cannot be deactivated")
             for k in op["where"]:
                 need_col(t, k)
 
 
-def validate(ops: list[dict], state: dict) -> tuple[list[str], dict]:
+def validate(ops: list[dict], state: dict, conv: Conventions | None = None) -> tuple[list[str], dict]:
     """Return (errors, state_after). `state` is not modified."""
-    st = copy.deepcopy(state)
+    st = with_roles(state, conv) if conv is not None else copy.deepcopy(state)
     errors: list[str] = []
     for i, op in enumerate(ops):
-        apply_op(op, st, errors, label=f"op[{i}] {op['op']}: ")
+        apply_op(op, st, errors, label=f"op[{i}] {op['op']}: ", conv=conv)
     return errors, st
 
 
-def walk(ops: list[dict], state: dict) -> Iterator[tuple[dict, dict]]:
+def walk(ops: list[dict], state: dict, conv: Conventions | None = None) -> Iterator[tuple[dict, dict]]:
     """Yield (op, state_before_op) while advancing a private copy of the state."""
-    st = copy.deepcopy(state)
+    st = with_roles(state, conv) if conv is not None else copy.deepcopy(state)
     for op in ops:
         yield op, copy.deepcopy(st)
-        apply_op(op, st)
+        apply_op(op, st, conv=conv)

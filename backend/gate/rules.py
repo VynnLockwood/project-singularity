@@ -8,9 +8,10 @@ from __future__ import annotations
 import copy
 import re
 
+from .conventions import ROLES, Conventions, strip_meta
 from .operations import normalize_type
 
-STYLES = ("camelCase", "snake_case", "PascalCase")
+STYLES = ("camelCase", "snake_case", "PascalCase", "custom")
 SEVERITIES = ("block", "warn")
 RULE_TYPES = (
     "naming", "required_columns", "forbidden", "type_map",
@@ -29,8 +30,10 @@ def words(name: str) -> list[str]:
     return [w.lower() for w in _WORD_RE.findall(name)]
 
 
-def to_style(name: str, style: str) -> str:
+def to_style(name: str, style: str, joiner: str | None = None) -> str:
     w = words(name) or [name.lower()]
+    if style == "custom":
+        return (joiner or "-").join(w)
     if style == "snake_case":
         return "_".join(w)
     cap = [x.capitalize() for x in w]
@@ -39,7 +42,10 @@ def to_style(name: str, style: str) -> str:
     return w[0] + "".join(cap[1:])
 
 
-def matches_style(name: str, style: str) -> bool:
+def matches_style(name: str, style: str, pattern: str | None = None) -> bool:
+    """`style` is one of STYLES, or "custom" with a regex `pattern` (any convention, set through the MCP)."""
+    if style == "custom":
+        return bool(re.search(pattern or "", name))
     return bool(_STYLE_RE[style].match(name))
 
 
@@ -69,6 +75,8 @@ def validate_rule_definition(rtype: str, params, severity: str) -> list[str]:
             errs.append("params.target must be 'table' or 'column'")
         if params.get("style") not in STYLES:
             errs.append(f"params.style must be one of {list(STYLES)}")
+        elif params["style"] == "custom":
+            regex("pattern")
         ml = params.get("maxLength", 63)
         if not isinstance(ml, int) or not 1 <= ml <= 63:
             errs.append("params.maxLength must be an integer from 1 to 63")
@@ -82,7 +90,19 @@ def validate_rule_definition(rtype: str, params, severity: str) -> list[str]:
             from .operations import _check_column
 
             for c in cols:
-                _check_column(c, errs, "params.columns", allow_references=False)
+                if not isinstance(c, dict):
+                    errs.append("params.columns: column must be an object")
+                    continue
+                role = c.get("role")
+                if role is not None and role not in ROLES:
+                    errs.append(f"params.columns: role must be one of {list(ROLES)}")
+                al = c.get("aliases", [])
+                if not isinstance(al, list) or not all(isinstance(a, str) for a in al):
+                    errs.append("params.columns: aliases must be a list of names")
+                plain = strip_meta(c)
+                if isinstance(plain.get("name"), str):
+                    plain["name"] = plain["name"].replace("{table}", "t")
+                _check_column(plain, errs, "params.columns", allow_references=False)
     elif rtype == "forbidden":
         ops = params.get("ops")
         if not isinstance(ops, list) or not ops:
@@ -121,6 +141,7 @@ def evaluate(ops: list[dict], rules: list[dict]) -> tuple[list[dict], list[dict]
     ops_out is a copy of ops with auto-addable required columns inserted.
     """
     ops_out = copy.deepcopy(ops)
+    conv = Conventions.from_rules(rules)
     violations: list[dict] = []
     auto_added: list[str] = []
 
@@ -160,8 +181,8 @@ def evaluate(ops: list[dict], rules: list[dict]) -> tuple[list[dict], list[dict]
                         names.append(op["new_name"])
                 for n in names:
                     what = p["target"]
-                    if not matches_style(n, style):
-                        add(rule, i, f"{what} name {n!r} is not {style}", to_style(n, style))
+                    if not matches_style(n, style, p.get("pattern")):
+                        add(rule, i, f"{what} name {n!r} is not {style}", to_style(n, style, p.get("separator")))
                     elif len(n) > maxlen:
                         add(rule, i, f"{what} name {n!r} is longer than {maxlen} characters")
                     if n.lower() in reserved:
@@ -175,6 +196,7 @@ def evaluate(ops: list[dict], rules: list[dict]) -> tuple[list[dict], list[dict]
                 have = {c["name"]: c for c in op["columns"]}
                 missing = []
                 for req in p["columns"]:
+                    req = {**strip_meta(req), "name": req["name"].replace("{table}", op["name"])}
                     cur = have.get(req["name"])
                     if cur is None:
                         if auto:
@@ -240,7 +262,8 @@ def evaluate(ops: list[dict], rules: list[dict]) -> tuple[list[dict], list[dict]
                 for col, ref, own in pairs:
                     if ref == own:
                         continue
-                    expected = to_style(f"{ref}_id", style)
+                    pk_names = conv.candidates("primary_key", ref)
+                    expected = pk_names[0] if pk_names else to_style(f"{ref}_id", style, p.get("separator"))
                     if col != expected:
                         add(rule, i, f"foreign key column {col!r} should be named {expected!r}", expected)
 
@@ -248,7 +271,7 @@ def evaluate(ops: list[dict], rules: list[dict]) -> tuple[list[dict], list[dict]
             for i, op in enumerate(ops_out):
                 if op["op"] != "create_table":
                     continue
-                if not any(c.get("unique") or (c.get("primary_key") and c["name"] != "id") for c in op["columns"]):
+                if not any(c.get("unique") or (c.get("primary_key") and c["name"] not in conv.candidates("primary_key", op["name"])) for c in op["columns"]):
                     add(rule, i, f"table {op['name']!r} has no unique business key column (for example a code)")
 
     return ops_out, violations, auto_added

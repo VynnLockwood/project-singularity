@@ -94,7 +94,7 @@ export function GridEditor({ me, table, live, onProposed }: Props) {
 
   const save = useCallback(async () => {
     if (!page) return;
-    const ops = buildOperations(table, page.columns, draft);
+    const ops = buildOperations(table, page.columns, draft, page.primaryKey ?? "id");
     if (!ops.length) return;
     setSaving(true); setError(""); setNote("");
     try {
@@ -197,7 +197,7 @@ export function GridEditor({ me, table, live, onProposed }: Props) {
               </tr>
             ))}
             {page.rows.map((row) => {
-              const id = row.id as number;
+              const id = row[page.primaryKey ?? "id"] as number;
               const removed = draft.removed.includes(id);
               return (
                 <tr key={id} data-removed={removed}>
@@ -210,7 +210,7 @@ export function GridEditor({ me, table, live, onProposed }: Props) {
                   )}
                   {columns.map((c) => {
                     const edited = draft.edits[String(id)]?.[c.name] !== undefined;
-                    const text = cellText(row, c.name, draft);
+                    const text = cellText(row, c.name, draft, page.primaryKey ?? "id");
                     return (
                       <td key={c.name} data-edited={edited}>
                         {!canEdit || c.readOnly || removed ? <span>{text}</span> : input(c, id, text, edited)}
