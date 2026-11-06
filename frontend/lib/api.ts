@@ -86,7 +86,7 @@ export interface Change {
   check: { violations?: Violation[]; errors?: string[] };
 }
 
-export const getQueue = () => call<{ pending: Change[] }>("GET", "/queue").then((r) => r.pending);
+export const getQueue = () => call<{ changes: Change[] }>("GET", "/queue").then((r) => r.changes ?? []);
 export const decide = (id: number, action: "approve" | "reject", note = "") =>
   call<Change>("POST", `/changes/${id}/${action}`, note ? { note } : {});
 

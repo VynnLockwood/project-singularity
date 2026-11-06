@@ -26,7 +26,7 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
 
   // What is waiting for this person now, then keep it fresh from the event stream.
   useEffect(() => {
-    getQueue().then((q) => setLive((l) => q.reduce(upsert, l))).catch(() => {});
+    getQueue().then((q) => { if (Array.isArray(q)) setLive((l) => q.reduce(upsert, l)); }).catch(() => {});
     return connectEvents(
       (e) => {
         setLive((l) => upsert(l, e.change));
