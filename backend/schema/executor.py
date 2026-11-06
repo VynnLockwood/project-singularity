@@ -268,20 +268,45 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_
     return None
 
 
-def _sequence_states(conn) -> list[dict]:
-    return conn.execute(
-        "SELECT format('%I.%I', schemaname, sequencename) AS name, last_value, start_value "
-        "FROM pg_sequences WHERE schemaname = 'master'").fetchall()
+LOCK_TIMEOUT = "5s"
+STATEMENT_TIMEOUT = "120s"
+
+
+def _sequence_states(conn, tables: list[str]) -> list[dict]:
+    """Name, last value and start value of every sequence owned by (serial or identity) one of `tables`."""
+    out = []
+    for t in tables:
+        out += conn.execute(
+            "SELECT format('%%I.%%I', n.nspname, c.relname) AS name, pg_sequence_last_value(c.oid) AS last_value, "
+            "s.seqstart AS start_value FROM pg_depend d "
+            "JOIN pg_class c ON c.oid = d.objid AND c.relkind = 'S' "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_sequence s ON s.seqrelid = c.oid "
+            "WHERE d.classid = 'pg_class'::regclass AND d.refclassid = 'pg_class'::regclass "
+            "AND d.refobjid = format('master.%%I', %s::text)::regclass AND d.deptype IN ('a', 'i')",
+            (t, )).fetchall()
+    return out
 
 
 def _restore_sequences(conn, states: list[dict]) -> None:
-    """Sequences are not rolled back with a transaction: put every pre-existing one back as it was."""
+    """Sequences are not rolled back with a transaction: put each one back as it was.
+
+    Only safe while the caller still holds a lock that keeps other writers out of the owning tables.
+    """
     for s in states:
         if s["last_value"] is None:
             conn.execute("SELECT setval(%s::regclass, %s, false)", (s["name"], s["start_value"]))
         else:
             conn.execute("SELECT setval(%s::regclass, %s, true)", (s["name"], s["last_value"]))
-    conn.commit()
+
+
+def _insert_targets(ops: list[dict], state: dict) -> list[str]:
+    """Existing tables that insert_rows / bulk_insert write to (the ones whose sequences a run advances)."""
+    seen: list[str] = []
+    for op in ops:
+        t = op.get("table")
+        if op["op"] in ("insert_rows", "bulk_insert") and t in state and t not in seen:
+            seen.append(t)
+    return seen
 
 
 def execute(ops: list[dict], state: dict, actor: str | None, *, max_rows: int = 1000,
@@ -289,23 +314,40 @@ def execute(ops: list[dict], state: dict, actor: str | None, *, max_rows: int = 
             dry_run: bool = False) -> ExecResult:
     """Run `ops` in one transaction as the read/write role. Raises ApplyError on any failure.
 
-    row_source(op) feeds bulk_insert ops (see _bulk_insert). dry_run runs everything,
-    then rolls back and restores the sequences it advanced (a concurrent insert during
-    the dry run could be disturbed by that restore), and returns the same ExecResult a real run would.
+    row_source(op) feeds bulk_insert ops (see _bulk_insert).
+
+    dry_run runs everything, then rolls back, and returns the same ExecResult a real run would.
+    Sequences are not transactional, so a dry run first takes SHARE ROW EXCLUSIVE locks on every
+    existing table that insert_rows / bulk_insert write to (blocking concurrent writers; a busy
+    table fails with ApplyError after LOCK_TIMEOUT), snapshots the sequences those tables own,
+    and restores them before rolling back, also when an operation fails part-way.
     """
     reverse: list[list[dict] | None] = []
     count = 0
     try:
         with rw_connection() as conn:
-            seqs = _sequence_states(conn) if dry_run else []
-            conn.execute("SET LOCAL lock_timeout = '5s'")
-            conn.execute("SET LOCAL statement_timeout = '120s'")
-            for op, before, stmts in sqlgen.plan(ops, state, actor, Conventions.from_rules(rules)):
-                reverse.append(_run_op(conn, op, before, stmts, max_rows, actor, row_source))
-                count += len(stmts) or 1
+            conn.execute(sql.SQL("SET LOCAL lock_timeout = {}").format(sql.Literal(LOCK_TIMEOUT)))
+            conn.execute(sql.SQL("SET LOCAL statement_timeout = {}").format(sql.Literal(STATEMENT_TIMEOUT)))
+            seqs: list[dict] = []
             if dry_run:
-                conn.rollback()
+                targets = _insert_targets(ops, state)
+                for t in targets:
+                    conn.execute(sql.SQL("LOCK TABLE {} IN SHARE ROW EXCLUSIVE MODE").format(sqlgen.tbl(t)))
+                seqs = _sequence_states(conn, targets)
+                conn.execute("SAVEPOINT dry_run_ops")
+            try:
+                for op, before, stmts in sqlgen.plan(ops, state, actor, Conventions.from_rules(rules)):
+                    reverse.append(_run_op(conn, op, before, stmts, max_rows, actor, row_source))
+                    count += len(stmts) or 1
+            except BaseException:
+                if dry_run:
+                    # leave the aborted state (locks stay held), then undo the sequence moves
+                    conn.execute("ROLLBACK TO SAVEPOINT dry_run_ops")
+                    _restore_sequences(conn, seqs)
+                raise
+            if dry_run:
                 _restore_sequences(conn, seqs)
+                conn.rollback()
     except ApplyError:
         raise
     except psycopg.Error as exc:

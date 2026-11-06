@@ -255,3 +255,43 @@ def test_no_is_active_role_gives_none_reverse():
     assert res.ok, res.errors
     r = executor.execute(res.operations, st, ME, rules=RULES, row_source=lambda o: iter([("a",)]))
     assert r.reverse_ops is None
+
+
+# ---- fix round 2: dry-run locking and sequence scope ----------------------
+
+def test_dry_run_restores_sequences_when_a_later_op_fails(geo):
+    before = seq_state()
+    st = introspect.snapshot()
+    res = check.run([bulk(), bulk()], st, RULES, actor=ME, allow_bulk=True)
+    assert res.ok, res.errors
+    calls = []
+
+    def source(op):
+        calls.append(1)
+        return iter(GOOD if len(calls) == 1 else [*GOOD[:2], ("Nowhere", "1", "XXX")])
+    with pytest.raises(executor.ApplyError, match="missing province.code"):
+        executor.execute(res.operations, st, ME, rules=RULES, row_source=source, dry_run=True)
+    assert len(calls) == 2
+    assert seq_state() == before
+    assert rows("SELECT count(*) AS n FROM master.district")[0]["n"] == 0
+
+
+def test_dry_run_fails_when_a_writer_holds_the_table(geo, monkeypatch):
+    from schema.conn import rw_connection
+    monkeypatch.setattr(executor, "LOCK_TIMEOUT", "300ms")
+    with rw_connection() as writer:
+        writer.execute("INSERT INTO master.district (name) VALUES ('busy')")  # open transaction
+        with pytest.raises(executor.ApplyError, match="lock"):
+            load(GOOD, dry_run=True)
+        writer.rollback()
+    assert rows("SELECT count(*) AS n FROM master.district")[0]["n"] == 0
+
+
+def test_dry_run_only_looks_at_sequences_of_targeted_tables(geo):
+    from schema.conn import rw_connection
+    with rw_connection() as c:
+        names = [s["name"] for s in executor._sequence_states(c, ["district"])]
+        assert len(names) == 1 and names[0].startswith("master.district")
+        assert executor._sequence_states(c, []) == []
+    assert executor._insert_targets([bulk(), {"op": "update_rows", "table": "province", "where": {"code": "x"}, "set": {}}],
+                                    introspect.snapshot()) == ["district"]
