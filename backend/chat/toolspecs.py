@@ -14,6 +14,7 @@ _OPS = (
     "add_check{table,name,expression}, set_table_comment{table,comment}, "
     "drop_column{table,column,reason}, drop_table{table,reason}, drop_index{name,reason}, drop_constraint{table,name,reason}, "
     "insert_rows{table,rows[]}, update_rows{table,where{},set{}}, deactivate_rows{table,where{}}. "
+    "(bulk_insert exists but is produced by script intake only; never write it yourself, the gate refuses it.) "
     "Types: text, integer, bigint, smallint, boolean, date, timestamptz, timestamp, uuid, jsonb, real, "
     "double precision, numeric, numeric(p,s), varchar(n). Audit columns are added automatically."
 )

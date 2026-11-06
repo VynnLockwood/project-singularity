@@ -244,6 +244,9 @@ def statements_for(op: dict, state_before: dict, actor: str | None, conv: Conven
             )
         return out
 
+    if k == "bulk_insert":
+        return []  # loaded by schema.executor (COPY + temp table); there is no per-row SQL to show
+
     if k == "update_rows":
         t = op["table"]
         sets = dict(op["set"])
@@ -325,6 +328,8 @@ def describe(op: dict) -> str:
         return f"- drop constraint {op['table']}.{op['name']}  (reason: {op['reason']})"
     if k == "insert_rows":
         return f"~ insert {len(op['rows'])} row(s) into {op['table']}"
+    if k == "bulk_insert":
+        return f"~ bulk load {op['expected_rows']} row(s) into {op['table']} from script {op['source']['script_id']} ({op['source']['stream']})"
     if k == "update_rows":
         return f"~ update {op['table']} set {sorted(op['set'])} where {op['where']}"
     if k == "deactivate_rows":

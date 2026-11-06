@@ -244,6 +244,26 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
                 for k in r:
                     need_col(t, k)
 
+    elif kind == "bulk_insert":
+        t = op["table"]
+        if need_table(t):
+            refs = op.get("refs", [])
+            carriers = {r["source_column"] for r in refs}
+            for c in op["columns"]:
+                if c not in carriers:
+                    need_col(t, c)
+            for r in refs:
+                need_col(t, r["column"])
+                if r["column"] in op["columns"]:
+                    err(f"column {r['column']!r} is filled by a ref and must not also be a source column")
+                pt = r["parent_table"]
+                if pt not in state:
+                    err(f"parent table {pt!r} does not exist")
+                else:
+                    need_col(pt, r["parent_key"])
+                    if pk_of(state, pt) is None:
+                        err(f"parent table {pt!r} has no primary key")
+
     elif kind == "update_rows":
         t = op["table"]
         if need_table(t):

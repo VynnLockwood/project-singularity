@@ -37,7 +37,9 @@ SCHEMA_OPS = {
     "drop_column", "drop_table", "drop_index", "drop_constraint",
     "add_check", "set_table_comment",
 }
-DATA_OPS = {"insert_rows", "update_rows", "deactivate_rows"}
+DATA_OPS = {"insert_rows", "update_rows", "deactivate_rows", "bulk_insert"}
+# Produced only by script intake; the normal propose path refuses it (see gate.check.run allow_bulk).
+INTERNAL_OPS = {"bulk_insert"}
 ALL_OPS = SCHEMA_OPS | DATA_OPS
 DESTRUCTIVE_OPS = {"drop_column", "drop_table", "drop_index", "drop_constraint"}
 
@@ -396,6 +398,37 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
             else:
                 for r in rows:
                     _check_values(r, errs, where, "row")
+        elif kind == "bulk_insert":
+            keys("table", "columns", "source", "refs", "expected_rows")
+            _ident(op.get("table"), "table", errs, where)
+            _check_cols_list(op.get("columns"), errs, where)
+            cols = op.get("columns")
+            if isinstance(cols, list) and len(cols) != len(set(cols)):
+                errs.append(f"{where}: duplicate columns")
+            src = op.get("source")
+            if (not isinstance(src, dict) or set(src) != {"script_id", "stream"}
+                    or not isinstance(src["script_id"], int) or isinstance(src["script_id"], bool)
+                    or not isinstance(src["stream"], str) or not src["stream"]):
+                errs.append(f"{where}: source must be {{script_id: int, stream: text}}")
+            er = op.get("expected_rows")
+            if not isinstance(er, int) or isinstance(er, bool) or er < 1:
+                errs.append(f"{where}: expected_rows must be a positive integer")
+            refs = op.get("refs", [])
+            if not isinstance(refs, list):
+                errs.append(f"{where}: refs must be a list")
+            else:
+                seen = set()
+                for r in refs:
+                    if not isinstance(r, dict) or set(r) != {"column", "parent_table", "parent_key", "source_column"}:
+                        errs.append(f"{where}: each ref must be {{column, parent_table, parent_key, source_column}}")
+                        continue
+                    for f in ("column", "parent_table", "parent_key", "source_column"):
+                        _ident(r[f], f"ref {f}", errs, where)
+                    if isinstance(cols, list) and r["source_column"] not in cols:
+                        errs.append(f"{where}: ref source_column {r['source_column']!r} is not in columns")
+                    if r["column"] in seen:
+                        errs.append(f"{where}: column {r['column']!r} has more than one ref")
+                    seen.add(r["column"])
         elif kind == "update_rows":
             keys("table", "where", "set")
             _ident(op.get("table"), "table", errs, where)
@@ -433,6 +466,8 @@ def affected_tables(ops: list[dict]) -> list[str]:
             out.add(o["table"])
         if o["op"] == "add_foreign_key":
             out.add(o["ref_table"])
+        if o["op"] == "bulk_insert":
+            out.update(r["parent_table"] for r in o.get("refs", []))
         if o["op"] == "create_table":
             for c in o["columns"]:
                 if c.get("references"):
