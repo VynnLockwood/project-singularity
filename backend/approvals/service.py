@@ -175,9 +175,13 @@ def approve(user, change_id: int) -> Change:
                 return _fail(change, user, f"backup failed, nothing was changed: {exc}")
             record(user, "backup.created", target=path.name)
 
+        # a revert of a bulk load deactivates as many rows as the load inserted, so it may use the script cap
+        max_rows = cfg["limits"]["maxRowsPerDataOp"]
+        if is_revert:
+            max_rows = max(max_rows, cfg["limits"]["maxScriptRows"])
         try:
             result = executor.execute(
-                change.operations, state, change.requester.email, max_rows=cfg["limits"]["maxRowsPerDataOp"],
+                change.operations, state, change.requester.email, max_rows=max_rows,
                 rules=rule_service.active_rules(),
             )
         except executor.ApplyError as exc:

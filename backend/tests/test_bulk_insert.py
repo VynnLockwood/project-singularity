@@ -129,3 +129,129 @@ def test_dry_run_rolls_back(geo):
     res = load(GOOD, dry_run=True)
     assert res.statements >= 1 and res.reverse_ops
     assert rows("SELECT count(*) AS n FROM master.district")[0]["n"] == 0
+
+
+# ---- fix round 1 -----------------------------------------------------------
+
+def seq_state():
+    from schema.conn import rw_connection
+    with rw_connection() as c:
+        return c.execute("SELECT sequencename, last_value FROM pg_sequences WHERE schemaname = 'master' "
+                         "ORDER BY 1").fetchall()
+
+
+def test_dry_run_restores_sequences(geo):
+    before = seq_state()
+    load(GOOD, dry_run=True)
+    assert seq_state() == before
+    op = {**bulk(), "columns": ["district_id", "name", "population", "province_code"]}
+    load([("100", "A", "1", "BKK"), ("101", "B", "2", "CNX"), ("102", "C", "3", "BKK")], op=op, dry_run=True)
+    assert seq_state() == before
+    load(GOOD)
+    assert rows("SELECT max(district_id) AS m FROM master.district")[0]["m"] == 3
+
+
+def test_dry_run_restores_never_called_sequence(geo):
+    from schema.conn import rw_connection
+    with rw_connection() as c:
+        c.execute("TRUNCATE master.district RESTART IDENTITY")
+    before = seq_state()
+    assert [r["last_value"] for r in before if r["sequencename"].startswith("district")] == [None]
+    load(GOOD, dry_run=True)
+    assert seq_state() == before
+    load(GOOD)
+    assert rows("SELECT min(district_id) AS m FROM master.district")[0]["m"] == 1
+
+
+def test_too_many_rows_stops_early(geo):
+    consumed = []
+
+    def gen():
+        for i in range(10**6):
+            consumed.append(i)
+            yield ("x", "1", "BKK")
+    st = introspect.snapshot()
+    res = check.run([bulk()], st, RULES, actor=ME, allow_bulk=True)
+    with pytest.raises(executor.ApplyError, match="more than"):
+        executor.execute(res.operations, st, ME, rules=RULES, row_source=lambda o: gen())
+    assert len(consumed) == 4
+
+
+def test_reserved_column_name(geo):
+    res = check.run([{**bulk(), "columns": ["__row", "province_code"]}], introspect.snapshot(), RULES, allow_bulk=True)
+    assert not res.ok and any("reserved" in e for e in res.errors)
+
+
+def test_two_bulk_ops_in_one_execute(geo):
+    st = introspect.snapshot()
+    res = check.run([bulk(), bulk(2)], st, RULES, actor=ME, allow_bulk=True)
+    assert res.ok, res.errors
+    r = executor.execute(res.operations, st, ME, rules=RULES, row_source=lambda o: iter(GOOD[:o["expected_rows"]]))
+    assert rows("SELECT count(*) AS n FROM master.district")[0]["n"] == 5
+    assert len(r.reverse_ops) == 2
+
+
+def test_empty_string_becomes_null_for_non_text(geo):
+    apply([{"op": "add_column", "table": "district", "column": col("extra", "jsonb")}])
+    op = {**bulk(), "columns": ["name", "extra", "population", "province_code"]}
+    load([("", "", "", "BKK")], op=bulk(1, **{"columns": op["columns"]}))
+    r = rows("SELECT name, extra, population FROM master.district")[0]
+    assert r == {"name": "", "extra": None, "population": None}
+
+
+def test_cast_treats_char_like_text():
+    from psycopg import sql
+    for t in ("text", "character varying(5)", "character(3)", "bpchar"):
+        assert "NULLIF" not in executor._cast(sql.Identifier("c"), t).as_string(None)
+    assert "NULLIF" in executor._cast(sql.Identifier("c"), "integer").as_string(None)
+
+
+def test_copy_escaping(geo):
+    nasty = ["tab\there", "line\nbreak", "back\\slash", "\\N", "ภาษาไทย", 'quote"s', "a,b"]
+    op = bulk(len(nasty), **{"columns": ["name", "province_code"]})
+    load([(n, "BKK") for n in nasty], op=op)
+    got = [r["name"] for r in rows("SELECT name FROM master.district ORDER BY district_id")]
+    assert got == nasty
+
+
+def test_null_source_value(geo):
+    load([(None, None, None)], op=bulk(1))
+    r = rows("SELECT name, province_id FROM master.district")[0]
+    assert r == {"name": None, "province_id": None}
+
+
+def test_duplicate_parent_key_is_an_error(geo):
+    from schema.conn import rw_connection
+    with rw_connection() as c:
+        c.execute("ALTER TABLE master.province DROP CONSTRAINT province_code_key")
+        c.execute("INSERT INTO master.province (code, name) VALUES ('BKK', 'Dup')")
+    with pytest.raises(executor.ApplyError, match="inserted"):
+        load(GOOD)
+    assert rows("SELECT count(*) AS n FROM master.district")[0]["n"] == 0
+
+
+def test_table_without_pk_and_without_is_active_is_irreversible():
+    from schema.conn import rw_connection
+    with rw_connection() as c:
+        c.execute("CREATE TABLE master.plain (name text, qty integer)")
+    op = {"op": "bulk_insert", "table": "plain", "columns": ["name", "qty"], "source": {"script_id": 1, "stream": "s"},
+          "refs": [], "expected_rows": 2}
+    st = introspect.snapshot()
+    res = check.run([op], st, RULES, actor=ME, allow_bulk=True)
+    assert res.ok, res.errors
+    r = executor.execute(res.operations, st, ME, rules=RULES, row_source=lambda o: iter([("a", "1"), ("b", "2")]))
+    assert r.reverse_ops is None
+    assert rows("SELECT count(*) AS n FROM master.plain")[0]["n"] == 2
+
+
+def test_no_is_active_role_gives_none_reverse():
+    from schema.conn import rw_connection
+    with rw_connection() as c:
+        c.execute("CREATE TABLE master.thing (thing_id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name text)")
+    op = {"op": "bulk_insert", "table": "thing", "columns": ["name"], "source": {"script_id": 1, "stream": "s"},
+          "refs": [], "expected_rows": 1}
+    st = introspect.snapshot()
+    res = check.run([op], st, RULES, actor=ME, allow_bulk=True)
+    assert res.ok, res.errors
+    r = executor.execute(res.operations, st, ME, rules=RULES, row_source=lambda o: iter([("a",)]))
+    assert r.reverse_ops is None

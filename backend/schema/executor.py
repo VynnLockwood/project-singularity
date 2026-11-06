@@ -88,11 +88,15 @@ def _table_comment(conn, table: str) -> str:
 
 TMP = sql.Identifier("_bulk_src")
 ROWNO = sql.Identifier("__row")
-TEXTY = ("text", "character varying")
+TEXTY = ("text", "character varying", "character", "bpchar")
 
 
 def _cast(col: sql.Composable, pg_type: str) -> sql.Composable:
-    """tmp column -> target type; empty text means NULL for every non-text type."""
+    """tmp column -> target type; empty text means NULL for every non-text type.
+
+    `pg_type` is never user input: it is format_type() output for an existing column
+    (introspected in this transaction), so pasting it as SQL is safe.
+    """
     if pg_type.split("(")[0] in TEXTY:
         return sql.SQL("{}::{}").format(col, sql.SQL(pg_type))
     return sql.SQL("NULLIF({}, '')::{}").format(col, sql.SQL(pg_type))
@@ -102,7 +106,8 @@ def _bulk_insert(conn, op: dict, before: dict, actor: str | None, row_source) ->
     """COPY the rows into a temp table of text columns, then INSERT ... SELECT into the target.
 
     Temp-table columns are exactly op["columns"], in that order, and row_source(op) must yield
-    tuples (str | None) in that order. Columns named as a ref's source_column only feed the join;
+    tuples (str | None) in that order (more than expected_rows rows aborts early). Empty strings
+    load as NULL for every non-text target type (text, varchar, char keep ''). Columns named as a ref's source_column only feed the join;
     every other column is inserted directly into the column of the same name.
     """
     t = op["table"]
@@ -119,7 +124,9 @@ def _bulk_insert(conn, op: dict, before: dict, actor: str | None, row_source) ->
     width = len(op["columns"])
     with conn.cursor() as cur:
         with cur.copy(sql.SQL("COPY {} ({}) FROM STDIN").format(TMP, sql.SQL(", ").join(I(c) for c in op["columns"]))) as cp:
-            for row in row_source(op):
+            for n, row in enumerate(row_source(op), 1):
+                if n > op["expected_rows"]:
+                    raise ApplyError(f"bulk_insert into {t}: source has more than the expected {op['expected_rows']} rows")
                 if len(row) != width:
                     raise ApplyError(f"bulk_insert source row has {len(row)} values, expected {width}")
                 cp.write_row(row)
@@ -261,18 +268,36 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_
     return None
 
 
+def _sequence_states(conn) -> list[dict]:
+    return conn.execute(
+        "SELECT format('%I.%I', schemaname, sequencename) AS name, last_value, start_value "
+        "FROM pg_sequences WHERE schemaname = 'master'").fetchall()
+
+
+def _restore_sequences(conn, states: list[dict]) -> None:
+    """Sequences are not rolled back with a transaction: put every pre-existing one back as it was."""
+    for s in states:
+        if s["last_value"] is None:
+            conn.execute("SELECT setval(%s::regclass, %s, false)", (s["name"], s["start_value"]))
+        else:
+            conn.execute("SELECT setval(%s::regclass, %s, true)", (s["name"], s["last_value"]))
+    conn.commit()
+
+
 def execute(ops: list[dict], state: dict, actor: str | None, *, max_rows: int = 1000,
             rules: list[dict], row_source: Callable[[dict], Iterator[tuple]] | None = None,
             dry_run: bool = False) -> ExecResult:
     """Run `ops` in one transaction as the read/write role. Raises ApplyError on any failure.
 
     row_source(op) feeds bulk_insert ops (see _bulk_insert). dry_run runs everything,
-    then rolls back, and returns the same ExecResult a real run would.
+    then rolls back and restores the sequences it advanced (a concurrent insert during
+    the dry run could be disturbed by that restore), and returns the same ExecResult a real run would.
     """
     reverse: list[list[dict] | None] = []
     count = 0
     try:
         with rw_connection() as conn:
+            seqs = _sequence_states(conn) if dry_run else []
             conn.execute("SET LOCAL lock_timeout = '5s'")
             conn.execute("SET LOCAL statement_timeout = '120s'")
             for op, before, stmts in sqlgen.plan(ops, state, actor, Conventions.from_rules(rules)):
@@ -280,6 +305,7 @@ def execute(ops: list[dict], state: dict, actor: str | None, *, max_rows: int = 
                 count += len(stmts) or 1
             if dry_run:
                 conn.rollback()
+                _restore_sequences(conn, seqs)
     except ApplyError:
         raise
     except psycopg.Error as exc:

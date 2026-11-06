@@ -405,6 +405,8 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
             cols = op.get("columns")
             if isinstance(cols, list) and len(cols) != len(set(cols)):
                 errs.append(f"{where}: duplicate columns")
+            if isinstance(cols, list) and "__row" in cols:
+                errs.append(f"{where}: column name '__row' is reserved")
             src = op.get("source")
             if (not isinstance(src, dict) or set(src) != {"script_id", "stream"}
                     or not isinstance(src["script_id"], int) or isinstance(src["script_id"], bool)
