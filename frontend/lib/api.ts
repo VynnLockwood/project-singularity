@@ -72,7 +72,7 @@ export interface Violation {
 export interface Change {
   id: number;
   status: ChangeStatus;
-  kind: "schema" | "data";
+  kind: "schema" | "data" | "config";
   source: string;
   requester: string;
   prompt: string;

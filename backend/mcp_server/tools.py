@@ -11,6 +11,7 @@ from approvals.models import Change
 from config.siconfig import get_config
 from schema import introspect, query
 from settings_app import services as rule_services
+from settings_app import tunables
 
 # Minimum role for each tool. Tools above a user's role are hidden from their client.
 TOOL_ROLES = {
@@ -20,6 +21,9 @@ TOOL_ROLES = {
     "query": "viewer",
     "search_schema": "viewer",
     "propose_change": "editor",
+    "get_settings": "viewer",
+    "propose_config_change": "editor",
+    "list_users": "approver",
     "get_change": "editor",
     "approve_change": "editor",
     "reject_change": "editor",
@@ -51,6 +55,35 @@ def get_rules(user) -> dict:
     }
 
 
+def get_settings(user) -> dict:
+    """The quality settings, every rule (including switched-off ones) and how to change them."""
+    return {
+        "instructions": (
+            "These are the important knobs. To change any of them call propose_config_change; the change waits for an "
+            "approver in the approval queue, so tell the user it is pending and who can approve it."
+        ),
+        "settings": [{k: t[k] for k in ("key", "label", "help", "kind", "min", "max", "default", "value", "overridden", "options") if k in t}
+                     for t in tunables.describe()],
+        "rules": [{k: r[k] for k in ("name", "type", "severity", "enabled", "description", "params")} for r in rule_services.active_rules()],
+    }
+
+
+def list_users(user) -> dict:
+    from accounts.models import User
+
+    return {"users": [{"email": u.email, "name": f"{u.first_name} {u.last_name}".strip(), "role": u.role, "active": u.is_active}
+                      for u in User.objects.order_by("email")]}
+
+
+def propose_config_change(user, operations: list, prompt: str = "", *, source: str = "mcp",
+                          conversation_id: int | None = None) -> dict:
+    from approvals import config_ops
+
+    if not config_ops.is_config(operations):
+        raise ToolFailure(f"operations must all be configuration operations: {sorted(config_ops.CONFIG_OPS)}")
+    return propose_change(user, operations, prompt, source=source, conversation_id=conversation_id)
+
+
 def list_tables(user) -> dict:
     return {"tables": introspect.list_tables()}
 
@@ -72,7 +105,10 @@ def run_query(user, sql: str, limit: int | None = None) -> dict:
 
 
 def _next_step(user, change: Change) -> str:
+    again = "propose_config_change" if change.kind == "config" else "propose_change"
     if change.status == "rejected" and change.decided_by_id is None:
+        if change.kind == "config":
+            return "This configuration change is not valid. Read 'check.errors', fix the operations and call propose_config_change again."
         return "The gate blocked this change. Fix the problems in 'check' (use the suggestions) and call propose_change again."
     if change.status == "pending":
         if service.can_decide(user, change):
@@ -87,7 +123,7 @@ def _next_step(user, change: Change) -> str:
     if change.status == "applied":
         return "Done. The change was applied."
     if change.status == "stale":
-        return "The schema or rules changed since this was checked. Call propose_change again with the same operations."
+        return f"The schema or rules changed since this was checked. Call {again} again with the same operations."
     if change.status == "failed":
         return "The database refused the change and nothing was changed. See 'error'."
     return ""
@@ -152,6 +188,9 @@ IMPL = {
     "query": run_query,
     "search_schema": search_schema,
     "propose_change": propose_change,
+    "get_settings": get_settings,
+    "propose_config_change": propose_config_change,
+    "list_users": list_users,
     "get_change": get_change,
     "approve_change": approve_change,
     "reject_change": reject_change,

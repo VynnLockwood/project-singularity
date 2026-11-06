@@ -169,7 +169,7 @@ export function TeamPanel({ me }: { me: Me }) {
   );
 }
 
-export function SettingsView({ me }: { me: Me }) {
+export function SettingsView({ me, waiting = 0, onOpenQueue, refreshKey = 0 }: { me: Me; waiting?: number; onOpenQueue?: () => void; refreshKey?: number }) {
   const approver = me.role === "approver";
   const [section, setSection] = useState<Section>("quality");
   const sections: [Section, string][] = [["quality", "Quality"], ["rules", "Rules"], ...(approver ? ([["team", "Team"]] as [Section, string][]) : [])];
@@ -180,9 +180,15 @@ export function SettingsView({ me }: { me: Me }) {
           <button key={k} className="link" aria-pressed={section === k} onClick={() => setSection(k)}>{label}</button>
         ))}
       </div>
-      {section === "quality" && <QualitySettings canEdit={approver} />}
-      {section === "rules" && <RulesPanel canEdit={approver} />}
-      {section === "team" && approver && <TeamPanel me={me} />}
+      {waiting > 0 && (
+        <p className="warnings" role="status">
+          {waiting} settings, rules or roles {waiting === 1 ? "change is" : "changes are"} waiting for an approver (proposed by an AI client or chat).{" "}
+          {onOpenQueue && approver && <button className="link" onClick={onOpenQueue}>Review in the Queue</button>}
+        </p>
+      )}
+      {section === "quality" && <QualitySettings key={`q${refreshKey}`} canEdit={approver} />}
+      {section === "rules" && <RulesPanel key={`r${refreshKey}`} canEdit={approver} />}
+      {section === "team" && approver && <TeamPanel key={`t${refreshKey}`} me={me} />}
     </div>
   );
 }

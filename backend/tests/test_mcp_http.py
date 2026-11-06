@@ -86,11 +86,11 @@ def test_health_endpoint_needs_no_token(server):
 
 
 def test_each_role_sees_only_its_tools(server):
-    read = ["describe_table", "get_rules", "list_tables", "query", "search_schema"]
-    edit = read + ["approve_change", "get_change", "propose_change", "reject_change"]
+    read = ["describe_table", "get_rules", "get_settings", "list_tables", "query", "search_schema"]
+    edit = read + ["approve_change", "get_change", "propose_change", "propose_config_change", "reject_change"]
     assert names(server, Role.VIEWER) == read
     assert names(server, Role.EDITOR) == sorted(edit)
-    assert names(server, Role.APPROVER) == sorted(edit + ["list_pending"])
+    assert names(server, Role.APPROVER) == sorted(edit + ["list_pending", "list_users"])
 
 
 def test_viewer_cannot_call_a_hidden_tool(server):
@@ -106,7 +106,7 @@ def test_role_change_applies_immediately_to_the_same_token(server):
     assert "list_pending" in names(server, Role.APPROVER)
     u.role = Role.VIEWER
     u.save()
-    assert names(server, Role.APPROVER) == ["describe_table", "get_rules", "list_tables", "query", "search_schema"]
+    assert names(server, Role.APPROVER) == ["describe_table", "get_rules", "get_settings", "list_tables", "query", "search_schema"]
 
 
 def test_revoked_token_stops_working(server):
@@ -205,3 +205,20 @@ def test_401_points_oauth_clients_at_the_discovery_document(server):
     assert e.value.code == 401
     assert 'resource_metadata="https://127.0.0.1:' in e.value.headers["WWW-Authenticate"]
     assert "/.well-known/oauth-protected-resource" in e.value.headers["WWW-Authenticate"]
+
+
+def test_a_settings_change_proposed_over_mcp_waits_for_an_approver(server):
+    """The whole path: an editor's AI client proposes a setting; it is pending, nothing changed; an approver's client applies it."""
+    from config.siconfig import get_config
+
+    tk = server["tokens"]
+    before = get_config()["search"]["topK"]
+    ops = [{"op": "set_setting", "key": "search.topK", "value": before + 2}]
+    res = payload(with_client(server["url"], tk[Role.EDITOR], lambda c: c.call_tool("propose_config_change", {"operations": ops, "prompt": "more results"})))
+    assert res["status"] == "pending" and res["kind"] == "config" and "approver" in res["next"]
+    assert get_config()["search"]["topK"] == before
+
+    done = payload(with_client(server["url"], tk[Role.APPROVER], lambda c: c.call_tool("approve_change", {"change_id": res["id"]})))
+    assert done["status"] == "applied"
+    get_config.cache_clear()
+    assert get_config()["search"]["topK"] == before + 2

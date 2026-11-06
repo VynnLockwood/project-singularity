@@ -53,6 +53,8 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
     }
   }, []);
 
+  const configWaiting = live.filter((c) => c.kind === "config" && c.status === "pending").length;
+  const configApplied = live.filter((c) => c.kind === "config" && c.status === "applied").length;
   const appliedCount = live.filter((c) => c.status === "applied").length;
   const mine = live.filter((c) => canDecide(me, c));
   const popupChanges = mine.filter((c) => !snoozed.has(c.id));
@@ -91,7 +93,9 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
           <DuplicatesView me={me} refreshKey={appliedCount} onProposed={(c) => setLive((l) => upsert(l, c))} />
         )}
         {tab === "connect" && <ConnectView me={me} />}
-        {tab === "settings" && <SettingsView me={me} />}
+        {tab === "settings" && (
+          <SettingsView me={me} refreshKey={configApplied} waiting={configWaiting} onOpenQueue={() => setTab("queue")} />
+        )}
         {tab === "queue" && <QueueView me={me} changes={mine} onDecide={onDecide} busy={busy} />}
       </main>
       <ApprovalPopup

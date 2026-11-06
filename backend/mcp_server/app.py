@@ -131,6 +131,31 @@ async def propose_change(operations: list[dict], prompt: str = "") -> dict:
     return await run("propose_change", operations=operations, prompt=prompt)
 
 
+@mcp.tool(
+    name="get_settings",
+    description="The quality settings (search confidence, duplicate similarity, limits, chat model...) with ranges, and every gate rule including switched-off ones.",
+)
+async def get_settings() -> dict:
+    return await run("get_settings")
+
+
+@mcp.tool(
+    name="propose_config_change",
+    description=(
+        "Propose a change to settings, gate rules or people's roles. These are important, so the change NEVER applies on its own: "
+        "it is checked, shown with a diff, and waits in the approval queue for an approver (live in their web app). "
+        "%s Returns the checked change; tell the user it is waiting as change #id. Only an approver can approve it."
+    ) % """Configuration operations (settings, rules, roles). Each is an object with an 'op': set_setting{key,value}, reset_setting{key}, update_rule{name,severity?('block'|'warn'),enabled?,params?,description?}, create_rule{name,type,params,severity?,enabled?,description?}, set_user_role{email,role('viewer'|'editor'|'approver')}. Call get_settings first for the keys, allowed ranges and current rules. Never mix these with table or data operations.""",
+)
+async def propose_config_change(operations: list[dict], prompt: str = "") -> dict:
+    return await run("propose_config_change", operations=operations, prompt=prompt)
+
+
+@mcp.tool(name="list_users", description="People who can sign in, with their roles (approvers only).")
+async def list_users() -> dict:
+    return await run("list_users")
+
+
 @mcp.tool(name="get_change", description="Status, diff and any errors of a proposed change.")
 async def get_change(change_id: int) -> dict:
     return await run("get_change", change_id=change_id)

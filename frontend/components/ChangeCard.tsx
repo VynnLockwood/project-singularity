@@ -22,7 +22,7 @@ export function ChangeCard({ change, me, onDecide, busy }: Props) {
     <section className="change" data-status={change.status} aria-label={`Change #${change.id}`}>
       <header className="change-head">
         <strong>
-          #{change.id} · {change.kind === "schema" ? "Schema change" : "Data change"}
+          #{change.id} · {change.kind === "schema" ? "Schema change" : change.kind === "config" ? "Settings change" : "Data change"}
         </strong>
         <span className="badge" data-status={change.status}>
           {change.status}

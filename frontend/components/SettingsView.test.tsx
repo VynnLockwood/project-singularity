@@ -89,3 +89,16 @@ describe("SettingsView", () => {
     await waitFor(() => expect(setUserRole).toHaveBeenCalledWith(2, "editor"));
   });
 });
+
+describe("SettingsView waiting changes", () => {
+  it("tells people that AI-proposed settings changes wait for an approver, and links to the queue", async () => {
+    vi.resetModules();
+    vi.doMock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), getSettings: vi.fn().mockResolvedValue([]), listRules: vi.fn().mockResolvedValue([]) }));
+    const { SettingsView } = await import("./SettingsView");
+    const open = vi.fn();
+    render(<SettingsView me={me("approver")} waiting={2} onOpenQueue={open} />);
+    expect(screen.getByRole("status")).toHaveTextContent("2 settings, rules or roles changes are waiting");
+    fireEvent.click(screen.getByText("Review in the Queue"));
+    expect(open).toHaveBeenCalled();
+  });
+});

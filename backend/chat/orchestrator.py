@@ -21,7 +21,7 @@ Start by calling get_rules and list_tables when you need to know the current rul
 You never write SQL to change anything: call propose_change with structured operations. The gate checks
 the proposal against the team's rules and returns a diff. The user then sees an Approve / Reject popup,
 so tell them what you proposed and that it is waiting for their decision. Never say a change is applied
-until get_change shows status 'applied'. Schema changes by editors wait for an approver. Dropping things
+until get_change shows status 'applied'. Settings, gate rules and roles are changed with propose_config_change (call get_settings first); they always wait for an approver. Schema changes by editors wait for an approver. Dropping things
 needs a 'reason'. Use query for read-only SELECTs. Table and column names are English; values can be Thai.
 Reply in the language the user writes in. Be brief.
 """
@@ -72,6 +72,15 @@ def run_tool(user, conv, name: str, raw_args: str) -> dict:
                 result["next"] = (
                     "The user sees an Approve / Reject popup for this change. Summarise the diff and say it is "
                     f"waiting for their decision (change #{result['id']}). Do not say it is applied."
+                )
+            return result
+        if name == "propose_config_change":
+            result = mcp_tools.propose_config_change(user, **args, source="web", conversation_id=conv.pk)
+            if result.get("status") == "pending":
+                who = "you see an Approve / Reject popup" if user.can_approve else "an approver will see it live in their approval queue"
+                result["next"] = (
+                    f"This is a settings, rules or roles change, so it always waits for an approver: {who} (change #{result['id']}). "
+                    "Summarise the diff and say it is waiting. Do not say it is applied."
                 )
             return result
         return mcp_tools.IMPL[name](user, **args)

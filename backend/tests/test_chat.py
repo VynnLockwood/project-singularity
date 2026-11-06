@@ -81,9 +81,9 @@ def test_plain_answer_is_stored_and_title_set(monkeypatch):
 
 def test_tools_offered_depend_on_role(monkeypatch):
     for role, expected in [
-        (Role.VIEWER, {"get_rules", "list_tables", "describe_table", "query", "search_schema"}),
-        (Role.EDITOR, {"get_rules", "list_tables", "describe_table", "query", "search_schema", "propose_change", "get_change"}),
-        (Role.APPROVER, {"get_rules", "list_tables", "describe_table", "query", "search_schema", "propose_change", "get_change", "list_pending"}),
+        (Role.VIEWER, {"get_rules", "get_settings", "list_tables", "describe_table", "query", "search_schema"}),
+        (Role.EDITOR, {"get_rules", "get_settings", "list_tables", "describe_table", "query", "search_schema", "propose_change", "propose_config_change", "get_change"}),
+        (Role.APPROVER, {"get_rules", "get_settings", "list_tables", "describe_table", "query", "search_schema", "propose_change", "propose_config_change", "get_change", "list_pending", "list_users"}),
     ]:
         User.objects.all().delete()
         c, _ = login(role)
