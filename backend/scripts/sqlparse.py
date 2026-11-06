@@ -125,20 +125,25 @@ _WS = re.compile(r"\s+")
 _COPY_TERM = re.compile(r"^\\\.$", re.M)
 _COPY_HEAD = re.compile(r"copy\b", re.I)
 _FROM_STDIN = re.compile(r"\bfrom\s+stdin\b", re.I)
-_ONLY_COMMENT = re.compile(r"(?:\s|/\*.*?\*/)*(?:--.*)?", re.S)
 
 
 def _identchar(c: str) -> bool:
     return c.isalnum() or c in "_$"
 
 
-def _end_block_comment(text: str, i: int) -> int:
+def _block_end(text: str, i: int) -> int | None:
+    """End of the (nested) block comment starting at `i`, or None when it is not closed."""
     depth = 0
     for m in _COMMENT_TOK.finditer(text, i):
         depth += 1 if m.group() == "/*" else -1
         if depth == 0:
             return m.end()
-    return len(text)
+    return None
+
+
+def _end_block_comment(text: str, i: int) -> int:
+    end = _block_end(text, i)
+    return len(text) if end is None else end
 
 
 def _skip_blank(text: str, pos: int) -> int:
@@ -155,6 +160,25 @@ def _skip_blank(text: str, pos: int) -> int:
         else:
             break
     return pos
+
+
+def _only_comments(rest: str) -> bool:
+    """True when `rest` (one line) holds only whitespace and complete, nesting-aware comments."""
+    pos, n = 0, len(rest)
+    while pos < n:
+        m = _WS.match(rest, pos)
+        if m:
+            pos = m.end()
+        elif rest.startswith("--", pos):
+            return True
+        elif rest.startswith("/*", pos):
+            end = _block_end(rest, pos)
+            if end is None:
+                return False  # unclosed /* on this line
+            pos = end
+        else:
+            return False
+    return True
 
 
 def _statement_end(text: str, pos: int) -> int:
@@ -238,7 +262,7 @@ def _split(text: str, line_of: Callable[[int], int]) -> Iterator[_Piece]:
         if _is_copy_from_stdin(stmt):
             j = text.find("\n", end)
             rest = text[end:n if j == -1 else j]
-            if not _ONLY_COMMENT.fullmatch(rest):
+            if not _only_comments(rest):
                 piece.trailing = rest.strip()
             ds = n if j == -1 else j + 1
             m = _COPY_TERM.search(text, ds)
@@ -307,7 +331,7 @@ def _map_type(tn: ast.TypeName) -> tuple[str, bool]:
         raise _Reject(f"type {shown} is not supported (allowed: text, varchar(n), integer, bigint, smallint, "
                       "boolean, date, timestamp, timestamptz, uuid, jsonb, real, double precision, numeric(p,s), "
                       "serial, bigserial)")
-    if not TYPE_RE.match(normalize_type(out)):
+    if not TYPE_RE.fullmatch(normalize_type(out)):
         raise _Reject(f"type {shown} is not supported")
     return out, serial
 
@@ -389,7 +413,7 @@ def _keys(c: ast.Constraint) -> list[str]:
 
 def _ident(name, what: str) -> str:
     """Source identifiers must already satisfy the gate's identifier rule (no silent renaming here)."""
-    if not isinstance(name, str) or not IDENT_RE.match(name):
+    if not isinstance(name, str) or not IDENT_RE.fullmatch(name):
         raise _Reject(f"{what} {name!r} is not a valid identifier (letters, digits, underscore or hyphen, "
                       "starting with a letter or underscore, at most 63 characters)")
     return name
@@ -405,11 +429,10 @@ def _long_identifier(stmt: str) -> str | None:
         tokens = pglast.parser.scan(stmt)
     except pglast.parser.ParseError:
         return None
-    raw = stmt.encode("utf-8")
     for t in tokens:
         if t.name not in ("IDENT", "UIDENT"):
             continue
-        word = raw[t.start:t.end + 1].decode("utf-8", "replace")
+        word = stmt[t.start:t.end + 1]  # scan offsets are character offsets
         name = word[1:-1].replace('""', '"') if word.startswith('"') else word
         if len(name.encode("utf-8")) > 63:
             return name
@@ -854,9 +877,7 @@ class _Translator:
             if resetting or s.kind != K.VAR_SET_VALUE or any(v is None for v in vals):
                 raise _Reject("SET search_path is only allowed with '' or the script's own schema")
             for a in s.args:
-                v = _const(a)[1]
-                if v != "":
-                    self._schema(str(v))
+                self._search_path_entry(str(_const(a)[1]))
         elif name == "standard_conforming_strings":
             if not resetting and vals not in (["on"], ["true"], ["yes"], ["1"]):
                 raise _Reject("SET standard_conforming_strings = off is not supported "
@@ -868,6 +889,15 @@ class _Translator:
             if not resetting and (len(vals) != 1 or (vals[0] or "").replace("-", "").replace("_", "")
                                   not in ("utf8", "unicode")):
                 raise _Reject("the script must be UTF-8 (SET client_encoding to another encoding is not supported)")
+
+    def _search_path_entry(self, entry: str) -> None:
+        """One search_path entry: '' / pg_catalog / "$user" are fine, anything else must be the source schema."""
+        entry = entry.strip()
+        if entry.startswith('"') and entry.endswith('"') and len(entry) >= 2:
+            entry = entry[1:-1].replace('""', '"')
+        if entry in ("", "pg_catalog", "$user"):
+            return
+        self._schema(entry)
 
     def boilerplate_select(self, s: ast.SelectStmt) -> bool:
         """pg_dump's `SELECT pg_catalog.set_config('search_path', '', false)` and
@@ -885,12 +915,12 @@ class _Translator:
             if len(args) != 3 or not all(_const(a)[0] for a in args):
                 raise _Reject("set_config is only allowed as set_config('search_path', '<schema>', false)")
             key, value = _const(args[0])[1], _const(args[1])[1]
-            if key != "search_path" or not isinstance(value, str):
+            if key != "search_path":
                 raise _Reject(f"set_config({key!r}, ...) is not supported (only 'search_path')")
+            if not isinstance(value, str):
+                raise _Reject("set_config('search_path', ...) needs a text value ('' or the script's schema)")
             for part in value.split(","):
-                part = part.strip().strip('"')
-                if part:
-                    self._schema(part)
+                self._search_path_entry(part)
             return True
         if fname == "setval":
             args = list(f.args or ())

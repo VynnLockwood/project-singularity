@@ -387,3 +387,13 @@ def test_fk_must_be_named_like_the_primary_key_it_points_at():
                                   col("buyer", "integer", references={"table": "customer"})])], st)
     v = next(v for v in bad.violations if v["rule"] == "foreignKeyNaming")
     assert v["suggestion"] == "customer_id"
+
+
+def test_ident_and_type_regexes_reject_trailing_newline():
+    from gate.operations import IDENT_RE, TYPE_RE, OpError, parse_ops
+    assert IDENT_RE.match("x\n") is None and IDENT_RE.match("x")
+    assert TYPE_RE.match("text\n") is None and TYPE_RE.match("text")
+    with pytest.raises(OpError):
+        parse_ops([{"op": "create_table", "name": "x\n", "columns": [{"name": "id", "type": "integer"}]}])
+    with pytest.raises(OpError):
+        parse_ops([{"op": "rename_column", "table": "t", "column": "c", "new_name": "d\n"}])

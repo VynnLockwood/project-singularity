@@ -510,3 +510,55 @@ def test_lexing_edge_cases():
 
 def test_lone_semicolons_are_no_statements():
     assert [e.message for e in parse_script(";;;\n").errors] == ["no statements"]
+
+
+# ---------- fix round 2 ----------
+
+def test_copy_trailing_text_between_comments_is_an_error():
+    T = "CREATE TABLE a (id integer);\n"
+    bad = [
+        "COPY a (id) FROM stdin; /* x */ 5 /* y */\n1\n\\.\n",
+        "COPY a (id) FROM stdin; /* x */ DROP TABLE b; -- */\n1\n\\.\n",
+        "COPY a (id) FROM stdin; /* x */ DROP TABLE b; /* y */\n1\n\\.\n",
+        "COPY a (id) FROM stdin; /* unclosed\n1\n\\.\n",
+        "COPY a (id) FROM stdin; /* a /* b */ c\n1\n\\.\n",
+    ]
+    for tail in bad:
+        p = parse_script(T + tail)
+        assert any("same line" in e.message and e.line == 2 for e in p.errors), tail
+    good = [
+        "COPY a (id) FROM stdin; -- fine\n1\n\\.\n",
+        "COPY a (id) FROM stdin; /* ok */\n1\n\\.\n",
+        "COPY a (id) FROM stdin; /* a /* b */ c */ -- x\n1\n\\.\n",
+    ]
+    for tail in good:
+        p = parse_script(T + tail)
+        assert p.errors == [] and list(p.streams["a"].rows()) == [["1"]], tail
+
+
+def test_long_identifier_after_multibyte_text():
+    def make(n):
+        return f"CREATE TABLE t (a text DEFAULT 'ไทยไทย', \"{'q' * n}\" integer);"
+    assert parse_script(make(62)).errors == []
+    assert parse_script(make(63)).errors == []
+    p = parse_script(make(64))
+    assert len(p.errors) == 1 and "longer than 63" in p.errors[0].message
+
+
+def test_identifier_with_trailing_newline_rejected():
+    p = parse_script('CREATE TABLE "x\n" (id integer);\nCREATE TABLE y ("c\n" integer);\n')
+    assert [e.line for e in p.errors] == [1, 3]
+
+
+def test_search_path_allows_pg_catalog_and_user():
+    p = parse_script(
+        "CREATE TABLE s.a (id integer);\n"
+        "SET search_path = s, pg_catalog;\n"
+        "SET search_path = \"$user\", s;\n"
+        "SELECT pg_catalog.set_config('search_path', 's, pg_catalog', false);\n"
+        "SELECT set_config('search_path', '\"$user\", pg_catalog', false);\n"
+        "SET search_path = s, other;\n"
+        "SELECT set_config('search_path', NULL, false);\n"
+    )
+    assert [e.line for e in p.errors] == [6, 7]
+    assert "other" in p.errors[0].message and "text value" in p.errors[1].message

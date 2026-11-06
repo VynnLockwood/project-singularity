@@ -9,13 +9,13 @@ from __future__ import annotations
 import re
 
 # Any name that is safe to quote: the naming *style* is a rule (change it through the MCP), not a regex here.
-IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,62}$")
+IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,62}\Z")
 
 # Only these column types may be created. Anything else is rejected, so a type
 # string can never smuggle SQL into a statement.
 TYPE_RE = re.compile(
     r"^(text|integer|bigint|smallint|boolean|date|timestamptz|timestamp|uuid|jsonb|real|"
-    r"double precision|numeric|numeric\(\d{1,2},\s?\d{1,2}\)|varchar\(\d{1,4}\))$"
+    r"double precision|numeric|numeric\(\d{1,2},\s?\d{1,2}\)|varchar\(\d{1,4}\))\Z"
 )
 
 # Defaults: JSON literals or one of these function calls. Nothing free-form.
@@ -59,7 +59,7 @@ def normalize_type(t: str) -> str:
 
 
 def _ident(v, what: str, errs: list[str], where: str) -> None:
-    if not isinstance(v, str) or not IDENT_RE.match(v):
+    if not isinstance(v, str) or not IDENT_RE.fullmatch(v):
         errs.append(f"{where}: {what} must be an identifier (letters, digits, underscore or hyphen; max 63 chars)")
 
 
@@ -74,7 +74,7 @@ def _check_column(col, errs: list[str], where: str, *, allow_references: bool = 
         errs.append(f"{where}: unknown column keys {sorted(unknown)}")
     _ident(col.get("name"), "column name", errs, where)
     t = col.get("type")
-    if not isinstance(t, str) or not TYPE_RE.match(normalize_type(t)):
+    if not isinstance(t, str) or not TYPE_RE.fullmatch(normalize_type(t)):
         errs.append(f"{where}: unsupported type {t!r}")
     for flag in ("nullable", "unique", "primary_key", "identity"):
         if flag in col and not isinstance(col[flag], bool):
@@ -334,7 +334,7 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
             keys("table", "column", "type")
             _ident(op.get("table"), "table", errs, where)
             _ident(op.get("column"), "column", errs, where)
-            if not isinstance(op.get("type"), str) or not TYPE_RE.match(normalize_type(op["type"])):
+            if not isinstance(op.get("type"), str) or not TYPE_RE.fullmatch(normalize_type(op["type"])):
                 errs.append(f"{where}: unsupported type {op.get('type')!r}")
         elif kind == "set_column_comment":
             keys("table", "column", "comment")
