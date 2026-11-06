@@ -68,3 +68,17 @@ def rule_rollback(request, rule_id):
         return error("cannot roll back", 400, errors=exc.errors)
     rule.refresh_from_db()
     return JsonResponse(rule_json(rule))
+
+
+@endpoint(["GET", "PATCH"])
+def settings(request):
+    from . import tunables
+
+    if request.method == "GET":
+        return JsonResponse({"settings": tunables.describe()})
+    if not request.user.can_approve:
+        return error("forbidden", 403)
+    try:
+        return JsonResponse({"settings": tunables.apply(request.user, request.json)})
+    except tunables.TunableError as exc:
+        return error("invalid settings", 400, errors=exc.errors)

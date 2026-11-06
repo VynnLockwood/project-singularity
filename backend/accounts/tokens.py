@@ -48,3 +48,16 @@ def revoke(user: User, token_id: int) -> None:
     tok.revoked_at = timezone.now()
     tok.save(update_fields=["revoked_at"])
     record(user, "token.revoked", target=tok.name)
+
+
+def create_oauth_token(user: User, client_name: str) -> tuple[McpToken, str]:
+    """The access token an OAuth client receives. It is an ordinary revocable token (shown in the Connect tab);
+    a new sign-in by the same client replaces its previous one, and it does not count against the manual-token cap."""
+    name = f"OAuth: {client_name}"[:64]
+    for old in McpToken.objects.filter(user=user, name=name, revoked_at__isnull=True):
+        old.revoked_at = timezone.now()
+        old.save(update_fields=["revoked_at"])
+    raw = PREFIX + secrets.token_urlsafe(32)
+    tok = McpToken.objects.create(user=user, name=name, token_hash=_hash(raw), prefix=raw[:10])
+    record(user, "token.oauth_issued", target=name)
+    return tok, raw

@@ -15,13 +15,15 @@ Set `OPENROUTER_API_KEY` in `.env` (only the `api` container receives it) and pi
 
 ## Connect an AI client (MCP)
 
-Sign in, open the **Connect** tab, name the connection and press **Create connection link**. You get, once, ready-to-paste settings for each client (only a hash of the token is stored):
+**Claude (recommended): OAuth.** Add `https://<your-host>/mcp` as a custom connector. Claude finds the sign-in service (`/.well-known/oauth-*`), registers itself (`/oauth/register`), sends you to a consent page after your normal Google sign-in, and receives a revocable access token (authorization code + PKCE S256). The connection then shows in the Connect tab, where you can revoke it.
+
+**Manual links and tokens:** sign in, open the **Connect** tab, name the connection and press **Create connection link**. You get, once, ready-to-paste settings for each client (only a hash of the token is stored):
 
 - **Claude** (claude.ai, Desktop, mobile): Settings, Connectors, Add custom connector, paste the link `https://<your-host>/mcp/t/sgl_...`.
 - **Gemini CLI**: the `mcpServers` JSON for `~/.gemini/settings.json` (URL plus an `Authorization: Bearer` header).
 - **Claude Code**: the `claude mcp add --transport http ...` command.
 
-The link form puts the token in the address because those connectors cannot send a header; it can appear in server logs, so revoke links you stop using (also in the Connect tab). Clients that can send headers should use `https://<your-host>/mcp` with `Authorization: Bearer sgl_...`. A client gets the same tools as your role, and every change still goes through the rules gate and approvals. Real OAuth 2.1 sign-in for connectors is a planned follow-up.
+The link form puts the token in the address because those connectors cannot send a header; it can appear in server logs, so revoke links you stop using (also in the Connect tab). Clients that can send headers should use `https://<your-host>/mcp` with `Authorization: Bearer sgl_...`. A client gets the same tools as your role, and every change still goes through the rules gate and approvals.
 
 ## Data grid
 
@@ -33,7 +35,7 @@ Limits: the grid does not detect that someone else changed the same cell after y
 
 Ask "where does this data belong?" in the Schema tab (Thai or English), or let the assistant call `search_schema`. Every table and column becomes a document (name, type, comment, relationships, a few sample values) embedded by the `embed` container (multilingual-e5-small, CPU, no internet at runtime: the model is baked into the image at build). Ranking blends meaning (pgvector, cosine) with name similarity (`pg_trgm`), and an exact name always ranks first. The index refreshes in the background after an applied schema change; approvers can rebuild it. If nothing scores above `search.minConfidence` (default 0.8), the UI offers to ask the assistant to propose a new column. That threshold was set without running the real model, so tune it against your own schema.
 
-Known gaps: the Settings UI (rules, roles, default model) is a later milestone; MCP auth uses personal access tokens rather than OAuth 2.1 (planned follow-up), and there is no scheduled nightly backup yet (a backup is taken before every schema change).
+Known gaps: OAuth access tokens do not expire (revoke them in the Connect tab) and have no refresh flow, and there is no scheduled nightly backup yet (a backup is taken before every schema change).
 
 ## Duplicates and column stats
 
@@ -44,6 +46,10 @@ The **Duplicates** tab scans one table at a time (`duplicates.*` in `singularity
 The **Column stats** button in the Data tab summarises the rows on screen (distinct, empty %, min/max/mean, top values). The browser build is optional: if `frontend/public/engine/` is missing, a TypeScript implementation that passes the same golden test cases (`engine/testdata/stats_cases.json`) is used. CI builds the WASM package and uploads it as an artifact.
 
 Not verified in the build sandbox: the Docker image (Rust stage), the WASM build, and real browser behaviour.
+
+## Settings
+
+The **Settings** tab has three sections. **Quality**: search confidence, duplicate similarity, scan caps, query and proposal limits, chat model and rate limits, backup retention. Approvers change them and they apply within seconds (stored in the database over the values in `singularity.yaml`; Reset returns to the file's value; every change is audited). **Rules**: turn each gate rule on or off, switch it between block and warn, edit its parameters, see its history and restore an older version. **Team** (approvers): set people's roles. Deploy-time things (sign-in domains, the list of allowed models, the embedding model) stay in `singularity.yaml`.
 
 ## Look and feel
 

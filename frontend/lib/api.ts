@@ -41,7 +41,7 @@ export class ApiError extends Error {
   }
 }
 
-async function call<T>(method: "GET" | "POST" | "DELETE", path: string, body?: unknown): Promise<T> {
+async function call<T>(method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
   if (method !== "GET") {
     if (!csrfToken()) await fetch(`${BASE}/csrf`, { credentials: "same-origin" });
@@ -55,7 +55,7 @@ async function call<T>(method: "GET" | "POST" | "DELETE", path: string, body?: u
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(res.status, data.error ?? `request failed (${res.status})`, data.code);
+  if (!res.ok) throw new ApiError(res.status, Array.isArray(data.errors) && data.errors.length ? data.errors.join("; ") : (data.error ?? `request failed (${res.status})`), data.code);
   return data as T;
 }
 
@@ -258,3 +258,47 @@ export const listTokens = () => call<{ tokens: McpToken[] }>("GET", "/mcp-tokens
 export const createToken = (name: string) =>
   call<{ id: number; name: string; prefix: string; token: string }>("POST", "/mcp-tokens", { name });
 export const revokeToken = (id: number) => call<{ ok: boolean }>("DELETE", `/mcp-tokens/${id}`);
+
+// ---- settings: quality knobs, rules, team -------------------------------------
+
+export interface Tunable {
+  key: string;
+  label: string;
+  help: string;
+  kind: "int" | "float" | "model";
+  min: number | null;
+  max: number | null;
+  default: number | string;
+  value: number | string;
+  overridden: boolean;
+  options?: string[];
+}
+export const getSettings = () => call<{ settings: Tunable[] }>("GET", "/settings").then((r) => r.settings);
+/** value null resets a setting to the singularity.yaml default */
+export const saveSettings = (changes: Record<string, number | string | null>) =>
+  call<{ settings: Tunable[] }>("PATCH", "/settings", changes).then((r) => r.settings);
+
+export interface Rule {
+  id: number;
+  name: string;
+  type: string;
+  params: Record<string, unknown>;
+  severity: "block" | "warn";
+  enabled: boolean;
+  description: string;
+  version: number;
+}
+export interface RuleVersion {
+  version: number;
+  action: string;
+  changedBy: string | null;
+  createdAt: string;
+}
+export const listRules = () => call<{ rules: Rule[] }>("GET", "/rules").then((r) => r.rules);
+export const updateRule = (id: number, fields: Partial<Pick<Rule, "params" | "severity" | "enabled" | "description">>) =>
+  call<Rule>("PATCH", `/rules/${id}`, fields);
+export const ruleVersions = (id: number) => call<{ versions: RuleVersion[] }>("GET", `/rules/${id}/versions`).then((r) => r.versions);
+export const rollbackRule = (id: number, version: number) => call<Rule>("POST", `/rules/${id}/rollback`, { version });
+
+export const listUsers = () => call<{ users: Me[] }>("GET", "/users").then((r) => r.users);
+export const setUserRole = (id: number, role: Me["role"]) => call<Me>("PATCH", `/users/${id}/role`, { role });

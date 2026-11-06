@@ -46,3 +46,14 @@ class RuleVersion(models.Model):
     class Meta:
         ordering = ["-version"]
         unique_together = [("rule", "version")]
+
+
+class Setting(models.Model):
+    """A runtime override of one tunable value from singularity.yaml (see config.siconfig)."""
+
+    key = models.CharField(max_length=64, unique=True)
+    value = models.JSONField()
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )

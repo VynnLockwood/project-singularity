@@ -172,3 +172,15 @@ body:has(.shell) .cosmos { opacity: 0.5; }
 .universe-list { background: rgba(10, 4, 2, 0.78); border-radius: 8px; padding: 0.4rem 0.6rem; }
 .connect input[aria-label="Connection name"] { min-width: 22rem; padding: 0.5rem 0.8rem; }
 .connect { max-width: 52rem; }
+
+/* ---- settings ---- */
+.settings { max-width: 56rem; }
+.settings-list { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.settings-list > li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.6rem 1.5rem; padding: 0.6rem 0.9rem; border: 1px solid #3a1d0e; border-radius: 10px; background: rgba(14, 6, 3, 0.78); }
+.settings-list > li[data-enabled="false"] { opacity: 0.55; }
+.settings-list p { margin: 0.2rem 0; max-width: 34rem; }
+.setting-input { display: flex; align-items: center; gap: 0.6rem; }
+.setting-input input { width: 8rem; padding: 0.35rem 0.5rem; }
+.rule-head { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; width: 100%; }
+.rule-head ~ * { width: 100%; }
+textarea.code { width: 100%; font-family: ui-monospace, monospace; color: var(--fg); }

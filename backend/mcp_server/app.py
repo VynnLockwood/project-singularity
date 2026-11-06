@@ -192,9 +192,11 @@ class BearerAuth:
 
         user = await sync_to_async(lookup, thread_sensitive=False)()
         if user is None:
+            # points OAuth clients (Claude.ai, ...) at the discovery document, RFC 9728
+            base = f"{headers.get('x-forwarded-proto', 'http')}://{headers.get('host', 'localhost')}"
             resp = JSONResponse(
                 {"error": "missing or invalid token"}, status_code=401,
-                headers={"WWW-Authenticate": 'Bearer realm="singularity"'},
+                headers={"WWW-Authenticate": f'Bearer realm="singularity", resource_metadata="{base}/.well-known/oauth-protected-resource"'},
             )
             return await resp(scope, receive, send)
 

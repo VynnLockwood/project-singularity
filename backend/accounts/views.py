@@ -68,7 +68,9 @@ def google_callback(request):
     except SignInDenied:
         return JsonResponse({"error": "not allowed"}, status=403)
     login(request, user)
-    return HttpResponseRedirect("/")
+    # an OAuth connector sent them here to sign in first: take them back to its consent page
+    nxt = request.session.pop("post_login", "")
+    return HttpResponseRedirect(nxt if nxt.startswith("/oauth/authorize?") else "/")
 
 
 @require_POST

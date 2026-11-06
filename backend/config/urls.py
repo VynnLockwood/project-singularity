@@ -1,5 +1,6 @@
-from django.urls import include, path
+from django.urls import include, path, re_path
 
+from accounts import oauth_views as oauth
 from approvals import views as changes
 from audit.views import audit_log
 from chat import views as chat_views
@@ -10,11 +11,17 @@ from search import views as search_views
 from settings_app import views as rules
 
 urlpatterns = [
+    re_path(r"^\.well-known/oauth-protected-resource(?:/(?P<suffix>.*))?$", oauth.protected_resource),
+    re_path(r"^\.well-known/(?:oauth-authorization-server|openid-configuration)(?:/(?P<suffix>.*))?$", oauth.authorization_server),
+    path("oauth/register", oauth.register),
+    path("oauth/authorize", oauth.authorize),
+    path("oauth/token", oauth.token),
     path("api/health", health),
     path("api/changes", changes.changes),
     path("api/changes/<int:change_id>", changes.change_detail),
     path("api/changes/<int:change_id>/<str:action>", changes.change_action),
     path("api/queue", changes.queue),
+    path("api/settings", rules.settings),
     path("api/rules", rules.rules),
     path("api/rules/<int:rule_id>", rules.rule_detail),
     path("api/rules/<int:rule_id>/versions", rules.rule_versions),

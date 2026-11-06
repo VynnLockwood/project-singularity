@@ -58,6 +58,11 @@ export function ConnectView({ me }: { me: Me }) {
         and every change still goes through the rules gate and the approval popup.
       </p>
 
+      <section className="change" aria-label="Sign in with OAuth">
+        <strong>Easiest for Claude:</strong> add <code>{origin}/mcp</code> as a custom connector. Claude registers itself, sends you here to
+        sign in with Google and Allow, and the connection then appears in the list below. No link to copy.
+      </section>
+      <p className="muted small">Or make a link or token yourself:</p>
       <div className="grid-bar">
         <input aria-label="Connection name" placeholder="Name this connection, e.g. Claude on my laptop" value={name}
           onChange={(e) => setName(e.target.value)} maxLength={64} />
@@ -70,7 +75,7 @@ export function ConnectView({ me }: { me: Me }) {
           <p className="small"><strong>Copy this now.</strong> The link is a password: it is shown once and only a hash is stored.</p>
 
           <h3>Claude (claude.ai, Desktop, mobile)</h3>
-          <p className="small muted">Settings, Connectors, Add custom connector, then paste the link.</p>
+          <p className="small muted">Settings, Connectors, Add custom connector. Paste <code>{fresh.endpoint}</code> and Claude will ask you to sign in here. If a client cannot do that sign-in, paste this link instead:</p>
           <pre className="code" data-testid="link">{fresh.link}</pre>
           <Copy text={fresh.link} label="Copy link" />
 

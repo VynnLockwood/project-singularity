@@ -1,5 +1,7 @@
 """Deploy-time config loader for singularity.yaml (spec section 6)."""
+import copy
 import os
+import time
 from functools import lru_cache
 from pathlib import Path
 
@@ -45,7 +47,7 @@ def _path() -> Path:
 
 
 @lru_cache(maxsize=1)
-def get_config() -> dict:
+def _yaml_config() -> dict:
     path = _path()
     loaded = {}
     if path.exists():
@@ -54,3 +56,47 @@ def get_config() -> dict:
     cfg["auth"]["allowedDomains"] = [d.lower() for d in cfg["auth"]["allowedDomains"]]
     cfg["auth"]["seedAdmins"] = [e.lower() for e in cfg["auth"]["seedAdmins"]]
     return cfg
+
+
+# ---- runtime overrides ---------------------------------------------------------
+# singularity.yaml is deploy-time. A short list of quality knobs can also be changed by approvers in the
+# Settings tab; those values live in the database and are merged over the file (see settings_app.tunables).
+# Everything else (auth, models list, embedding) stays deploy-time on purpose.
+
+_OVERRIDE_TTL = 5.0  # seconds: other worker processes notice a change within this time
+_override_cache: dict = {"at": 0.0, "data": {}}
+
+
+def overrides() -> dict:
+    now = time.monotonic()
+    if now - _override_cache["at"] > _OVERRIDE_TTL:
+        try:
+            from settings_app.models import Setting
+
+            data = {row.key: row.value for row in Setting.objects.all()}
+        except Exception:  # no database yet (startup, migration), or called from async code: use the file
+            data = {}
+        _override_cache.update(at=now, data=data)
+    return _override_cache["data"]
+
+
+def invalidate_overrides() -> None:
+    _override_cache["at"] = 0.0
+
+
+def get_config() -> dict:
+    """The file's config with the approvers' runtime overrides applied (a fresh copy each time)."""
+    cfg = copy.deepcopy(_yaml_config())
+    for key, value in overrides().items():
+        section, _, name = key.partition(".")
+        if name and isinstance(cfg.get(section), dict):
+            cfg[section][name] = value
+    return cfg
+
+
+def _clear_all() -> None:
+    _yaml_config.cache_clear()
+    invalidate_overrides()
+
+
+get_config.cache_clear = _clear_all  # type: ignore[attr-defined]  # tests and reloads use this

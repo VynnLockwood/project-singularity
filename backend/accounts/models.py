@@ -48,3 +48,24 @@ class McpToken(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+
+
+class OAuthClient(models.Model):
+    """An MCP client (Claude, Gemini, ...) that registered itself (RFC 7591)."""
+
+    client_id = models.CharField(max_length=64, unique=True)
+    name = models.CharField(max_length=100)
+    redirect_uris = models.JSONField(default=list)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class OAuthCode(models.Model):
+    """A one-time authorization code, bound to the client, the redirect and the PKCE challenge."""
+
+    code_hash = models.CharField(max_length=64, unique=True)
+    client = models.ForeignKey(OAuthClient, on_delete=models.CASCADE)
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    redirect_uri = models.TextField()
+    code_challenge = models.CharField(max_length=128)
+    expires_at = models.DateTimeField()
+    used = models.BooleanField(default=False)

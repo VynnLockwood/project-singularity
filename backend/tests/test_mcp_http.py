@@ -193,3 +193,15 @@ def test_connection_link_with_bad_token_is_401(server):
     with pytest.raises(urllib.error.HTTPError) as e:
         urllib.request.urlopen(req)
     assert e.value.code == 401
+
+
+def test_401_points_oauth_clients_at_the_discovery_document(server):
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(server["url"], data=b"{}", headers={"Content-Type": "application/json", "X-Forwarded-Proto": "https"})
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(req)
+    assert e.value.code == 401
+    assert 'resource_metadata="https://127.0.0.1:' in e.value.headers["WWW-Authenticate"]
+    assert "/.well-known/oauth-protected-resource" in e.value.headers["WWW-Authenticate"]
