@@ -562,3 +562,36 @@ def test_search_path_allows_pg_catalog_and_user():
     )
     assert [e.line for e in p.errors] == [6, 7]
     assert "other" in p.errors[0].message and "text value" in p.errors[1].message
+
+
+def test_insert_select_from_values_join_is_a_stream():
+    sql = (
+        "INSERT INTO master.subdistrict (code, name, district_code) "
+        "SELECT v.code, v.name, v.district_code "
+        "FROM (VALUES ('100101', 'Bangkok', '1001')) AS v(code, name, district_code) "
+        "JOIN master.district d ON d.code = v.district_code;"
+    )
+    p = parse_script(sql)
+    assert p.errors == [], p.errors
+    assert list(p.streams["subdistrict"].columns) == ["code", "name", "district_code"]
+    assert list(p.streams["subdistrict"].rows()) == [["100101", "Bangkok", "1001"]]
+    assert p.join_hints["subdistrict"] == [
+        {"parent": "master.district", "parent_key": "code",
+         "source_column": "district_code", "line": 1}
+    ]
+
+
+def test_insert_select_two_joins_rejected():
+    sql = (
+        "INSERT INTO t (a, b, c) SELECT v.a, v.b, v.c "
+        "FROM (VALUES ('1', '2', '3')) AS v(a, b, c) "
+        "JOIN p1 ON p1.k = v.b JOIN p2 ON p2.k = v.c;"
+    )
+    p = parse_script(sql)
+    assert len(p.errors) == 1 and "more than one JOIN" in p.errors[0].message
+
+
+def test_plain_insert_values_still_works():
+    p = parse_script("INSERT INTO t (a) VALUES ('1');")
+    assert p.errors == []
+    assert p.join_hints == {}
