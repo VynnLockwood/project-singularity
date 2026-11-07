@@ -32,7 +32,7 @@ Current state: `master.district` has 928 rows (`district_id` PK, `code` unique),
 | Keep safety while accepting valid SQL? | **Structured-flexible** — Singularity computes the rows itself, every row still inspected |
 | External parent vs new wizard? | **Extend refs to external parents**, keep the JSON contract, put a picker UI on top |
 | Trailing `SELECT count(*)`? | **Accept**, expose to MCP callers after apply |
-| MCP intake ceiling? | **Full** — MCP can submit *and* approve |
+| MCP intake ceiling? | **Human approves** — MCP may submit; only an approver decides, always via the queue |
 
 ## §1 External refs (approved)
 
@@ -131,36 +131,68 @@ intake. Target: an agent can do the whole loop without the UI.
 | `apply_script_mapping` | NEW — resolve an external ref and return orphan counts without storing anything |
 | `approve_change` | already exists; stays role-gated (see risk) |
 
-Role map (`mcp_server/tools.py` `TOOL_ROLES`) — **unchanged**, deliberately:
+**Agents submit; humans decide.** The owner's ruling: an MCP caller may drive intake, but script loads
+land in the same approval queue as everything else and only an approver can apply them. No agent-only
+fast path, ever.
+
+### Required fix — self-approval hole (found while tracing this)
+
+`approvals/service.py:50 can_decide()` today:
+
+```python
+def can_decide(user, change: Change) -> bool:
+    if change.kind in ("schema", "config"):
+        return user.can_approve
+    return user.can_approve or (user.can_edit and user.pk == change.requester_id)   # <-- hole
+```
+
+The last line lets an editor approve **their own** change for any non-schema kind. An MCP client
+holding an editor token could therefore submit a bulk load and approve it in two calls — no human
+anywhere. Because `TOOL_ROLES["approve_change"] = "editor"` today, this is reachable now.
+
+Fix: script-produced changes require an approver regardless of requester.
+
+```python
+if change.source == "script" or change.kind in ("schema", "config"):
+    return user.can_approve
+```
+
+`change.source == "script"` is already set for script intake, so this is one condition, no migration,
+and it leaves the existing editor self-approval path for ordinary edits intact.
+
+### Role map (`mcp_server/tools.py` `TOOL_ROLES`)
 
 ```
-submit_script   editor
-approve_change  editor
+submit_script   editor    # unchanged
+approve_change  approver  # RAISED from editor
+reject_change   approver
 ```
 
-The owner's "MCP can submit AND approve" is satisfied by the existing editor role rather than by
-lowering anything. An agent acts as the user whose token it carries, and tools above your role are
-already hidden from your client.
+Raising it means `approve_change` / `reject_change` become **invisible** to editor tokens
+(`mcp_server/app.py:51` filters the tool list by role) — so an agent cannot even attempt approval.
+`list_pending` stays approver-only. Net effect: an agent's flow ends at "queued as change #N, waiting
+on an approver", which is what the tool description at `tools.py:124` already tells it to say.
 
-### RISK — accepted, must be built with it
+### Queue parity
 
-**MCP approve means an agent can be the approver.** That deliberately removes the human-in-the-loop on
-`bulk_insert` for anyone holding an editor token. Required mitigations, not optional:
+Script loads must appear in the Queue exactly like any other change, with the same
+`ApprovalPopup` diff, dry-run counts and orphan report. Nothing about this path is special-cased in
+the UI. An approver approves it in Queue; the same `approve()` at `service.py:151` applies it.
 
-1. `bulk_insert` stays in `INTERNAL_OPS` — the normal `propose_change` path still refuses it. Only script
-   intake can produce one. This is existing behaviour and must not be relaxed.
-2. `approve_change` keeps its RANK gate; we do not add a new lower role.
-3. Every MCP approval is recorded in the audit trail with the acting user, so "who approved this load" is
-   always answerable.
-4. Tokens are per-user and looked up on every request, so revoking one takes effect immediately.
+### Risk posture
 
-Owner directive is security-first; this section is the one place the design trades isolation for
-automation, so it ships with the mitigations above or not at all.
+With human-approve, the earlier isolation trade disappears: an MCP caller can *propose* but never
+*apply*. Remaining controls, all existing behaviour, deliberately kept:
+
+1. `bulk_insert` stays in `INTERNAL_OPS` — the normal `propose_change` path still refuses it; only
+   script intake can produce one. Never relax this.
+2. Script changes require `can_approve` even when the requester is an editor (above).
+3. Tokens are per-user, looked up on every request, so a revoked token takes effect immediately.
+4. Every decision is recorded with the acting user, so "who approved this load" is always answerable.
 
 ### Trailing SELECTs
 
-Accepted, per decision. They are recorded on the script as `post_checks` and run by the caller after
-apply — Singularity does not execute them. `get_script` returns them. They never become gate ops and
+### Trailing SELECTs (unused, removed) `get_script` returns them. They never become gate ops and
 never touch the applied data.
 
 ## §4 Cosmos animation intensity
@@ -196,5 +228,7 @@ One tunable, three levels — heaviest is the new default:
 - One test with a deliberately bad `district_code` asserting a non-zero orphan count — this is what proves
   row inspection survived the change.
 - The real 441 KB file: validate under 5s, correct orphan count.
-- `test_mcp_http.py`: submit with mapping over MCP returns `{ok: true}`.
+- `test_mcp_http.py`: submit with mapping over MCP returns `{ok: true}` and the change is `pending`.
+- `test_mcp_http.py`: an editor token does **not** see `approve_change` in `list_tools`, and calling it
+  is refused — this is the test that protects the decision above.
 - Real-browser check of the destination picker on prod after deploy.
