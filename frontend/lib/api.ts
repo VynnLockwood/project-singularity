@@ -351,6 +351,10 @@ export async function uploadScript(file: File): Promise<{ script_id: number; sha
   return data;
 }
 
+/** Paste path: the file picker isn't the only way in — send SQL text directly. */
+export const pasteScript = (name: string, content: string) =>
+  call<{ script_id: number; sha256: string; size: number }>("POST", "/scripts", { name, content });
+
 export const validateScript = (id: number, mapping?: unknown) =>
   call<ScriptReport>("POST", `/scripts/${id}/validate`, mapping ? { mapping } : {});
 export const submitScript = (id: number, note = "") =>

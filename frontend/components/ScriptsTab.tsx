@@ -5,6 +5,7 @@ import {
   ApiError,
   getScript,
   listScripts,
+  pasteScript,
   submitScript,
   uploadScript,
   validateScript,
@@ -22,19 +23,39 @@ export function ScriptsTab({ canEdit }: { canEdit: boolean }) {
   const [mapping, setMapping] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pasteText, setPasteText] = useState("");
 
   const load = useCallback(() => listScripts().then((s) => setScript(s[0] ?? null)).catch(() => {}), []);
   useEffect(() => { if (canEdit) load(); }, [canEdit, load]);
 
+  const gotScript = (id: number, name: string, size: number) => {
+    setScript({ id, name, size, status: "uploaded", change_id: null });
+    setPhase("uploaded");
+    setMapping("");
+    setReport(null);
+  };
+
   const upload = async (file: File) => {
-    setBusy(true); setError(""); setReport(null); setPhase("idle");
+    setBusy(true); setError(""); setPhase("idle"); setReport(null);
     try {
       const r = await uploadScript(file);
-      setScript({ id: r.script_id, name: file.name, size: r.size, status: "uploaded", change_id: null });
-      setPhase("uploaded");
-      setMapping("");
+      gotScript(r.script_id, file.name, r.size);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Upload failed.");
+      setPhase("error");
+    } finally { setBusy(false); }
+  };
+
+  /** No local file? Paste the SQL text instead — same gate, same caps. */
+  const paste = async () => {
+    if (!pasteText.trim()) return;
+    setBusy(true); setError(""); setPhase("idle"); setReport(null);
+    try {
+      const r = await pasteScript("pasted.sql", pasteText);
+      gotScript(r.script_id, "pasted.sql", r.size);
+      setPasteText("");
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Paste failed.");
       setPhase("error");
     } finally { setBusy(false); }
   };
@@ -101,6 +122,21 @@ export function ScriptsTab({ canEdit }: { canEdit: boolean }) {
           {script.change_id != null && <> · change <code>#{script.change_id}</code></>}
         </p>
       )}
+
+      <label>…or paste the SQL here</label>
+      <textarea
+        rows={8}
+        value={pasteText}
+        onChange={(e) => setPasteText(e.target.value)}
+        placeholder="-- pg_dump-style SQL, pasted"
+        spellCheck={false}
+        disabled={busy}
+      />
+      <div className="actions">
+        <button onClick={() => void paste()} disabled={busy || !pasteText.trim()}>
+          Upload pasted SQL
+        </button>
+      </div>
 
       <label>Mapping (optional JSON; leave empty to auto-suggest)</label>
       <textarea

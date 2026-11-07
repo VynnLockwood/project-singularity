@@ -184,3 +184,12 @@ body:has(.shell) .cosmos { opacity: 0.5; }
 .rule-head { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; width: 100%; }
 .rule-head ~ * { width: 100%; }
 textarea.code { width: 100%; font-family: ui-monospace, monospace; color: var(--fg); }
+
+/* ---- scripts tab ---- */
+.scripts { max-width: 52rem; }
+.scripts .drop { display: inline-flex; align-items: center; gap: 0.6rem; cursor: pointer; padding: 0.6rem 1rem; border: 1px dashed #5a2c12; border-radius: 8px; background: rgba(255,157,46,0.06); }
+.scripts .drop:hover { background: rgba(255,157,46,0.14); }
+.scripts .drop input { cursor: pointer; }
+.scripts textarea { width: 100%; font-family: ui-monospace, monospace; }
+.scripts .actions { display: flex; gap: 0.6rem; margin: 0.5rem 0; }
+.scripts label { display: block; margin: 0.7rem 0 0.25rem; }
