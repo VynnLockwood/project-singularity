@@ -27,3 +27,17 @@ def test_script_rows_can_be_tuned():
 def test_script_rows_zero_is_rejected():
     with pytest.raises(tunables.TunableError):
         tunables.apply(approver(), {"limits.maxScriptRows": 0})
+
+
+def test_max_ops_per_script_default_and_tunable():
+    get_config.cache_clear()
+    assert get_config()["limits"]["maxOpsPerScript"] == 1000
+    a = approver()
+    a.username = "mo@x.com"
+    a.save(update_fields=["username"])
+    tunables.apply(a, {"limits.maxOpsPerScript": 5})
+    assert get_config()["limits"]["maxOpsPerScript"] == 5
+    with pytest.raises(tunables.TunableError):
+        tunables.apply(a, {"limits.maxOpsPerScript": 0})
+    with pytest.raises(tunables.TunableError):
+        tunables.apply(a, {"limits.maxOpsPerScript": 100001})

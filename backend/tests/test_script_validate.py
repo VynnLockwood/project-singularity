@@ -174,7 +174,7 @@ def test_revalidate_flips_status_both_ways(owner, approver):
                               params={"columnPattern": "^postcode$", "allowedTypes": ["text"]}, severity="block")
     assert not validate(s, None)["ok"]
     s.refresh_from_db()
-    assert s.status == "uploaded"
+    assert s.status == "validated"  # review ruling 9: a failing re-validate never downgrades
 
 
 @pytest.mark.usefixtures("master")
@@ -300,3 +300,72 @@ def test_row_source_error_inside_executor_rolls_back(owner, script_dir):
         with pytest.raises(executor.ApplyError, match="checksum"):
             executor.execute(res.operations, st, owner.email, rules=rules, row_source=make_row_source(s), dry_run=dry)
         assert tables() == []
+
+
+# ---------------------------------------------------------------- pending fixes (Task 8 review)
+
+@pytest.mark.usefixtures("master")
+def test_submitted_or_expired_script_is_refused(owner):
+    for status in ("submitted", "expired"):
+        s = stored(owner, MINI)
+        s.status = status
+        s.save(update_fields=["status"])
+        r = validate(s, copy.deepcopy(MAPPING))
+        assert not r["ok"] and r["errors"]
+        assert r["errors"][0]["kind"] == "storage" and status in r["errors"][0]["message"]
+        s.refresh_from_db()
+        assert s.status == status  # untouched
+        s.delete()
+
+
+@pytest.mark.usefixtures("master")
+def test_failed_revalidate_leaves_validated_status(owner, approver):
+    s = stored(owner, MINI)
+    assert validate(s, None)["ok"]
+    s.refresh_from_db()
+    assert s.status == "validated"
+    rules_service.create_rule(approver, name="postcodeIsText", type="type_map",
+                              params={"columnPattern": "^postcode$", "allowedTypes": ["text"]}, severity="block")
+    assert not validate(s, None)["ok"]
+    s.refresh_from_db()
+    assert s.status == "validated"  # no downgrade
+
+
+@pytest.mark.usefixtures("master")
+def test_max_ops_per_script_blocks(owner, approver):
+    from settings_app import tunables
+    from config.siconfig import get_config
+    tunables.apply(approver, {"limits.maxOpsPerScript": 1})
+    r = validate(stored(owner, MINI), None)
+    tunables.apply(approver, {"limits.maxOpsPerScript": None})  # reset for the next test
+    get_config.cache_clear()
+    assert not r["ok"]
+    assert any("maxOpsPerScript" in e["message"] for e in r["errors"] + r["gate"]["errors"])
+
+
+@pytest.mark.usefixtures("master")
+def test_char_padded_parent_keys_still_match(owner):
+    text = MINI.replace("code varchar(10) PRIMARY KEY", "code char(10) PRIMARY KEY")
+    r = validate(stored(owner, text), None)
+    assert r["ok"], r
+
+
+@pytest.mark.usefixtures("master")
+def test_unexpected_dry_run_exception_is_reported_not_crashed(owner, monkeypatch):
+    import scripts.validate as v
+    s = stored(owner, MINI)
+
+    def boom(script, parsed=None):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(v, "make_row_source", boom)
+    r = validate(s, None)
+    assert not r["ok"] and r["dry_run"]["skipped"] is False
+    assert r["dry_run"]["ok"] is False and "boom" in (r["dry_run"]["error"] or "")
+
+
+def test_row_source_accepts_preparsed(owner):
+    s = stored(owner, MINI)
+    parsed = parse_script(MINI)
+    rs = make_row_source(s, parsed=parsed)
+    assert list(rs(bulk_op(s.id))) == [("พระนคร", "1001", "10"), ("เมืองสมุทรปราการ", "1101", "11")]

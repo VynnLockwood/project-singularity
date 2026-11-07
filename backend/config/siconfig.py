@@ -21,6 +21,7 @@ DEFAULTS = {
         "maxRowsPerDataOp": 1000,
         "maxScriptBytes": 52428800,
         "maxScriptRows": 200000,
+        "maxOpsPerScript": 1000,
         "maxInlineScriptBytes": 20480,
     },
     "embedding": {"model": "intfloat/multilingual-e5-small", "dimension": 384},
