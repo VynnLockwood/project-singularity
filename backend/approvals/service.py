@@ -114,6 +114,7 @@ def propose(user, raw_ops, *, source: str, prompt: str = "", conversation_id: in
     res = check.run(
         raw_ops, introspect.snapshot(), rule_service.active_rules(),
         actor=user.email, max_ops=max_ops, skip_rules=is_revert,
+        allow_bulk=source == "script",
     )
     change = Change(
         requester=user, source=source, prompt=prompt, conversation_id=conversation_id,
@@ -126,6 +127,18 @@ def propose(user, raw_ops, *, source: str, prompt: str = "", conversation_id: in
     if change.status == Change.Status.REJECTED:
         record(user, "change.rejected_by_gate", target=f"#{change.pk}", details=change.check_result)
     return change
+
+
+def _script_row_source(change: Change):
+    """Row provider for a script-sourced change; None for every other source (lazy import: no cycle)."""
+    if change.source != "script":
+        return None
+    from scripts.models import Script
+    from scripts.rowsource import make_row_source
+    script = Script.objects.filter(change_id=change.pk).first()
+    if script is None:
+        raise executor.ApplyError(f"change #{change.pk} is script-sourced but has no script")
+    return make_row_source(script)
 
 
 def _get_for_update(change_id: int) -> Change:
@@ -157,6 +170,7 @@ def approve(user, change_id: int) -> Change:
         recheck = check.run(
             change.operations, state, rule_service.active_rules(), actor=change.requester.email,
             max_ops=max(len(change.operations), 1), skip_rules=True,
+            allow_bulk=change.source == "script",
         )
         if moved or recheck.errors:
             change.status = Change.Status.STALE
@@ -175,14 +189,15 @@ def approve(user, change_id: int) -> Change:
                 return _fail(change, user, f"backup failed, nothing was changed: {exc}")
             record(user, "backup.created", target=path.name)
 
-        # a revert of a bulk load deactivates as many rows as the load inserted, so it may use the script cap
+        # a revert or a script load may touch as many rows as the script inserted, so they use the script cap
         max_rows = cfg["limits"]["maxRowsPerDataOp"]
-        if is_revert:
+        if is_revert or change.source == "script":
             max_rows = max(max_rows, cfg["limits"]["maxScriptRows"])
         try:
             result = executor.execute(
                 change.operations, state, change.requester.email, max_rows=max_rows,
                 rules=rule_service.active_rules(),
+                row_source=_script_row_source(change),
             )
         except executor.ApplyError as exc:
             return _fail(change, user, str(exc))
