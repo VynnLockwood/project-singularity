@@ -116,6 +116,11 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./db/init:/docker-entrypoint-initdb.d:ro
+      # The three role passwords are only set at first init, so a later .env
+      # change left them stale (api 500s on every schema read). Sync them on
+      # every start instead: cheap, idempotent, no init order dependency.
+      - ./db/sync-roles.sh:/sync-roles.sh:ro
+    command: ["sh", "-c", "docker-entrypoint.sh postgres & until pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\" -q; do sleep 1; done; /sync-roles.sh; wait"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-singularity}"]
       interval: 5s
