@@ -11,10 +11,11 @@ import { DuplicatesView } from "./DuplicatesView";
 import { ConnectView } from "./ConnectView";
 import { SettingsView } from "./SettingsView";
 import { QueueView } from "./QueueView";
+import { ScriptsTab } from "./ScriptsTab";
 import { SearchBox } from "./SearchBox";
 import { SchemaView } from "./SchemaView";
 
-type Tab = "chat" | "schema" | "data" | "duplicates" | "connect" | "settings" | "queue";
+type Tab = "chat" | "schema" | "data" | "duplicates" | "scripts" | "connect" | "settings" | "queue";
 
 export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
   const [tab, setTab] = useState<Tab>("chat");
@@ -64,9 +65,9 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
       <header className="topbar">
         <span className="brand">Singularity</span>
         <nav aria-label="Main">
-          {(["chat", "schema", "data", "duplicates", "connect", "settings", ...(me.role === "viewer" ? [] : ["queue"])] as Tab[]).map((t) => (
+          {(["chat", "schema", "data", "duplicates", ...(me.role === "viewer" ? [] : ["scripts"] as const), "connect", "settings", ...(me.role === "viewer" ? [] : ["queue"])] as Tab[]).map((t) => (
             <button key={t} className="tab" data-active={tab === t} onClick={() => setTab(t)}>
-              {t === "chat" ? "Chat" : t === "schema" ? "Schema" : t === "data" ? "Data" : t === "duplicates" ? "Duplicates" : t === "connect" ? "Connect" : t === "settings" ? "Settings" : `Queue${mine.length ? ` (${mine.length})` : ""}`}
+              {t === "chat" ? "Chat" : t === "schema" ? "Schema" : t === "data" ? "Data" : t === "duplicates" ? "Duplicates" : t === "scripts" ? "Scripts" : t === "connect" ? "Connect" : t === "settings" ? "Settings" : `Queue${mine.length ? ` (${mine.length})` : ""}`}
             </button>
           ))}
         </nav>
@@ -92,6 +93,7 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
         {tab === "duplicates" && (
           <DuplicatesView me={me} refreshKey={appliedCount} onProposed={(c) => setLive((l) => upsert(l, c))} />
         )}
+        {tab === "scripts" && <ScriptsTab canEdit={me.role !== "viewer"} />}
         {tab === "connect" && <ConnectView me={me} />}
         {tab === "settings" && (
           <SettingsView me={me} refreshKey={configApplied} waiting={configWaiting} onOpenQueue={() => setTab("queue")} />
