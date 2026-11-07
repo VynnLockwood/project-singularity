@@ -30,7 +30,7 @@ RUN pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels
 
 COPY backend/ .
 
-RUN useradd --system --no-create-home app && mkdir /backups && chown -R app /app /backups
+RUN useradd --system --no-create-home app && mkdir /backups /scripts && chown -R app /app /backups /scripts
 USER app
 
 EXPOSE 8000
