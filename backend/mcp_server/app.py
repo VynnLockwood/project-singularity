@@ -38,6 +38,9 @@ by editors wait for an approver. Dropping things needs a 'reason'. Use query for
 Settings, gate rules and people's roles are changed the same way: read them with get_settings (and list_users),
 then call propose_config_change with structured operations (set_setting, reset_setting, update_rule,
 create_rule, set_user_role). These always wait in the approval queue for an approver; never claim they are applied.
+To load a whole pg_dump-style SQL script, call submit_script with the file contents inline (small scripts only;
+big ones are uploaded in the web app, then validate_script with the script_id). The script is parsed into the same
+gated operations — never send raw SQL to any other tool.
 """
 
 
@@ -185,6 +188,40 @@ async def reject_change(change_id: int, note: str = "") -> dict:
 @mcp.tool(name="list_pending", description="Pending changes waiting for a decision (approvers see the whole queue).")
 async def list_pending() -> dict:
     return await run("list_pending")
+
+
+@mcp.tool(
+    name="submit_script",
+    description=(
+        "Upload a small pg_dump-style SQL file inline (text, <= maxInlineScriptBytes; check get_settings for the cap), "
+        "validate it against the gate and submit it as one approvable Change. No raw SQL is executed: the script is "
+        "parsed into gated operations. For bigger files, tell the user to upload the file in the web app, then use "
+        "validate_script with the script_id. Optional mapping: {tables: {src_table: {pk: ', srcname: table}}, "
+        "columns: {...}}; leave out to let the system suggest one."
+    ),
+)
+async def submit_script(name: str, content: str, mapping: dict | None = None) -> dict:
+    return await run("submit_script", name=name, content=content, mapping=mapping)
+
+
+@mcp.tool(
+    name="validate_script",
+    description=(
+        "Re-validate a previously uploaded script and return the trimmed report "
+        "(errors with line numbers, ignored statements, ops summary, gate result, orphan samples, dry-run rows). "
+        "Returns the same report as at upload, so re-validation is idempotent."
+    ),
+)
+async def validate_script(script_id: int, mapping: dict | None = None) -> dict:
+    return await run("validate_script", script_id=script_id, mapping=mapping)
+
+
+@mcp.tool(
+    name="get_script",
+    description="Status, stored report and change link of an uploaded/validated/submitted script.",
+)
+async def get_script(script_id: int) -> dict:
+    return await run("get_script", script_id=script_id)
 
 
 LINK_PREFIX = "/mcp/t/"

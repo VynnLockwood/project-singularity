@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from approvals import service
 from approvals.models import Change
+from scripts import service as script_service, storage
 from config.siconfig import get_config
 from schema import introspect, query
 from settings_app import services as rule_services
@@ -28,6 +29,9 @@ TOOL_ROLES = {
     "approve_change": "editor",
     "reject_change": "editor",
     "list_pending": "approver",
+    "submit_script": "editor",
+    "validate_script": "editor",
+    "get_script": "editor",
 }
 
 RANK = {"viewer": 0, "editor": 1, "approver": 2}
@@ -181,6 +185,58 @@ def list_pending(user) -> dict:
     return {"pending": [service.serialize(c, detail=False) for c in items]}
 
 
+
+
+
+def submit_script(user, name: str, content: str, mapping: dict | None = None) -> dict:
+    """Upload + validate inline (<= maxInlineScriptBytes). Larger scripts: upload via API/UI, pass script_id."""
+    from config.siconfig import get_config
+    data = content.encode("utf-8")
+    if len(data) > get_config()["limits"]["maxInlineScriptBytes"]:
+        raise ToolFailure(
+            f"inline script is {len(data)} bytes; the inline cap is {get_config()['limits']['maxInlineScriptBytes']}. "
+            "Upload the file via the web UI or REST API, then call validate_script/get_script with its script_id.")
+    try:
+        script = script_service.upload(user, name, data)
+        report = script_service.validate(user, script.pk, mapping)
+    except storage.ScriptError as exc:
+        raise ToolFailure(str(exc)) from exc
+    out = {"script_id": script.pk, "report": _trim_report(report)}
+    if report.get("ok"):
+        try:
+            change = script_service.submit(user, script.pk)
+            out["change_id"] = change.pk
+            out["next"] = _next_step(user, change)
+        except storage.ScriptError as exc:
+            out["submit_error"] = str(exc)
+    return out
+
+
+def validate_script(user, script_id: int, mapping: dict | None = None) -> dict:
+    try:
+        report = script_service.validate(user, script_id, mapping)
+    except storage.ScriptError as exc:
+        raise ToolFailure(str(exc)) from exc
+    return {"script_id": script_id, "report": _trim_report(report)}
+
+
+def get_script(user, script_id: int) -> dict:
+    from scripts.models import Script
+    s = Script.objects.filter(pk=script_id).first()
+    if s is None:
+        raise ToolFailure(f"script #{script_id} does not exist")
+    return {"id": s.pk, "name": s.name, "size": s.size, "status": s.status,
+            "change_id": s.change_id, "report": _trim_report(s.report or {}) if s.report else None}
+
+
+def _trim_report(report: dict) -> dict:
+    out = dict(report)
+    out["errors"] = report.get("errors", [])[:20]
+    for t in out.get("tables", []):
+        t["sample_orphans"] = t.get("sample_orphans", [])[:10]
+    return out
+
+
 IMPL = {
     "get_rules": get_rules,
     "list_tables": list_tables,
@@ -195,4 +251,7 @@ IMPL = {
     "approve_change": approve_change,
     "reject_change": reject_change,
     "list_pending": list_pending,
+    "submit_script": submit_script,
+    "validate_script": validate_script,
+    "get_script": get_script,
 }

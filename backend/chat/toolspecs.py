@@ -46,6 +46,20 @@ SPECS = {
     "get_change": ("Status, diff and any errors of a proposed change.",
                    {"change_id": {"type": "integer"}}, ["change_id"]),
     "list_pending": ("Changes waiting for an approver.", {}, []),
+    "submit_script": (
+        "Upload a small pg_dump-style SQL script inline, validate it against the gate and submit it as one "
+        "approvable Change. No raw SQL is executed. Big scripts: tell the user to upload the file in the web app.",
+        {"name": {"type": "string", "description": "file name to show (e.g. master.sql)"},
+         "content": {"type": "string", "description": "the whole SQL file contents"},
+         "mapping": {"type": "object", "description": "optional table/column mapping; omit to auto-suggest"}},
+        ["name", "content"]),
+    "validate_script": (
+        "Re-validate an uploaded script and return the trimmed report (errors with line numbers, gate result, "
+        "orphan samples, dry-run rows).",
+        {"script_id": {"type": "integer"}, "mapping": {"type": "object"}}, ["script_id"]),
+    "get_script": (
+        "Status, stored report and change link of an uploaded/submitted script.",
+        {"script_id": {"type": "integer"}}, ["script_id"]),
 }
 
 

@@ -87,7 +87,7 @@ def test_health_endpoint_needs_no_token(server):
 
 def test_each_role_sees_only_its_tools(server):
     read = ["describe_table", "get_rules", "get_settings", "list_tables", "query", "search_schema"]
-    edit = read + ["approve_change", "get_change", "propose_change", "propose_config_change", "reject_change"]
+    edit = read + ["approve_change", "get_change", "propose_change", "propose_config_change", "reject_change", "submit_script", "validate_script", "get_script"]
     assert names(server, Role.VIEWER) == read
     assert names(server, Role.EDITOR) == sorted(edit)
     assert names(server, Role.APPROVER) == sorted(edit + ["list_pending", "list_users"])

@@ -306,3 +306,54 @@ export const rollbackRule = (id: number, version: number) => call<Rule>("POST", 
 
 export const listUsers = () => call<{ users: Me[] }>("GET", "/users").then((r) => r.users);
 export const setUserRole = (id: number, role: Me["role"]) => call<Me>("PATCH", `/users/${id}/role`, { role });
+
+// ---- scripts: pg_dump-style SQL intake (editor only) ---------------------------
+
+export interface ScriptReport {
+  ok: boolean;
+  script_id: number;
+  statements: number;
+  mapping_used: string | null;
+  errors: { kind: string; line: number; statement: string; message: string }[];
+  errors_truncated?: number;
+  ignored: { line: number; statement: string }[];
+  ops_summary?: { total: number; by_op: Record<string, number>; tables: string[] };
+  gate?: { errors: string[]; truncated?: number };
+  tables?: { name: string; source: string; rows: number; orphans: number; sample_orphans: { line: number; row: number; column: string; value: string; parent: string }[] }[];
+  dry_run?: { ok: boolean; skipped: boolean; error: string | null; rows_loaded: Record<string, number> };
+}
+
+export interface ScriptInfo {
+  id: number;
+  name: string;
+  sha256?: string;
+  size: number;
+  status: string;
+  change_id: number | null;
+  created_at?: string;
+  expires_at?: string;
+  report?: ScriptReport | null;
+}
+
+/** multipart upload — call() is JSON-only, so hit fetch directly. */
+export async function uploadScript(file: File): Promise<{ script_id: number; sha256: string; size: number }> {
+  if (!csrfToken()) await fetch(`${BASE}/csrf`, { credentials: "same-origin" });
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await fetch(`${BASE}/scripts`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "X-CSRFToken": csrfToken() },
+    body: fd,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new ApiError(res.status, data.error ?? `upload failed (${res.status})`);
+  return data;
+}
+
+export const validateScript = (id: number, mapping?: unknown) =>
+  call<ScriptReport>("POST", `/scripts/${id}/validate`, mapping ? { mapping } : {});
+export const submitScript = (id: number, note = "") =>
+  call<{ change_id: number }>("POST", `/scripts/${id}/submit`, { note });
+export const listScripts = () => call<{ scripts: ScriptInfo[] }>("GET", "/scripts").then((r) => r.scripts);
+export const getScript = (id: number) => call<ScriptInfo>("GET", `/scripts/${id}`);

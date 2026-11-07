@@ -8,6 +8,7 @@ from config.views import health
 from duplicates import views as dup
 from schema import views as schema_views
 from search import views as search_views
+from scripts import api as scripts_api
 from settings_app import views as rules
 
 urlpatterns = [
@@ -45,5 +46,9 @@ urlpatterns = [
     path("api/chat/conversations", chat_views.conversations),
     path("api/chat/conversations/<int:conv_id>", chat_views.conversation_detail),
     path("api/chat/conversations/<int:conv_id>/messages", chat_views.send_message),
+    path("api/scripts", scripts_api.scripts),
+    path("api/scripts/<int:script_id>", scripts_api.script_detail),
+    path("api/scripts/<int:script_id>/validate", scripts_api.validate_view),
+    path("api/scripts/<int:script_id>/submit", scripts_api.submit_view),
     path("api/", include("accounts.urls")),
 ]
