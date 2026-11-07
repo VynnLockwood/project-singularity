@@ -87,10 +87,10 @@ def test_health_endpoint_needs_no_token(server):
 
 def test_each_role_sees_only_its_tools(server):
     read = ["describe_table", "get_rules", "get_settings", "list_tables", "query", "search_schema"]
-    edit = read + ["approve_change", "get_change", "propose_change", "propose_config_change", "reject_change", "submit_script", "validate_script", "get_script"]
+    edit = read + ["get_change", "propose_change", "propose_config_change", "submit_script", "validate_script", "get_script"]
     assert names(server, Role.VIEWER) == read
     assert names(server, Role.EDITOR) == sorted(edit)
-    assert names(server, Role.APPROVER) == sorted(edit + ["list_pending", "list_users"])
+    assert names(server, Role.APPROVER) == sorted(edit + ["approve_change", "list_pending", "list_users", "reject_change"])
 
 
 def test_viewer_cannot_call_a_hidden_tool(server):
@@ -132,9 +132,9 @@ def test_full_flow_ai_proposes_user_confirms_then_applies(server):
     assert ch["status"] == "pending" and ch["kind"] == "schema" and ch["source"] == "mcp"
     assert "needs an approver" in ch["next"] and ch["diff"][0].startswith("+ create table customer")
 
-    # 2. the editor's AI cannot approve it, even if it tries
+    # 2. the editor's AI cannot even reach the decision tools, let alone approve
     res = with_client(url, tk[Role.EDITOR], lambda c: c.call_tool("approve_change", {"change_id": ch["id"]}))
-    assert res.is_error and "cannot approve" in res.content[0].text
+    assert res.is_error and "not available for your role" in res.content[0].text
 
     # 3. the approver's AI sees it in the queue and, after the user confirms, approves
     pending = payload(with_client(url, tk[Role.APPROVER], lambda c: c.call_tool("list_pending", {})))
@@ -148,11 +148,12 @@ def test_full_flow_ai_proposes_user_confirms_then_applies(server):
     d = payload(with_client(url, tk[Role.VIEWER], lambda c: c.call_tool("describe_table", {"table": "customer"})))
     assert d["columns"][0]["name"] == "customer_id"
 
-    # 5. an editor inserts data and approves their own data change
+    # 5. an editor inserts data; the change still asks its requester to confirm, but only the
+    #    approver's client can apply it (self-approval is a web-app thing, see test_changes.py)
     ins = payload(with_client(url, tk[Role.EDITOR], lambda c: c.call_tool("propose_change", {"operations": [
         {"op": "insert_rows", "table": "customer", "rows": [{"customer_code": "C1", "name": "Acme"}]}]})))
-    assert "Only after they say yes" in ins["next"]
-    assert payload(with_client(url, tk[Role.EDITOR], lambda c: c.call_tool(
+    assert "needs an approver" in ins["next"]
+    assert payload(with_client(url, tk[Role.APPROVER], lambda c: c.call_tool(
         "approve_change", {"change_id": ins["id"]})))["status"] == "applied"
     q = payload(with_client(url, tk[Role.VIEWER], lambda c: c.call_tool(
         "query", {"sql": 'SELECT customer_code, created_by FROM customer'})))
