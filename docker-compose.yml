@@ -50,9 +50,11 @@ services:
     environment:
       <<: *backend-env
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      SCRIPT_DIR: ${SCRIPT_DIR:-/scripts}
     volumes:
       - ./singularity.yaml:/app/singularity.yaml:ro
       - backups:/backups
+      - scriptfiles:${SCRIPT_DIR:-/scripts}
     expose: ["8000"]
     depends_on:
       db:
