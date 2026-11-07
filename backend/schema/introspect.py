@@ -65,7 +65,33 @@ WHERE con.contype = 'f'
 ORDER BY c.relname, a.attname
 """
 
+UNIQUE_KEYS_SQL = """
+SELECT c.relname AS table_name, a.attname AS column_name
+FROM pg_constraint con
+JOIN pg_class c ON c.oid = con.conrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'master'
+JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = con.conkey[1]
+WHERE con.contype IN ('p', 'u') AND cardinality(con.conkey) = 1
+"""
+
 CONSTRAINT_KINDS = {"p": "primary_key", "u": "unique", "f": "foreign_key", "c": "check"}
+
+
+def external_state(state: dict | None = None) -> dict:
+    """The tables that already exist, as `scripts.mapping.apply_mapping` names them.
+
+    Same snapshot information, keyed `master.<table>` (the way SQL writes it) and with the unique
+    columns a ref may point at: {table: {columns, primary_key: [col], unique: [[col], ...]}}.
+    """
+    state = snapshot() if state is None else state
+    out = {}
+    for t, v in state.items():
+        out[f"master.{t}"] = {"columns": v["columns"],
+                              "primary_key": [v["pk"]] if v["pk"] else [], "unique": []}
+    with ro_connection() as conn:
+        for r in conn.execute(UNIQUE_KEYS_SQL):
+            out[f"master.{r['table_name']}"]["unique"].append([r["column_name"]])
+    return out
 
 
 def snapshot() -> dict:

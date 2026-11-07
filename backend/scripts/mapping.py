@@ -558,7 +558,9 @@ def apply_mapping(parsed: ParsedScript, mapping: dict, external_state: dict | No
             op_cols.append(carrier)
             src_cols.append(r["source_column"])
             # an external parent is not renamed: it keeps the name it already has
-            refs.append({"column": r["column"], "parent_table": target_of.get(r["parent"], r["parent"]),
+            parent_table = target_of.get(r["parent"], r["parent"])
+            # the gate's identifier rule has no dots, and _parent_keys strips the schema too
+            refs.append({"column": r["column"], "parent_table": parent_table.rsplit(".", 1)[-1],
                          "parent_key": r["parent_key"], "source_column": carrier})
         if not op_cols:
             bad(f"tables.{n}", f"none of the mapped columns of {n!r} has data in the script")

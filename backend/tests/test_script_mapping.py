@@ -35,7 +35,7 @@ def test_external_ref_builds_bulk_insert(external_state):
     bulk = next(o for o in res.ops if o["op"] == "bulk_insert")
     assert bulk["table"] == "subdistrict"
     assert [o["op"] for o in res.ops] == ["bulk_insert"]     # not created by the script: no create_table
-    assert bulk["refs"] == [{"column": "district_id", "parent_table": "master.district",
+    assert bulk["refs"] == [{"column": "district_id", "parent_table": "district",
                              "parent_key": "code", "source_column": "_ref_district_id"}]
     assert bulk["columns"] == ["code", "name", "postcode", "_ref_district_id"]
     assert bulk["source"]["columns"] == ["code", "name", "postcode", "district_code"]
