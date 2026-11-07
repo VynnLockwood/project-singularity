@@ -1,4 +1,5 @@
 """Task 10: REST endpoints for script intake (scripts/api.py)."""
+import json
 import os
 
 import pytest
@@ -149,3 +150,22 @@ def test_list_shows_own_only(editor, approver):
     b = upload(other, "COPY t (a) FROM stdin;\n1\tx\n\\.\n").json()["script_id"]
     assert [s["id"] for s in editor.get("/api/scripts").json()["scripts"]] == [a]
     assert {s["id"] for s in approver.get("/api/scripts").json()["scripts"]} == {a, b}
+
+
+def test_paste_json_upload(editor):
+    payload = json.dumps({"name": "p.sql", "content": "CREATE TABLE p_t (id integer);\n"})
+    r = editor.post("/api/scripts", data=payload, content_type="application/json")
+    assert r.status_code == 201, (r.status_code, r.content[:200])
+    assert "script_id" in r.json()
+
+
+def test_paste_rejects_empty_content(editor):
+    r = editor.post("/api/scripts", data='{"name": "p.sql", "content": "  "}',
+                    content_type="application/json")
+    assert r.status_code == 400 and "content" in r.json()["error"]
+
+
+def test_paste_rejected_for_viewer(viewer):
+    r = viewer.post("/api/scripts", data='{"name": "p.sql", "content": "SELECT 1;"}',
+                    content_type="application/json")
+    assert r.status_code == 403

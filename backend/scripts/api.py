@@ -37,6 +37,22 @@ def scripts(request):
     if request.method == "POST":
         if not request.user.can_edit:
             return error("forbidden", 403)
+        # JSON paste path: {"name": "...", "content": "..."} — same caps as file upload
+        if request.content_type == "application/json":
+            import json as _json
+            try:
+                body = _json.loads(request.body)
+            except ValueError:
+                return error(f"invalid JSON body (got {request.body[:80]!r})")
+            name = (body.get("name") or "pasted.sql").strip()
+            content = body.get("content")
+            if not isinstance(content, str) or not content.strip():
+                return error("JSON body needs non-empty 'content' (the SQL text)")
+            try:
+                script = service.upload(request.user, name, content.encode("utf-8"))
+            except storage.ScriptError as exc:
+                return error(str(exc), 413 if "larger than" in str(exc) else 400)
+            return JsonResponse({"script_id": script.pk, "sha256": script.sha256, "size": script.size}, status=201)
         f = request.FILES.get("file")
         if f is None:
             return error("multipart field 'file' is required")
