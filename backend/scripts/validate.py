@@ -21,8 +21,8 @@ Report (JSON-serializable, bounded; saved on script.report):
    "dry_run": {"ok": bool, "skipped": bool, "error": str | None, "rows_loaded": {table: rows}}}
 
 ok = no errors, no gate errors or blocking violations, no orphans, and the dry run succeeded.
-script.status becomes "validated" only when ok; a failing re-validation moves a validated script
-back to "uploaded". The mapping used is stored on script.mapping.
+scripts that are "submitted" or "expired" are refused. script.status becomes "validated" only when ok;
+a failing re-validation never downgrades a validated script. The mapping used is stored on script.mapping.
 
 Orphans: a child row whose ref key (non-NULL, non-empty) is not among the parent's keys. Parent keys
 come from the parent's rows in the script plus, when the parent table already exists in master, its
@@ -54,6 +54,7 @@ MAX_VIOLATIONS = 200
 MAX_SAMPLES = 10
 MAX_MESSAGE = 2000
 INT_TYPES = {"smallint", "integer", "bigint"}
+CHAR_TYPES = {"char", "character", "bpchar"}  # char(n): Postgres strips trailing blanks to text
 
 
 def _clip(s, n: int = MAX_MESSAGE) -> str:
@@ -105,7 +106,7 @@ def _summary(ops: list[dict]) -> dict:
 # ---------------------------------------------------------------- orphans
 
 def _normalizer(type_: str | None):
-    base = (type_ or "").split("(")[0].strip()
+    base = (type_ or "").split("(")[0].strip().lower()
     if base in INT_TYPES:
         def norm(v):
             try:
@@ -120,6 +121,10 @@ def _normalizer(type_: str | None):
             except InvalidOperation:
                 return v
         return norm
+    if base in CHAR_TYPES:  # char(n) semantics: trailing blanks are not significant
+        return lambda v: str(v).rstrip()
+    if base == "uuid":  # uuid input is case-insensitive and ignores surrounding blanks
+        return lambda v: str(v).strip().lower()
     return lambda v: v
 
 
@@ -184,7 +189,18 @@ def _orphans(report: dict, ops: list[dict], parsed, state: dict) -> None:
 
 def validate(script: Script, mapping: dict | None) -> dict:
     report = _new_report(script)
-    _run(report, script, mapping)
+    if script.status in (Script.Status.SUBMITTED, Script.Status.EXPIRED):
+        _add_error(report, "storage", 0, "",
+                   f"script #{script.pk} is {script.status}; only uploaded or validated scripts can be validated")
+        report["ok"] = False
+        _save(script, report)
+        return report
+    try:
+        _run(report, script, mapping)
+    except Exception as exc:  # last resort: never crash, report a failed run instead
+        _add_error(report, "rows", 0, "", f"unexpected error: {_clip(exc)}")
+        report["dry_run"] = {"ok": False, "skipped": report["dry_run"]["skipped"],
+                             "error": f"unexpected: {type(exc).__name__}: {exc}", "rows_loaded": {}}
     report["ok"] = (not report["errors"] and not report["errors_truncated"] and not report["gate"]["errors"]
                     and not report["gate"]["blocked"] and all(t["orphans"] == 0 for t in report["tables"])
                     and report["dry_run"]["ok"])
@@ -195,7 +211,8 @@ def validate(script: Script, mapping: dict | None) -> dict:
 def _save(script: Script, report: dict) -> None:
     fields = ["report", "mapping"]
     script.report = report
-    if script.status in (Script.Status.UPLOADED, Script.Status.VALIDATED):
+    # validated -> uploaded on failure was reverted by review: never downgrade a validated script
+    if script.status == Script.Status.UPLOADED or (script.status == Script.Status.VALIDATED and report["ok"]):
         script.status = Script.Status.VALIDATED if report["ok"] else Script.Status.UPLOADED
         fields.append("status")
     script.save(update_fields=fields)
@@ -233,6 +250,11 @@ def _run(report: dict, script: Script, mapping: dict | None) -> None:
     report["ops_summary"] = _summary(ops)
 
     limits = get_config()["limits"]
+    max_ops = limits["maxOpsPerScript"]
+    if len(ops) > max_ops:
+        _add_error(report, "rows", 0, "",
+                   f"script has {len(ops)} operations, above the limit maxOpsPerScript ({max_ops})")
+        return
     state = introspect.snapshot()
     rules = rule_service.active_rules()
     res = check.run(ops, state, rules, actor=script.owner.email, max_ops=limits["maxOpsPerProposal"],
@@ -255,7 +277,7 @@ def _run(report: dict, script: Script, mapping: dict | None) -> None:
     dry["skipped"] = False
     try:
         executor.execute(res.operations, state, script.owner.email, max_rows=limits["maxRowsPerDataOp"],
-                         rules=rules, row_source=make_row_source(script), dry_run=True)
+                         rules=rules, row_source=make_row_source(script, parsed=parsed), dry_run=True)
     except executor.ApplyError as exc:
         dry["error"] = _clip(exc)
         return

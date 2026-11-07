@@ -53,13 +53,13 @@ def apply(user, ops):
 def schema(approver):
     apply(approver, [
         {"op": "create_table", "name": "customer", "columns": [
-            {"name": "customerCode", "type": "text", "unique": True, "comment": "unique code of the customer"},
-            {"name": "phoneNumber", "type": "text", "comment": "main contact phone"}]},
+            {"name": "customer_code", "type": "text", "unique": True, "comment": "unique code of the customer"},
+            {"name": "phone_number", "type": "text", "comment": "main contact phone"}]},
         {"op": "create_table", "name": "product", "comment": "things we sell", "columns": [
-            {"name": "productName", "type": "text", "comment": "display name of the product"}]},
+            {"name": "product_name", "type": "text", "comment": "display name of the product"}]},
     ])
     apply(approver, [{"op": "insert_rows", "table": "customer",
-                      "rows": [{"customerCode": "C001", "phoneNumber": "081-234-5678"}]}])
+                      "rows": [{"customer_code": "C001", "phone_number": "081-234-5678"}]}])
 
 
 def client(role):
@@ -74,15 +74,15 @@ def client(role):
 def test_indexes_tables_and_columns_but_not_audit_columns(embed, schema):
     r = indexer.reindex()
     keys = set(SchemaEmbedding.objects.values_list("kind", "table_name", "column_name"))
-    assert keys == {("table", "customer", ""), ("table", "product", ""), ("column", "customer", "customerCode"),
-                    ("column", "customer", "phoneNumber"), ("column", "product", "productName")}
+    assert keys == {("table", "customer", ""), ("table", "product", ""), ("column", "customer", "customer_code"),
+                    ("column", "customer", "phone_number"), ("column", "product", "product_name")}
     assert r == {"embedded": 5, "unchanged": 0, "removed": 0}
     assert all(kind == "passage" for kind, _ in embed)
 
 
 def test_documents_carry_comment_type_and_sample_values(embed, schema):
     indexer.reindex()
-    doc = SchemaEmbedding.objects.get(table_name="customer", column_name="phoneNumber").content
+    doc = SchemaEmbedding.objects.get(table_name="customer", column_name="phone_number").content
     assert "main contact phone" in doc and "(text)" in doc and "081-234-5678" in doc
 
 
@@ -91,7 +91,7 @@ def test_reindex_only_embeds_what_changed(embed, schema, approver):
     embed.clear()
     assert indexer.reindex() == {"embedded": 0, "unchanged": 5, "removed": 0}
     assert embed == []
-    apply(approver, [{"op": "set_column_comment", "table": "product", "column": "productName", "comment": "shown on receipts"}])
+    apply(approver, [{"op": "set_column_comment", "table": "product", "column": "product_name", "comment": "shown on receipts"}])
     r = indexer.reindex()
     assert r["embedded"] == 1 and r["unchanged"] == 4
     assert indexer.reindex(rebuild=True)["embedded"] == 5
@@ -99,9 +99,9 @@ def test_reindex_only_embeds_what_changed(embed, schema, approver):
 
 def test_dropped_things_leave_the_index(embed, schema, approver):
     indexer.reindex()
-    apply(approver, [{"op": "drop_column", "table": "customer", "column": "phoneNumber", "reason": "unused"}])
+    apply(approver, [{"op": "drop_column", "table": "customer", "column": "phone_number", "reason": "unused"}])
     assert indexer.reindex()["removed"] == 1
-    assert not SchemaEmbedding.objects.filter(column_name="phoneNumber").exists()
+    assert not SchemaEmbedding.objects.filter(column_name="phone_number").exists()
     apply(approver, [{"op": "drop_table", "table": "product", "reason": "unused"}])
     assert indexer.reindex()["removed"] == 2
     assert set(SchemaEmbedding.objects.values_list("table_name", flat=True)) == {"customer"}
@@ -110,11 +110,11 @@ def test_dropped_things_leave_the_index(embed, schema, approver):
 def test_foreign_keys_are_described(embed, approver):
     apply(approver, [
         {"op": "create_table", "name": "customer", "columns": [{"name": "name", "type": "text"}]},
-        {"op": "create_table", "name": "orderHeader", "columns": [
-            {"name": "customerId", "type": "bigint", "references": {"table": "customer"}}]}])
+        {"op": "create_table", "name": "order_header", "columns": [
+            {"name": "customer_id", "type": "bigint", "references": {"table": "customer"}}]}])
     indexer.reindex()
-    doc = SchemaEmbedding.objects.get(table_name="orderHeader", column_name="customerId").content
-    assert "References customer.id" in doc
+    doc = SchemaEmbedding.objects.get(table_name="order_header", column_name="customer_id").content
+    assert "References customer.customer_id" in doc
 
 
 def test_wrong_vector_size_is_refused(settings, monkeypatch, schema):
@@ -127,7 +127,7 @@ def test_wrong_vector_size_is_refused(settings, monkeypatch, schema):
 
 def test_failed_embedding_leaves_the_old_index_alone(embed, schema, monkeypatch, approver):
     indexer.reindex()
-    apply(approver, [{"op": "set_column_comment", "table": "product", "column": "productName", "comment": "new"}])
+    apply(approver, [{"op": "set_column_comment", "table": "product", "column": "product_name", "comment": "new"}])
 
     def down(texts, kind):
         raise SearchError("the embedding service is unreachable")
@@ -143,18 +143,18 @@ def test_failed_embedding_leaves_the_old_index_alone(embed, schema, monkeypatch,
 def test_meaning_match_ranks_the_right_column_first(embed, schema):
     indexer.reindex()
     r = search_service.search("contact phone")
-    assert (r["results"][0]["table"], r["results"][0]["column"]) == ("customer", "phoneNumber")
+    assert (r["results"][0]["table"], r["results"][0]["column"]) == ("customer", "phone_number")
     r = search_service.search("name shown for a product")
-    assert r["results"][0]["column"] == "productName"
+    assert r["results"][0]["column"] == "product_name"
 
 
 def test_exact_name_outranks_a_loose_match(embed, schema):
     indexer.reindex()
-    r = search_service.search("customerCode")
-    assert (r["results"][0]["table"], r["results"][0]["column"]) == ("customer", "customerCode")
+    r = search_service.search("customer_code")
+    assert (r["results"][0]["table"], r["results"][0]["column"]) == ("customer", "customer_code")
     assert r["confident"] is True  # a name match is a confident match
     assert search_service.search("customer")["results"][0]["column"] is None  # the table itself
-    assert search_service.search("customer code")["results"][0]["column"] == "customerCode"
+    assert search_service.search("customer code")["results"][0]["column"] == "customer_code"
 
 
 def test_confidence_threshold_decides_the_suggestion(embed, schema, monkeypatch):
@@ -185,7 +185,7 @@ def test_empty_index_and_empty_query(embed):
 def test_rest_search_any_signed_in_role(embed, schema):
     indexer.reindex()
     r = client(Role.VIEWER).get("/api/search", {"q": "contact phone"})
-    assert r.status_code == 200 and r.json()["results"][0]["column"] == "phoneNumber"
+    assert r.status_code == 200 and r.json()["results"][0]["column"] == "phone_number"
     assert Client().get("/api/search", {"q": "x"}).status_code == 401
     assert client(Role.VIEWER).get("/api/search", {"q": ""}).status_code == 400
     assert client(Role.VIEWER).get("/api/search", {"q": "x", "k": "abc"}).status_code == 400
@@ -279,7 +279,7 @@ def test_search_tool_for_viewers(embed, schema):
     indexer.reindex()
     viewer = User.objects.create(username="v@x.com", email="v@x.com", role=Role.VIEWER)
     assert tools.allowed(viewer, "search_schema")
-    assert tools.IMPL["search_schema"](viewer, "contact phone")["results"][0]["column"] == "phoneNumber"
+    assert tools.IMPL["search_schema"](viewer, "contact phone")["results"][0]["column"] == "phone_number"
 
 
 def test_search_tool_reports_failures_as_tool_errors(settings):

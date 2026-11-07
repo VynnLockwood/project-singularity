@@ -43,7 +43,7 @@ def col(name, type="text", **kw):
     return {"name": name, "type": type, **kw}
 
 
-CREATE = {"operations": [{"op": "create_table", "name": "customer", "columns": [col("customerCode", unique=True), col("name")]}]}
+CREATE = {"operations": [{"op": "create_table", "name": "customer", "columns": [col("customer_code", unique=True), col("name")]}]}
 
 
 # ---- auth and roles --------------------------------------------------------
@@ -99,7 +99,7 @@ def test_propose_review_approve_flow(editor, approver):
 
     assert [t["name"] for t in approver.get("/api/schema/tables").json()["tables"]] == ["customer"]
     d = approver.get("/api/schema/tables/customer").json()
-    assert d["columns"][0]["name"] == "id"
+    assert d["columns"][0]["name"] == "customer_id"
     assert approver.get("/api/schema/tables/nope").status_code == 404
     assert approver.get(f"/api/changes/{c['id']}").json()["status"] == "applied"
 
@@ -109,7 +109,7 @@ def test_gate_rejection_is_a_normal_201_with_reasons(editor):
     assert r.status_code == 201
     body = r.json()
     assert body["status"] == "rejected"
-    assert body["check"]["violations"][0]["suggestion"] == "badName"
+    assert body["check"]["violations"][0]["suggestion"] == "bad_name"
 
 
 def test_callers_cannot_forge_the_source(editor):
@@ -155,9 +155,9 @@ def test_query_endpoint(approver, viewer):
     c = post(approver, "/api/changes", CREATE).json()
     post(approver, f"/api/changes/{c['id']}/approve")
     ins = post(approver, "/api/changes", {"operations": [
-        {"op": "insert_rows", "table": "customer", "rows": [{"customerCode": "C1", "name": "Acme"}]}]}).json()
+        {"op": "insert_rows", "table": "customer", "rows": [{"customer_code": "C1", "name": "Acme"}]}]}).json()
     post(approver, f"/api/changes/{ins['id']}/approve")
-    r = post(viewer, "/api/query", {"sql": "SELECT \"customerCode\", name FROM customer"})
+    r = post(viewer, "/api/query", {"sql": "SELECT \"customer_code\", name FROM customer"})
     assert r.status_code == 200 and r.json()["rows"] == [["C1", "Acme"]]
     assert post(viewer, "/api/query", {"sql": "DROP TABLE customer"}).status_code == 400
     assert post(viewer, "/api/query", {"sql": "SELECT 1", "limit": "many"}).status_code == 400
@@ -176,11 +176,11 @@ def test_rules_read_for_all_write_for_approvers(viewer, editor, approver):
     assert len(rules) == 10 and rules[0]["name"] == "tableNaming"
     rid = rules[0]["id"]
     assert patch(editor, f"/api/rules/{rid}", {"enabled": False}).status_code == 403
-    r = patch(approver, f"/api/rules/{rid}", {"params": {**rules[0]["params"], "style": "snake_case"}})
+    r = patch(approver, f"/api/rules/{rid}", {"params": {**rules[0]["params"], "style": "camelCase"}})
     assert r.status_code == 200 and r.json()["version"] == 2
     assert [v["version"] for v in viewer.get(f"/api/rules/{rid}/versions").json()["versions"]] == [2, 1]
     back = post(approver, f"/api/rules/{rid}/rollback", {"version": 1})
-    assert back.json()["params"]["style"] == "camelCase" and back.json()["version"] == 3
+    assert back.json()["params"]["style"] == "snake_case" and back.json()["version"] == 3
     assert post(editor, f"/api/rules/{rid}/rollback", {"version": 1}).status_code == 403
     assert post(approver, f"/api/rules/{rid}/rollback", {"version": 99}).status_code == 400
 
@@ -198,7 +198,10 @@ def test_rule_validation_errors_are_listed(approver):
 
 def test_rule_change_takes_effect_for_the_next_proposal(editor, approver):
     ops = {"operations": [{"op": "create_table", "name": "supplier_contact", "columns": [col("contact_code", unique=True)]}]}
-    assert post(editor, "/api/changes", ops).json()["status"] == "rejected"          # camelCase is the default
+    for r in approver.get("/api/rules").json()["rules"]:
+        if r["name"] in ("tableNaming", "columnNaming"):
+            patch(approver, f"/api/rules/{r['id']}", {"params": {**r["params"], "style": "camelCase"}})
+    assert post(editor, "/api/changes", ops).json()["status"] == "rejected"          # camelCase set above
     for r in approver.get("/api/rules").json()["rules"]:
         if r["name"] in ("tableNaming", "columnNaming", "foreignKeyNaming"):
             patch(approver, f"/api/rules/{r['id']}", {"params": {**r["params"], "style": "snake_case"}})
@@ -233,17 +236,17 @@ def test_audit_endpoint(editor, approver, viewer):
 def test_graph_has_columns_keys_and_foreign_keys(approver):
     ops = [
         {"op": "create_table", "name": "customer", "columns": [col("name")]},
-        {"op": "create_table", "name": "orderHeader", "columns": [
-            col("customerId", "bigint", references={"table": "customer"})]},
+        {"op": "create_table", "name": "order_header", "columns": [
+            col("customer_id", "bigint", references={"table": "customer"})]},
     ]
     ch = post(approver, "/api/changes", {"operations": ops}).json()
     assert post(approver, f"/api/changes/{ch['id']}/approve").json()["status"] == "applied"
     g = approver.get("/api/schema/graph").json()
     by = {t["name"]: t for t in g["tables"]}
-    assert set(by) == {"customer", "orderHeader"}
-    assert {c["name"] for c in by["customer"]["columns"] if c["primaryKey"]} == {"id"}
-    assert g["relations"] == [{"from": {"table": "orderHeader", "column": "customerId"},
-                               "to": {"table": "customer", "column": "id"}}]
+    assert set(by) == {"customer", "order_header"}
+    assert {c["name"] for c in by["customer"]["columns"] if c["primaryKey"]} == {"customer_id"}
+    assert g["relations"] == [{"from": {"table": "order_header", "column": "customer_id"},
+                               "to": {"table": "customer", "column": "customer_id"}}]
 
 
 def test_graph_is_readable_by_viewers_but_not_anonymous(viewer):

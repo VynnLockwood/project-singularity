@@ -26,11 +26,11 @@ from .models import Script
 from .sqlparse import ParsedScript, parse_script
 
 
-def make_row_source(script: Script) -> Callable[[dict], Iterator[tuple]]:
-    parsed: list[ParsedScript] = []
+def make_row_source(script: Script, parsed: ParsedScript | None = None) -> Callable[[dict], Iterator[tuple]]:
+    cached: list[ParsedScript] = [parsed] if parsed is not None else []
 
     def load() -> ParsedScript:
-        if not parsed:
+        if not cached:
             try:
                 data = storage.read(script)
             except storage.ScriptError as exc:
@@ -39,8 +39,8 @@ def make_row_source(script: Script) -> Callable[[dict], Iterator[tuple]]:
             if p.errors:
                 e = p.errors[0]
                 raise ApplyError(f"script #{script.pk} no longer parses: line {e.line}: {e.message}")
-            parsed.append(p)
-        return parsed[0]
+            cached.append(p)
+        return cached[0]
 
     def row_source(op: dict) -> Iterator[tuple]:
         src = op.get("source") or {}

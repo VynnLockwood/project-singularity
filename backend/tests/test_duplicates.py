@@ -29,13 +29,13 @@ def apply(user, ops):
 def data(approver):
     apply(approver, [
         {"op": "create_table", "name": "customer", "columns": [
-            {"name": "customerCode", "type": "text"}, {"name": "name", "type": "text"}]},
-        {"op": "create_table", "name": "orderHeader", "columns": [
-            {"name": "customerId", "type": "bigint", "references": {"table": "customer"}}]},
+            {"name": "customer_code", "type": "text"}, {"name": "name", "type": "text"}]},
+        {"op": "create_table", "name": "order_header", "columns": [
+            {"name": "customer_id", "type": "bigint", "references": {"table": "customer"}}]},
     ])
     apply(approver, [{"op": "insert_rows", "table": "customer",
-                      "rows": [{"customerCode": f"C{i}", "name": n} for i, n in enumerate(NAMES, 1)]}])
-    apply(approver, [{"op": "insert_rows", "table": "orderHeader", "rows": [{"customerId": 2}, {"customerId": 7}, {"customerId": 3}]}])
+                      "rows": [{"customer_code": f"C{i}", "name": n} for i, n in enumerate(NAMES, 1)]}])
+    apply(approver, [{"op": "insert_rows", "table": "order_header", "rows": [{"customer_id": 2}, {"customer_id": 7}, {"customer_id": 3}]}])
 
 
 def api(role=Role.EDITOR):
@@ -80,13 +80,13 @@ def test_rescan_keeps_group_identity_and_dismissals(data):
 
 def test_groups_that_no_longer_exist_are_removed(data, approver):
     scan()
-    apply(approver, [{"op": "deactivate_rows", "table": "customer", "where": {"id": [4]}}])
+    apply(approver, [{"op": "deactivate_rows", "table": "customer", "where": {"customer_id": [4]}}])
     r = scan().json()
     assert r["removed"] == 1 and member_sets() == [[1, 2, 7]]
 
 
 def test_inactive_rows_are_not_compared(data, approver):
-    apply(approver, [{"op": "deactivate_rows", "table": "customer", "where": {"id": [2, 7]}}])
+    apply(approver, [{"op": "deactivate_rows", "table": "customer", "where": {"customer_id": [2, 7]}}])
     assert scan().json()["groups"] == 1  # only the Thai pair is left
 
 
@@ -96,7 +96,7 @@ def test_threshold_and_fields_are_validated_and_used(data):
     for bad in ({"threshold": 0.2}, {"threshold": "high"}, {"fields": ["nope"]}, {"fields": "name"}, {"fields": ["id"]}):
         assert scan(**bad).status_code == 400, bad
     assert post(api(), "/api/duplicates/scan", {"table": "ghost"}).status_code == 404
-    assert scan(fields=["customerCode"]).json()["groups"] == 0   # codes C1..C7 are not duplicates
+    assert scan(fields=["customer_code"]).json()["groups"] == 0   # codes C1..C7 are not duplicates
 
 
 def test_row_cap_is_reported(data, monkeypatch):
@@ -108,8 +108,8 @@ def test_row_cap_is_reported(data, monkeypatch):
 
 def test_default_fields_prefer_name_columns():
     cols = lambda *n: {x: {"type": "text"} for x in n}
-    assert dup.default_fields(cols("customerCode", "tradeName", "legalName")) == ["tradeName", "legalName"]
-    assert dup.default_fields(cols("note", "customerCode")) == ["customerCode"]
+    assert dup.default_fields(cols("customer_code", "tradeName", "legalName")) == ["tradeName", "legalName"]
+    assert dup.default_fields(cols("note", "customer_code")) == ["customer_code"]
     assert dup.default_fields({"qty": {"type": "integer"}}) == []
 
 
@@ -130,8 +130,8 @@ def test_detail_shows_member_records_and_who_points_at_them(data):
     scan()
     g = DuplicateGroup.objects.get(member_ids=[1, 2, 7])
     d = api(Role.VIEWER).get(f"/api/duplicates/{g.pk}").json()
-    assert [m["id"] for m in d["members"]] == [1, 2, 7] and d["members"][0]["name"] == NAMES[0]
-    assert d["referencedBy"] == [{"table": "orderHeader", "column": "customerId"}]
+    assert [m["customer_id"] for m in d["members"]] == [1, 2, 7] and d["members"][0]["name"] == NAMES[0]
+    assert d["referencedBy"] == [{"table": "order_header", "column": "customer_id"}]
     assert api().get("/api/duplicates/99999").status_code == 404
 
 
@@ -155,11 +155,11 @@ def test_merge_operations_repoint_references_then_deactivate(data):
     scan()
     g = DuplicateGroup.objects.get(member_ids=[1, 2, 7])
     assert dup.merge_operations(g, 1) == [
-        {"op": "update_rows", "table": "orderHeader", "where": {"customerId": [2, 7]}, "set": {"customerId": 1}},
-        {"op": "deactivate_rows", "table": "customer", "where": {"id": [2, 7]}},
+        {"op": "update_rows", "table": "order_header", "where": {"customer_id": [2, 7]}, "set": {"customer_id": 1}},
+        {"op": "deactivate_rows", "table": "customer", "where": {"customer_id": [2, 7]}},
     ]
     g2 = DuplicateGroup.objects.get(member_ids=[4, 5])
-    assert dup.merge_operations(g2, 5)[-1] == {"op": "deactivate_rows", "table": "customer", "where": {"id": 4}}
+    assert dup.merge_operations(g2, 5)[-1] == {"op": "deactivate_rows", "table": "customer", "where": {"customer_id": 4}}
     with pytest.raises(dup.DuplicateError, match="one of the group"):
         dup.merge_operations(g, 3)
 
@@ -180,9 +180,9 @@ def test_merge_goes_through_the_gate_and_cleans_up(data):
     assert dup.state(DuplicateGroup.objects.get(pk=g.pk)) == "merged"
 
     from schema.query import run_select
-    orders = run_select('SELECT "customerId" FROM \"orderHeader\" ORDER BY id')["rows"]
+    orders = run_select('SELECT "customer_id" FROM \"order_header\" ORDER BY customer_id')["rows"]
     assert orders == [[1], [1], [3]]                       # 2 and 7 now point at the survivor
-    active = run_select('SELECT id FROM customer WHERE "isActive" ORDER BY id')["rows"]
+    active = run_select('SELECT customer_id FROM customer WHERE is_active ORDER BY customer_id')["rows"]
     assert [x[0] for x in active] == [1, 3, 4, 5, 6]        # losers are deactivated, not deleted
     assert run_select("SELECT count(*) FROM customer")["rows"] == [[7]]
 

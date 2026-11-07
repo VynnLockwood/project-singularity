@@ -184,3 +184,34 @@
 
 - [ ] **Step 1:** Test uploads the dump, validates with the mapping (province/district/subdistrict, `code` business keys), submits, approves; asserts counts 77 / 928 / 7720 and zero orphans.
 - [ ] **Step 2:** Run with `THAI_DUMP=/mnt/user-data/uploads/e3f143e3-master-data1 pytest tests/test_script_thai_e2e.py -v`. Expected: PASS. Commit `test: thai master data end to end`.
+
+## Execution status (as of 2026-11-07)
+
+| Task | Status |
+|---|---|
+| 1 Live-DB cleanups | not started (done by controller via MCP, needs your OK per change) |
+| 2 Limits as tunables | done, reviewed |
+| 3 Gate ops add_check / set_table_comment / on_delete | done, reviewed (2 fix rounds) |
+| 4 bulk_insert + executor path | done, reviewed (2 fix rounds) |
+| 5 scripts model + storage | done, reviewed (1 fix round) |
+| 6 SQL parser | done, reviewed (2 fix rounds) |
+| 7 COPY reader + mapping | done, reviewed (1 fix round) |
+| 8 Validation + dry run | committed, 2 Important review findings OPEN |
+| 9 Submit as Change | not started |
+| 10 REST + nginx | not started |
+| 11 MCP tools + chat specs | not started |
+| 12 Scripts tab | not started |
+| 13 Thai dump end-to-end | not started |
+
+## Rulings made during execution (these change the plan text above)
+
+1. `bulk_insert` reverse op follows `insert_rows`: `deactivate_rows` by inserted ids when the table has an is_active role, else irreversible (plan said a non-existent `delete_rows`). Revert path uses cap `max(maxRowsPerDataOp, maxScriptRows)`.
+2. `executor.execute` gained `dry_run` (locks target tables, restores sequences, always rolls back) and `row_source`.
+3. `bulk_insert` is refused on the normal propose path; only `check.run(..., allow_bulk=True)` (scripts service) allows it.
+4. `bulk_insert.source` = `{script_id: int|null, stream, columns}`; `bind_script(ops, script_id)` fills the id; Task 9 must call it and its row provider must project stream rows by `source.columns` (`scripts/rowsource.py`, built in Task 8).
+5. Error class is `ApplyError` (not ExecError).
+6. `RowStream` lives in `scripts/sqlparse.py`; `ScriptIssue`/`RowStreamError` in `scripts/copyparse.py`. COPY errors from lazy streams raise `RowStreamError` (carries `.issue`).
+7. FK with no ON DELETE parses to `no action` (spec 2.5 says restrict; revisit).
+8. `apply_mapping` returns `MappingResult(ops, issues)`; non-snake_case target names are mapping issues (so the camelCase gate-block test in Task 8 uses another rule). Single-column business keys are emitted inline `unique: true`. Mapped tables get audit columns from the gate's autoAdd.
+9. Task 8 pending fixes: refuse validating submitted/expired scripts + conditional status update; new tunable `limits.maxOpsPerScript` (default 1000) used by validate and Task 9; reuse parse in `make_row_source(script, parsed=None)`; char/uuid orphan comparison; no crash on unexpected exceptions.
+10. Task 9 must lock the Script row (`select_for_update`) when setting change/status.
