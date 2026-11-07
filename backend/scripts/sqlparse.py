@@ -370,16 +370,27 @@ def _opt_ident(name):
     return None if name is None else _ident(name, "constraint name")
 
 
+# Identifiers that could exceed 63 bytes: bare or double-quoted words. Quoted ones are
+# only a candidate when they actually contain "" or are long, so this stays cheap on huge
+# statements (``scan`` on a 300 KB VALUES list was quadratic: ~2 min, a 504 for the user).
+# Double-quoted (or bare) identifiers only. Single-quoted text is a string literal, not an
+# identifier, so it must never be reported -- Thai data at 3 bytes/char trips the 63-byte
+# limit constantly. scan() made this distinction for free by its token filter; we can't,
+# so skip anything inside single quotes by consuming them first.
+_CANDIDATE_IDENT = re.compile(r"""'(?:[^']|'')*'|"(?:[^"]|"")*"?|\$[^$]*\$[^$]*\$|[A-Za-z_\u0080-\uffff][A-Za-z_0-9$\u0080-\uffff]*""")
+
+
 def _long_identifier(stmt: str) -> str | None:
-    """First identifier longer than 63 bytes in the source text (pglast would truncate it silently)."""
-    try:
-        tokens = pglast.parser.scan(stmt)
-    except pglast.parser.ParseError:
+    """First identifier longer than 63 bytes in the source text (pglast would truncate it silently).
+
+    Scanned with a regex rather than ``pglast.parser.scan``: the latter builds a token for
+    every lexeme and copies the source per token, which is O(n^2) on a large VALUES list.
+    """
+    if len(stmt.encode("utf-8")) <= 63:  # nothing in here can be too long
         return None
-    for t in tokens:
-        if t.name not in ("IDENT", "UIDENT"):
-            continue
-        word = stmt[t.start:t.end + 1]  # scan offsets are character offsets
+    for word in _CANDIDATE_IDENT.findall(stmt):
+        if word.startswith("'") or word.startswith("$"):
+            continue  # string literal / dollar-quoted body, not an identifier
         name = word[1:-1].replace('""', '"') if word.startswith('"') else word
         if len(name.encode("utf-8")) > 63:
             return name
