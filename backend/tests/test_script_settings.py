@@ -41,3 +41,4 @@ def test_max_ops_per_script_default_and_tunable():
         tunables.apply(a, {"limits.maxOpsPerScript": 0})
     with pytest.raises(tunables.TunableError):
         tunables.apply(a, {"limits.maxOpsPerScript": 100001})
+    tunables.apply(a, {"limits.maxOpsPerScript": 1000})  # restore; same test DB persists across files

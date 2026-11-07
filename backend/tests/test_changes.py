@@ -39,8 +39,8 @@ def col(name, type="text", **kw):
     return {"name": name, "type": type, **kw}
 
 
-CREATE_CUSTOMER = [{"op": "create_table", "name": "customer", "columns": [col("customerCode", unique=True), col("name")]}]
-INSERT_ACME = [{"op": "insert_rows", "table": "customer", "rows": [{"customerCode": "C1", "name": "Acme"}]}]
+CREATE_CUSTOMER = [{"op": "create_table", "name": "customer", "columns": [col("customer_code", unique=True), col("name")]}]
+INSERT_ACME = [{"op": "insert_rows", "table": "customer", "rows": [{"customer_code": "C1", "name": "Acme"}]}]
 
 
 def tables():
@@ -93,7 +93,7 @@ def test_editor_self_approves_data_change(editor, approver):
     assert c.kind == "data"
     c = service.approve(editor, c.pk)
     assert c.status == "applied"
-    assert query.run_select("SELECT name, \"createdBy\" FROM customer")["rows"] == [["Acme", "editor@example.com"]]
+    assert query.run_select("SELECT name, created_by FROM customer")["rows"] == [["Acme", "editor@example.com"]]
 
 
 def test_other_editor_cannot_approve_someone_elses_data_change(editor, editor2, approver):
@@ -145,13 +145,18 @@ def test_semantic_errors_are_rejected(editor):
 
 
 def test_warnings_do_not_block_and_are_recorded(approver):
+    from settings_app import services as _rs
+    from settings_app.models import Rule
+    for name in ("tableNaming", "columnNaming"):
+        r = Rule.objects.get(name=name)
+        _rs.update_rule(approver, r, params={**r.params, "style": "camelCase"}, severity="warn")
     c = service.propose(approver, [{"op": "create_table", "name": "country",
                                     "columns": [col("name"), col("regionCode")]}], source="web")
     assert c.status == "pending"
     assert {v["severity"] for v in c.check_result["violations"]} == {"warn"}
     assert c.diff[0].startswith("+ create table country")
     assert any("CREATE TABLE" in s for s in c.generated_sql)
-    assert "country.id" in c.check_result["autoAdded"]
+    assert "country.country_id" in c.check_result["autoAdded"]
 
 
 # ---- stale detection -------------------------------------------------------
@@ -232,9 +237,9 @@ def test_unknown_change(approver):
 def test_database_refusal_marks_failed_and_changes_nothing(approver):
     make_customer(approver)
     service.approve(approver, service.propose(approver, [{"op": "insert_rows", "table": "customer", "rows": [
-        {"customerCode": "C1", "name": "same"}, {"customerCode": "C2", "name": "same"}]}], source="web").pk)
+        {"customer_code": "C1", "name": "same"}, {"customer_code": "C2", "name": "same"}]}], source="web").pk)
     bad = service.propose(approver, [
-        {"op": "create_table", "name": "other", "columns": [col("otherCode", unique=True)]},
+        {"op": "create_table", "name": "other", "columns": [col("other_code", unique=True)]},
         {"op": "add_unique", "table": "customer", "columns": ["name"]},
     ], source="web")
     assert bad.status == "pending"
@@ -272,7 +277,7 @@ def test_revert_data_change(approver):
     ins = service.approve(approver, service.propose(approver, INSERT_ACME, source="web").pk)
     rev = service.revert(approver, ins.pk)
     assert rev.status == "applied" and rev.source == "revert" and rev.reverts_id == ins.pk
-    assert query.run_select('SELECT "isActive" FROM customer')["rows"] == [[False]]
+    assert query.run_select('SELECT is_active FROM customer')["rows"] == [[False]]
     assert "change.reverted" in actions()
 
 
@@ -315,13 +320,16 @@ def test_cannot_revert_pending_or_rejected(approver):
 def test_revert_ignores_rules_but_still_checks_state(approver):
     # create a table whose name today's rules would reject (rule off at the time)
     naming = Rule.objects.get(name="tableNaming")
+    col_rule = Rule.objects.get(name="columnNaming")
     rules_service.update_rule(approver, naming, enabled=False)
+    rules_service.update_rule(approver, col_rule, enabled=False)
     service.approve(approver, service.propose(approver, [
         {"op": "create_table", "name": "Old_Name", "columns": [col("oldCode", unique=True)]}], source="web").pk)
     rules_service.update_rule(approver, naming, enabled=True)
+    rules_service.update_rule(approver, col_rule, enabled=True)
     ren = service.approve(approver, service.propose(approver, [
-        {"op": "rename_table", "table": "Old_Name", "new_name": "newName"}], source="web").pk)
-    assert tables() == ["newName"]
+        {"op": "rename_table", "table": "Old_Name", "new_name": "new_name"}], source="web").pk)
+    assert tables() == ["new_name"]
     rev = service.revert(approver, ren.pk)       # would be blocked by tableNaming if rules applied
     assert rev.status == "applied" and tables() == ["Old_Name"]
 
@@ -351,7 +359,7 @@ def test_serialize(editor):
     c = service.propose(editor, CREATE_CUSTOMER, source="mcp", prompt="p")
     data = service.serialize(c)
     assert data["status"] == "pending" and data["requester"] == "editor@example.com"
-    assert data["operations"][0]["columns"][0]["name"] == "id"      # normalized ops include auto-added columns
+    assert data["operations"][0]["columns"][0]["name"] == "customer_id"  # normalized ops include auto-added columns
     assert data["sql"] and data["diff"] and data["tables"] == ["customer"]
     assert "operations" not in service.serialize(c, detail=False)
 
@@ -378,7 +386,7 @@ def test_rule_edit_versioning_and_rollback(approver):
     assert rule.version == 2 and rule.params["style"] == "snake_case" and rule.severity == "warn"
     rules_service.rollback_rule(approver, rule, 1)
     rule.refresh_from_db()
-    assert rule.version == 3 and rule.params["style"] == "camelCase" and rule.severity == "block"
+    assert rule.version == 3 and rule.params["style"] == "snake_case" and rule.severity == "block"
     assert [v.action for v in rule.versions.all()] == ["rolled_back", "updated", "created"]
     entry = AuditLog.objects.get(action="rule.updated")
     assert entry.details["before"]["severity"] == "block" and entry.details["after"]["severity"] == "warn"
@@ -391,7 +399,7 @@ def test_invalid_rule_edit_rejected_and_unchanged(approver):
     with pytest.raises(rules_service.RuleError):
         rules_service.update_rule(approver, rule, name="renamed")
     rule.refresh_from_db()
-    assert rule.version == 1 and rule.params["style"] == "camelCase"
+    assert rule.version == 1 and rule.params["style"] == "snake_case"
 
 
 def test_create_rule_and_hash(approver):

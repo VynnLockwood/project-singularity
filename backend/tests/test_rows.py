@@ -25,14 +25,14 @@ def apply(user, ops, source="web"):
 def data(approver):
     apply(approver, [
         {"op": "create_table", "name": "customer", "columns": [
-            {"name": "customerCode", "type": "text", "unique": True}, {"name": "name", "type": "text"},
-            {"name": "creditLimit", "type": "numeric(12,2)", "nullable": True}]},
-        {"op": "create_table", "name": "orderHeader", "columns": [
-            {"name": "customerId", "type": "bigint", "references": {"table": "customer"}}]},
+            {"name": "customer_code", "type": "text", "unique": True}, {"name": "name", "type": "text"},
+            {"name": "credit_limit", "type": "numeric(12,2)", "nullable": True}]},
+        {"op": "create_table", "name": "order_header", "columns": [
+            {"name": "customer_id", "type": "bigint", "references": {"table": "customer"}}]},
     ])
     names = ["Acme", "Beta 100%", "Gamma_Co", "สมชาย การค้า", "Delta"]
     apply(approver, [{"op": "insert_rows", "table": "customer", "rows": [
-        {"customerCode": f"C{i:03d}", "name": n, "creditLimit": i * 10} for i, n in enumerate(names, 1)]}])
+        {"customer_code": f"C{i:03d}", "name": n, "credit_limit": i * 10} for i, n in enumerate(names, 1)]}])
 
 
 def api(role=Role.VIEWER):
@@ -50,9 +50,9 @@ def get(c, table, **params):
 
 def test_pages_and_totals(data):
     r = get(api(), "customer", limit=2, offset=0).json()
-    assert r["total"] == 5 and len(r["rows"]) == 2 and [x["customerCode"] for x in r["rows"]] == ["C001", "C002"]
+    assert r["total"] == 5 and len(r["rows"]) == 2 and [x["customer_code"] for x in r["rows"]] == ["C001", "C002"]
     r = get(api(), "customer", limit=2, offset=4).json()
-    assert [x["customerCode"] for x in r["rows"]] == ["C005"]
+    assert [x["customer_code"] for x in r["rows"]] == ["C005"]
 
 
 def test_sorting_both_ways_with_stable_ties(data):
@@ -67,21 +67,21 @@ def test_filter_is_a_contains_match_and_wildcards_are_literal(data):
     assert names({"name": "%"}) == ["Beta 100%"]       # not "match everything"
     assert names({"name": "_"}) == ["Gamma_Co"]
     assert names({"name": "การค้า"}) == ["สมชาย การค้า"]
-    assert names({"customerCode": "C00", "name": "a"}) != []   # filters combine with AND
-    assert get(api(), "customer", filters={"creditLimit": "30"}).json()["total"] == 1   # non-text columns too
+    assert names({"customer_code": "C00", "name": "a"}) != []   # filters combine with AND
+    assert get(api(), "customer", filters={"credit_limit": "30"}).json()["total"] == 1   # non-text columns too
 
 
 def test_inactive_rows_hidden_unless_asked(data, approver):
-    apply(approver, [{"op": "deactivate_rows", "table": "customer", "where": {"customerCode": "C001"}}])
+    apply(approver, [{"op": "deactivate_rows", "table": "customer", "where": {"customer_code": "C001"}}])
     assert get(api(), "customer").json()["total"] == 4
     assert get(api(), "customer", inactive="1").json()["total"] == 5
 
 
 def test_column_metadata(data):
-    cols = {c["name"]: c for c in get(api(), "orderHeader").json()["columns"]}
-    assert cols["customerId"]["references"] == {"table": "customer", "column": "id"}
-    assert cols["customerId"]["readOnly"] is False
-    assert all(cols[n]["readOnly"] for n in ("id", "createdAt", "updatedAt", "createdBy", "isActive"))
+    cols = {c["name"]: c for c in get(api(), "order_header").json()["columns"]}
+    assert cols["customer_id"]["references"] == {"table": "customer", "column": "customer_id"}
+    assert cols["customer_id"]["readOnly"] is False
+    assert all(cols[n]["readOnly"] for n in ("order_header_id", "created_at", "updated_at", "created_by", "is_active"))
 
 
 @pytest.mark.parametrize("params", [
@@ -106,7 +106,7 @@ def test_unknown_table_and_auth(data):
 
 def test_numbers_survive_as_json(data):
     r = get(api(), "customer", limit=1).json()["rows"][0]
-    assert r["creditLimit"] == "10.00" and isinstance(r["id"], int)   # numeric stays exact, as text
+    assert r["credit_limit"] == "10.00" and isinstance(r["customer_id"], int)   # numeric stays exact, as text
 
 
 # ---- reference dropdown options --------------------------------------------------
@@ -120,16 +120,16 @@ def test_options_use_the_name_column_and_search(data):
 
 
 def test_options_skip_inactive_and_fall_back_to_id(data, approver):
-    apply(approver, [{"op": "deactivate_rows", "table": "customer", "where": {"customerCode": "C005"}}])
+    apply(approver, [{"op": "deactivate_rows", "table": "customer", "where": {"customer_code": "C005"}}])
     assert "Delta" not in [o["label"] for o in api().get("/api/schema/tables/customer/options").json()["options"]]
-    r = api().get("/api/schema/tables/orderHeader/options").json()
+    r = api().get("/api/schema/tables/order_header/options").json()
     assert r["labelColumn"] is None
 
 
 def test_label_prefers_name_then_code():
     cols = lambda *names: {n: {"type": "text"} for n in names}
-    assert rows.label_column(cols("customerCode", "productName")) == "productName"
-    assert rows.label_column(cols("note", "customerCode")) == "customerCode"
+    assert rows.label_column(cols("customer_code", "productName")) == "productName"
+    assert rows.label_column(cols("note", "customer_code")) == "customer_code"
     assert rows.label_column(cols("note", "other")) == "note"
     assert rows.label_column({"id": {"type": "bigint"}, "qty": {"type": "integer"}}) is None
 
@@ -138,11 +138,11 @@ def test_label_prefers_name_then_code():
 
 def test_grid_edits_become_one_proposal_and_show_up(data):
     editor = api(Role.EDITOR)
-    ids = [x["id"] for x in get(editor, "customer").json()["rows"]]
+    ids = [x["customer_id"] for x in get(editor, "customer").json()["rows"]]
     ops = [
-        {"op": "update_rows", "table": "customer", "where": {"id": ids[:2]}, "set": {"creditLimit": 999}},
-        {"op": "update_rows", "table": "customer", "where": {"id": ids[2]}, "set": {"name": "Renamed"}},
-        {"op": "insert_rows", "table": "customer", "rows": [{"customerCode": "C100", "name": "New", "creditLimit": 5}]},
+        {"op": "update_rows", "table": "customer", "where": {"customer_id": ids[:2]}, "set": {"credit_limit": 999}},
+        {"op": "update_rows", "table": "customer", "where": {"customer_id": ids[2]}, "set": {"name": "Renamed"}},
+        {"op": "insert_rows", "table": "customer", "rows": [{"customer_code": "C100", "name": "New", "credit_limit": 5}]},
     ]
     ch = editor.post("/api/changes", json.dumps({"operations": ops, "source": "grid", "prompt": "grid edit"}),
                      content_type="application/json").json()
@@ -150,9 +150,9 @@ def test_grid_edits_become_one_proposal_and_show_up(data):
     assert editor.post(f"/api/changes/{ch['id']}/approve", "{}", content_type="application/json").json()["status"] == "applied"
     after = get(editor, "customer", limit=50).json()
     assert after["total"] == 6
-    by = {x["customerCode"]: x for x in after["rows"]}
-    assert by["C001"]["creditLimit"] == "999.00" and by["C003"]["name"] == "Renamed"
-    assert by["C001"]["updatedAt"] and by["C100"]["createdBy"] == "editor@z.com"
+    by = {x["customer_code"]: x for x in after["rows"]}
+    assert by["C001"]["credit_limit"] == "999.00" and by["C003"]["name"] == "Renamed"
+    assert by["C001"]["updated_at"] and by["C100"]["created_by"] == "editor@z.com"
 
 
 def test_viewer_cannot_save_from_the_grid(data):

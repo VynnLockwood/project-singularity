@@ -115,7 +115,7 @@ def test_gate_feedback_goes_back_to_the_model(monkeypatch):
     seen = script(monkeypatch, call("propose_change", {"operations": bad}), say("fixing"))
     post(c, f"/api/chat/conversations/{new_conv(c)}/messages", {"content": "x"})
     fed_back = json.loads(seen[1]["messages"][-1]["content"])
-    assert fed_back["status"] == "rejected" and fed_back["check"]["violations"][0]["suggestion"] == "badName"
+    assert fed_back["status"] == "rejected" and fed_back["check"]["violations"][0]["suggestion"] == "bad_name"
 
 
 @pytest.mark.parametrize("name,args", [

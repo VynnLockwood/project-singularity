@@ -124,7 +124,7 @@ def test_full_flow_ai_proposes_user_confirms_then_applies(server):
     assert any(r["name"] == "tableNaming" for r in rules["rules"])
 
     create = [{"op": "create_table", "name": "customer", "columns": [
-        {"name": "customerCode", "type": "text", "unique": True}, {"name": "name", "type": "text"}]}]
+        {"name": "customer_code", "type": "text", "unique": True}, {"name": "name", "type": "text"}]}]
 
     # 1. the editor's AI proposes a schema change; it waits for an approver
     ch = payload(with_client(url, tk[Role.EDITOR], lambda c: c.call_tool(
@@ -146,16 +146,16 @@ def test_full_flow_ai_proposes_user_confirms_then_applies(server):
     tables = payload(with_client(url, tk[Role.VIEWER], lambda c: c.call_tool("list_tables", {})))
     assert [t["name"] for t in tables["tables"]] == ["customer"]
     d = payload(with_client(url, tk[Role.VIEWER], lambda c: c.call_tool("describe_table", {"table": "customer"})))
-    assert d["columns"][0]["name"] == "id"
+    assert d["columns"][0]["name"] == "customer_id"
 
     # 5. an editor inserts data and approves their own data change
     ins = payload(with_client(url, tk[Role.EDITOR], lambda c: c.call_tool("propose_change", {"operations": [
-        {"op": "insert_rows", "table": "customer", "rows": [{"customerCode": "C1", "name": "Acme"}]}]})))
+        {"op": "insert_rows", "table": "customer", "rows": [{"customer_code": "C1", "name": "Acme"}]}]})))
     assert "Only after they say yes" in ins["next"]
     assert payload(with_client(url, tk[Role.EDITOR], lambda c: c.call_tool(
         "approve_change", {"change_id": ins["id"]})))["status"] == "applied"
     q = payload(with_client(url, tk[Role.VIEWER], lambda c: c.call_tool(
-        "query", {"sql": 'SELECT "customerCode", "createdBy" FROM customer'})))
+        "query", {"sql": 'SELECT customer_code, created_by FROM customer'})))
     assert q["rows"] == [["C1", "editor@example.com"]]
 
 
@@ -164,7 +164,7 @@ def test_gate_feedback_reaches_the_ai(server):
     ch = payload(with_client(server["url"], server["tokens"][Role.EDITOR],
                              lambda c: c.call_tool("propose_change", {"operations": bad})))
     assert ch["status"] == "rejected"
-    assert ch["check"]["violations"][0]["suggestion"] == "supplierContact"
+    assert ch["check"]["violations"][0]["suggestion"] == "supplier_contact"
     assert "Fix the problems" in ch["next"]
 
 
