@@ -581,6 +581,28 @@ def test_insert_select_from_values_join_is_a_stream():
     ]
 
 
+def test_insert_select_swapped_select_list_rejected():
+    # positional: `v.b, v.a` onto (a, b) would silently swap two columns of every row
+    sql = (
+        "INSERT INTO t (a, b) SELECT v.b, v.a "
+        "FROM (VALUES ('1', '2')) AS v(a, b) JOIN p1 ON p1.k = v.a;"
+    )
+    p = parse_script(sql)
+    assert len(p.errors) == 1 and "only INSERT ... VALUES" in p.errors[0].message
+    assert p.streams == {} and p.join_hints == {}
+
+
+def test_insert_select_parent_column_in_select_list_rejected():
+    # the select list may only replay the VALUES columns, never the parent's
+    sql = (
+        "INSERT INTO t (a, b) SELECT p1.k, v.b "
+        "FROM (VALUES ('1', '2')) AS v(a, b) JOIN p1 ON p1.k = v.a;"
+    )
+    p = parse_script(sql)
+    assert len(p.errors) == 1 and "only INSERT ... VALUES" in p.errors[0].message
+    assert p.streams == {} and p.join_hints == {}
+
+
 def test_insert_select_two_joins_rejected():
     sql = (
         "INSERT INTO t (a, b, c) SELECT v.a, v.b, v.c "

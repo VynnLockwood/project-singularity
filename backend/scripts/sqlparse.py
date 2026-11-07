@@ -788,16 +788,23 @@ class _Translator:
         hint = self._join_hint(sel, line)
         # the joined form keeps its VALUES list in the subselect, whose shape _join_hint just checked
         vsel = sel if hint is None else sel.fromClause[0].larg.subquery
+        valias = None if hint is None else sel.fromClause[0].larg.alias.aliasname
         if not isinstance(vsel, ast.SelectStmt) or not vsel.valuesLists or any(
                 getattr(vsel, f) for f in ("targetList", "fromClause") + _SELECT_EXTRA):
             raise _Reject(_INSERT_MSG)
+        picked: list[str] = []
         if hint is not None:
-            # the select list is copied verbatim from the VALUES alias; a star or any expression
-            # would not be, so reject instead of quietly streaming rows the author did not mean.
+            # the select list is positional: replay the VALUES columns of the alias, in the order
+            # the INSERT names them. `v.b, v.a` onto (a, b) -- or a parent column read instead of
+            # a VALUES column -- would swap or invent a value in every row, silently.
             for rt in sel.targetList or ():
                 if rt.indirection or not isinstance(rt.val, ast.ColumnRef) or \
                         any(not hasattr(f, "sval") for f in rt.val.fields or ()):
                     raise _Reject(_INSERT_MSG)
+                tbl, c = _cols_of(rt.val)
+                if c is None or tbl != valias:
+                    raise _Reject(_INSERT_MSG)
+                picked.append(c)
             if any(getattr(sel, f) for f in _SELECT_EXTRA):
                 raise _Reject(_INSERT_MSG)
         given = []
@@ -806,6 +813,8 @@ class _Translator:
                 raise _Reject("INSERT into sub-fields is not supported")
             given.append(rt.name)
         cols = self._stream_columns(table, given, "INSERT")
+        if hint is not None and picked != cols:
+            raise _Reject(_INSERT_MSG)
         rows: list[list[str | None]] = []
         for vals in vsel.valuesLists:
             if len(vals) != len(cols):
