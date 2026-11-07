@@ -595,3 +595,49 @@ def test_plain_insert_values_still_works():
     p = parse_script("INSERT INTO t (a) VALUES ('1');")
     assert p.errors == []
     assert p.join_hints == {}
+
+
+def test_insert_select_plain_select_without_values_rejected():
+    p = parse_script("INSERT INTO t (a, b) SELECT u.a, u.b FROM u;")
+    assert len(p.errors) == 1 and "only INSERT ... VALUES" in p.errors[0].message
+    assert p.join_hints == {}
+
+
+def test_insert_select_star_rejected():
+    sql = (
+        "INSERT INTO t (a, b) SELECT v.* "
+        "FROM (VALUES ('1', '2')) AS v(a, b) JOIN p2 ON p2.k = v.b;"
+    )
+    p = parse_script(sql)
+    assert len(p.errors) == 1 and "only INSERT ... VALUES" in p.errors[0].message
+    assert p.join_hints == {}
+
+
+def test_insert_select_star_bare_rejected():
+    sql = (
+        "INSERT INTO t (a, b) SELECT * "
+        "FROM (VALUES ('1', '2')) AS v(a, b) JOIN p2 ON p2.k = v.b;"
+    )
+    p = parse_script(sql)
+    assert len(p.errors) == 1 and "only INSERT ... VALUES" in p.errors[0].message
+
+
+def test_insert_select_comma_before_join_is_rejected_not_a_crash():
+    """A RangeVar in front of the JOIN used to raise AttributeError (a 500 for the user)."""
+    sql = (
+        "INSERT INTO t (a,b) SELECT v.a, v.b "
+        "FROM p1, (VALUES ('1','2')) AS v(a,b) JOIN p2 ON p2.k = v.b;"
+    )
+    p = parse_script(sql)
+    assert len(p.errors) == 1 and "more than one JOIN" in p.errors[0].message
+    assert p.join_hints == {}
+
+
+def test_insert_select_trailing_comma_after_join_is_rejected():
+    sql = (
+        "INSERT INTO t (a,b) SELECT v.a, v.b "
+        "FROM (VALUES ('1','2')) AS v(a,b) JOIN p2 ON p2.k = v.b, p1;"
+    )
+    p = parse_script(sql)
+    assert len(p.errors) == 1 and "more than one JOIN" in p.errors[0].message
+    assert p.join_hints == {}

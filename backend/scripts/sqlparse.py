@@ -744,12 +744,16 @@ class _Translator:
         this only records where the parent key would be looked up; nothing is resolved and no
         SQL is executed here.
         """
-        joins = [j for j in sel.fromClause or () if isinstance(j, ast.JoinExpr)]
+        frm = sel.fromClause or ()
+        joins = [j for j in frm if isinstance(j, ast.JoinExpr)]
         if not joins:
             return None
-        if len(joins) != 1 or isinstance(joins[0].larg, ast.JoinExpr):
-            raise _Reject("more than one JOIN in an INSERT ... SELECT is not supported")
-        j = joins[0]
+        # anything else in the FROM list (a comma before the JOIN, a second table) has no place
+        # in this shape -- and its type is not guaranteed, so it must never be indexed by luck.
+        if len(frm) != 1 or isinstance(joins[0].larg, ast.JoinExpr):
+            raise _Reject("more than one JOIN in an INSERT ... SELECT is not supported "
+                          "and nothing else may appear in its FROM list")
+        j = frm[0]
         if j.jointype != _JT.JOIN_INNER or j.isNatural or j.usingClause or j.alias:
             raise _Reject("a joined INSERT must have exactly one inner JOIN")
         sub = j.larg
@@ -760,7 +764,7 @@ class _Translator:
             raise _Reject("the JOIN parent must be a table")
         qual = j.quals
         if not isinstance(qual, ast.A_Expr) or qual.kind != _AE.AEXPR_OP or \
-                tuple(x.sval for x in qual.name or ()) != ("=",):
+                tuple(getattr(x, "sval", None) for x in qual.name or ()) != ("=",):
             raise _Reject("the JOIN must be a single equality, parent.key = v.column")
         left, right = qual.lexpr, qual.rexpr
         if _cols_of(right)[0] != sub.alias.aliasname:
@@ -787,8 +791,15 @@ class _Translator:
         if not isinstance(vsel, ast.SelectStmt) or not vsel.valuesLists or any(
                 getattr(vsel, f) for f in ("targetList", "fromClause") + _SELECT_EXTRA):
             raise _Reject(_INSERT_MSG)
-        if hint is not None and any(getattr(sel, f) for f in _SELECT_EXTRA):
-            raise _Reject(_INSERT_MSG)
+        if hint is not None:
+            # the select list is copied verbatim from the VALUES alias; a star or any expression
+            # would not be, so reject instead of quietly streaming rows the author did not mean.
+            for rt in sel.targetList or ():
+                if rt.indirection or not isinstance(rt.val, ast.ColumnRef) or \
+                        any(not hasattr(f, "sval") for f in rt.val.fields or ()):
+                    raise _Reject(_INSERT_MSG)
+            if any(getattr(sel, f) for f in _SELECT_EXTRA):
+                raise _Reject(_INSERT_MSG)
         given = []
         for rt in s.cols or ():
             if rt.indirection:
