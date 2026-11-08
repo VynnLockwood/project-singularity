@@ -29,9 +29,9 @@ export function Cosmos({ intensity }: { intensity?: Intensity } = {}) {
     let dead = false;
     let w = 0, h = 0;
     // accessibility: the OS always wins over the pick
-    const want = typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches ? "reduced" : level;
+    const want = typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches ? "still" : level;
     const cfg = LEVELS[want];
-    const still = want === "reduced";
+    const still = want === "still";
 
     const size = () => {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
