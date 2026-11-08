@@ -133,6 +133,15 @@ describe("GridEditor", () => {
     expect(screen.queryByRole("button", { name: "Save for approval" })).toBeNull();
   });
 
+  it("shows a foreign key's label, not its raw id, and can toggle back", async () => {
+    await setup("viewer", page(ROWS));
+    // viewer => read-only cells, which is exactly where a raw id was being shown
+    await waitFor(() => expect(screen.getAllByText("Acme").length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole("checkbox", { name: /show labels/i }));
+    await waitFor(() => expect(screen.getByText("10")).toBeInTheDocument());
+    expect(screen.queryByText("Acme")).toBeNull();
+  });
+
   it("pages forward", async () => {
     const { getRows } = await setup("editor", page(ROWS, 120));
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
