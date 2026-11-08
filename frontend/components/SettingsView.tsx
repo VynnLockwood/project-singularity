@@ -5,6 +5,7 @@ import {
   ApiError, getSettings, listRules, listUsers, rollbackRule, ruleVersions, saveSettings, setUserRole, updateRule,
   type Me, type Rule, type RuleVersion, type Tunable,
 } from "@/lib/api";
+import { INTENSITY_EVENT, LEVELS, readIntensity, writeIntensity, type Intensity } from "@/lib/cosmos";
 
 type Section = "quality" | "rules" | "team";
 const fail = (e: unknown) => (e instanceof ApiError ? e.message : "Something went wrong.");
@@ -14,6 +15,13 @@ export function QualitySettings({ canEdit }: { canEdit: boolean }) {
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [msg, setMsg] = useState("");
   const [error, setError] = useState("");
+  const [intensity, setIntensity] = useState<Intensity>("intense");
+  const [reduce, setReduce] = useState(false);
+
+  useEffect(() => {
+    setIntensity(readIntensity());
+    if (typeof matchMedia !== "undefined") setReduce(matchMedia("(prefers-reduced-motion: reduce)").matches);
+  }, []);
 
   const load = useCallback(() => getSettings().then((s) => { setItems(s); setDraft({}); }).catch((e) => setError(fail(e))), []);
   useEffect(() => { load(); }, [load]);
@@ -65,6 +73,24 @@ export function QualitySettings({ canEdit }: { canEdit: boolean }) {
       </ul>
       {canEdit && <button className="button" disabled={dirty.length === 0} onClick={save}>Save changes</button>}
       {!canEdit && <p className="muted small">Only approvers can change these.</p>}
+      <ul className="settings-list" aria-label="Appearance">
+        <li>
+          <div>
+            <strong>Background animation</strong>
+            <p className="muted small">How heavy the star field behind the app is. Your own browser remembers it; {reduce ? "your system asks for reduced motion, so this stays on reduced." : "reduced draws one still frame."}</p>
+          </div>
+          <div className="setting-input">
+            <select aria-label="Background animation" value={reduce ? "reduced" : intensity} disabled={reduce}
+              onChange={(e) => {
+                const v = e.target.value as Intensity;
+                setIntensity(v); writeIntensity(v); dispatchEvent(new Event(INTENSITY_EVENT));
+              }}>
+              {(Object.keys(LEVELS) as Intensity[]).map((o) => <option key={o}>{o}</option>)}
+            </select>
+            <span className="muted small">default intense</span>
+          </div>
+        </li>
+      </ul>
     </div>
   );
 }

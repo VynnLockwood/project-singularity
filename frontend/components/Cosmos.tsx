@@ -1,15 +1,24 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import { loadCosmos, type Cosmos as Scene, type Particle } from "@/lib/cosmos";
+import { useEffect, useRef, useState } from "react";
+import { INTENSITY_EVENT, LEVELS, loadCosmos, readIntensity, type Cosmos as Scene, type Intensity, type Particle } from "@/lib/cosmos";
 
 const TILT = -0.42; // the disk is seen at an angle, rotated like in the reference picture
 const FLAT = 0.34;
 const SPIN = 0.05; // radians per second at the innermost speed 1
 
 /** Full-screen background: stars, a black hole and its glowing accretion disk. The particles come from the Rust engine. */
-export function Cosmos() {
+export function Cosmos({ intensity }: { intensity?: Intensity } = {}) {
   const ref = useRef<HTMLCanvasElement>(null);
+  const [level, setLevel] = useState<Intensity>(intensity ?? readIntensity);
+
+  useEffect(() => { if (intensity) setLevel(intensity); }, [intensity]);
+  useEffect(() => {
+    const sync = () => setLevel(intensity ?? readIntensity());
+    addEventListener(INTENSITY_EVENT, sync);
+    addEventListener("storage", sync);
+    return () => { removeEventListener(INTENSITY_EVENT, sync); removeEventListener("storage", sync); };
+  }, [intensity]);
 
   useEffect(() => {
     const canvas = ref.current;
@@ -19,7 +28,10 @@ export function Cosmos() {
     let raf = 0;
     let dead = false;
     let w = 0, h = 0;
-    const reduce = typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+    // accessibility: the OS always wins over the pick
+    const want = typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches ? "reduced" : level;
+    const cfg = LEVELS[want];
+    const still = want === "reduced";
 
     const size = () => {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -39,7 +51,7 @@ export function Cosmos() {
 
       ctx.globalCompositeOperation = "source-over";
       for (const s of scene.stars) {
-        const twinkle = reduce ? 1 : 0.75 + 0.25 * Math.sin(t * 0.8 + s.x * 40 + s.y * 17);
+        const twinkle = still ? 1 : 0.75 + 0.25 * Math.sin(t * 0.8 + s.x * 40 + s.y * 17);
         ctx.fillStyle = `hsla(${s.warm > 0.6 ? 32 : 220}, ${s.warm > 0.6 ? 90 : 30}%, ${85 - s.warm * 15}%, ${s.alpha * 0.8 * twinkle})`;
         ctx.fillRect(s.x * w, s.y * h, s.size, s.size);
       }
@@ -67,7 +79,7 @@ export function Cosmos() {
         ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(tx, ty); ctx.stroke();
       };
       const along = (q: { p: Particle; a: number }) => {
-        const r = R * q.p.radius, da = 0.05 + q.p.size * 0.03;
+        const r = R * q.p.radius, da = (0.05 + q.p.size * 0.03) * cfg.streak;
         return { r, a2: q.a - da };
       };
       // the far half of the disk, plus its image bent over the top of the hole
@@ -88,7 +100,7 @@ export function Cosmos() {
       ctx.fillStyle = body;
       ctx.beginPath(); ctx.arc(hx, hy, hr, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = "rgba(255,190,110,0.55)"; ctx.lineWidth = 1.5;
-      ctx.shadowColor = "rgba(255,120,30,0.9)"; ctx.shadowBlur = 18;
+      ctx.shadowColor = "rgba(255,120,30,0.9)"; ctx.shadowBlur = 18 * cfg.glow;
       ctx.beginPath(); ctx.arc(hx, hy, hr * 1.01, 0, Math.PI * 2); ctx.stroke();
       ctx.shadowBlur = 0;
 
@@ -103,15 +115,15 @@ export function Cosmos() {
     const loop = (ms: number) => { draw(ms / 1000); raf = requestAnimationFrame(loop); };
 
     size();
-    loadCosmos(1, 260, 5200).then(({ scene: s }) => {
+    loadCosmos(1, cfg.stars, cfg.particles).then(({ scene: s }) => {
       if (dead) return;
       scene = s;
-      if (reduce) draw(0); else raf = requestAnimationFrame(loop);
+      if (still) draw(0); else raf = requestAnimationFrame(loop);
     });
-    const onResize = () => { size(); if (reduce) draw(0); };
+    const onResize = () => { size(); if (still) draw(0); };
     window.addEventListener("resize", onResize);
     return () => { dead = true; cancelAnimationFrame(raf); window.removeEventListener("resize", onResize); };
-  }, []);
+  }, [level]);
 
   return <canvas ref={ref} className="cosmos" aria-hidden="true" />;
 }
