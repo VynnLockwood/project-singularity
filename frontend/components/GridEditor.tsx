@@ -116,11 +116,13 @@ export function GridEditor({ me, table, live, onProposed }: Props) {
     const common = { "aria-label": `${c.name} ${key}`, "aria-invalid": bad ? true : undefined, "data-edited": edited, title: bad };
     const ref = c.references ? refs[c.references.table] : undefined;
     if (ref) {
+      // ponytail: labels toggle drives display text here too; option VALUES stay ids so editing still saves the FK
+      const shown = displayText(c, value);
       return (
-        <select {...common} value={value} onChange={(e) => setCell(key, c.name, e.target.value)}>
+        <select {...common} value={value} title={bad || (shown !== value ? value : undefined)} onChange={(e) => setCell(key, c.name, e.target.value)}>
           <option value="">{c.nullable ? "—" : "choose…"}</option>
-          {ref.options.map((o) => <option key={String(o.id)} value={String(o.id)}>{o.label}</option>)}
-          {value && !ref.options.some((o) => String(o.id) === value) && <option value={value}>#{value}</option>}
+          {ref.options.map((o) => <option key={String(o.id)} value={String(o.id)}>{displayText(c, String(o.id))}</option>)}
+          {value && !ref.options.some((o) => String(o.id) === value) && <option value={value}>{shown}</option>}
         </select>
       );
     }
