@@ -28,6 +28,8 @@ def to_sql(graph: dict[str, Any]) -> str:
                 pk.append(_ident(col["name"]))
         if pk:
             cols.append(f"PRIMARY KEY ({', '.join(pk)})")
+        if not cols:
+            continue
         out.append(
             f"CREATE TABLE {_ident(table['name'])} (\n  "
             + ",\n  ".join(cols)

@@ -122,6 +122,8 @@ def test_empty_graph_returns_empty_string():
     assert to_sql({}) == ""
 
 
+def test_table_with_no_columns_emits_no_ddl():
+    assert to_sql({"tables": [{"name": "empty", "columns": []}], "relations": []}) == ""
 # ---- Task 2: the endpoint ---------------------------------------------------
 
 def export_as(user, monkeypatch=None):
