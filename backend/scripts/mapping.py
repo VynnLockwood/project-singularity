@@ -61,6 +61,7 @@ SNAKE_RE = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*")
 DEFAULT_ON_DELETE = "restrict"
 _TABLE_KEYS = {"target", "columns", "drop", "refs"}
 _REF_KEYS = {"column", "parent", "parent_key", "source_column"}
+_REF_OPTIONAL = {"external"}   # external: the parent already exists outside the script
 
 
 @dataclass
@@ -157,6 +158,14 @@ def _snake(name: str, limit: int = MAX_IDENT, prefix: str = "c") -> str:
     return s[:limit].rstrip("_")
 
 
+def _unique_cols(state: dict, table: str) -> set[str]:
+    """Single-column unique columns of an existing table: its PK plus its one-column UNIQUEs."""
+    t = (state or {}).get(table) or {}
+    out = set(t.get("primary_key") or ())
+    out.update(c[0] for c in t.get("unique") or () if len(c) == 1)
+    return out
+
+
 def _unique_name(base: str, used: set[str], limit: int = MAX_IDENT) -> str:
     name, n = base, 2
     while name in used:
@@ -240,15 +249,23 @@ def _shape(mapping) -> list[ScriptIssue]:
             bad(f"{p}.refs", "refs must be a list")
             continue
         for i, r in enumerate(refs):
-            if not isinstance(r, dict) or set(r) != _REF_KEYS or not all(isinstance(v, str) for v in r.values()):
-                bad(f"{p}.refs[{i}]", "each ref must be {column, parent, parent_key, source_column} (text values)")
+            if not isinstance(r, dict) or not _REF_KEYS <= set(r) <= _REF_KEYS | _REF_OPTIONAL or \
+                    not isinstance(r.get("external", False), bool) or \
+                    not all(isinstance(v, str) for k, v in r.items() if k != "external"):
+                bad(f"{p}.refs[{i}]", "each ref must be {column, parent, parent_key, source_column} "
+                                     "(text values, plus optional external: true/false)")
     return out
 
 
 # ---------------------------------------------------------------- apply
 
-def apply_mapping(parsed: ParsedScript, mapping: dict) -> MappingResult:
-    """Translate the script's tables through `mapping` into gate ops (see module docstring)."""
+def apply_mapping(parsed: ParsedScript, mapping: dict, external_state: dict | None = None) -> MappingResult:
+    """Translate the script's tables through `mapping` into gate ops (see module docstring).
+
+    `external_state` describes tables that already exist outside the script, as
+    {table: {"columns": {col: {...}}, "primary_key": [col], "unique": [[col], ...]}}; a ref with
+    "external": true may point at one of them instead of at a table of the script.
+    """
     issues = _shape(mapping)
     if issues:
         return MappingResult([], issues)
@@ -258,7 +275,11 @@ def apply_mapping(parsed: ParsedScript, mapping: dict) -> MappingResult:
     def bad(path, msg):
         issues.append(ScriptIssue(0, path, msg))
 
+    # script table names lose their schema, external state may carry it: accept both
+    existing = set(external_state or {}) | {t.rsplit(".", 1)[-1] for t in external_state or {}}
     for t in foreign:
+        if t in existing:
+            continue  # a mapped script may also load rows into a table that already exists
         bad(f"tables.{t}", f"the script changes table {t!r}, which it neither creates nor loads rows into; "
                            "a mapped script may only change tables it creates")
     for name in srcs:
@@ -329,6 +350,19 @@ def apply_mapping(parsed: ParsedScript, mapping: dict) -> MappingResult:
                 bad(rp, f"source column {n}.{sc} does not exist (columns: {', '.join(s.columns)})")
             else:
                 ref_src[n].setdefault(sc, rc)
+            if bool(r.get("external")):
+                if parent == n:
+                    bad(rp, f"a table cannot refer to itself in a load ({n!r}); keep the column as a plain value")
+                    continue
+                if parent not in (external_state or {}):
+                    bad(rp, f"external parent {parent!r} does not exist")
+                    continue
+                pcols = external_state[parent].get("columns") or {}
+                if pkey not in pcols:
+                    bad(rp, f"parent_key {pkey!r} is not a column of external parent {parent!r}")
+                elif pkey not in _unique_cols(external_state, parent):
+                    bad(rp, f"external ref requires parent_key {pkey!r} to be unique in {parent!r}")
+                continue
             if parent == n:
                 bad(rp, f"a table cannot refer to itself in a load ({n!r}); keep the column as a plain value")
                 continue
@@ -523,7 +557,10 @@ def apply_mapping(parsed: ParsedScript, mapping: dict) -> MappingResult:
             used.add(carrier)
             op_cols.append(carrier)
             src_cols.append(r["source_column"])
-            refs.append({"column": r["column"], "parent_table": target_of[r["parent"]],
+            # an external parent is not renamed: it keeps the name it already has
+            parent_table = target_of.get(r["parent"], r["parent"])
+            # the gate's identifier rule has no dots, and _parent_keys strips the schema too
+            refs.append({"column": r["column"], "parent_table": parent_table.rsplit(".", 1)[-1],
                          "parent_key": r["parent_key"], "source_column": carrier})
         if not op_cols:
             bad(f"tables.{n}", f"none of the mapped columns of {n!r} has data in the script")

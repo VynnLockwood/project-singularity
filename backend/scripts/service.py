@@ -7,6 +7,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from approvals import service as approvals_service
+from schema import introspect
 
 from . import storage, validate as validate_mod
 from .mapping import apply_mapping

@@ -64,6 +64,7 @@ class ParsedScript:
     ignored: list[str] = field(default_factory=list)
     errors: list[ScriptIssue] = field(default_factory=list)
     statements: int = 0  # statements and psql meta lines seen (lone `;` not counted)
+    join_hints: dict[str, list[dict]] = field(default_factory=dict)  # table -> [ref hint]
 
 
 # ---------------------------------------------------------------- splitter
@@ -249,6 +250,8 @@ _ON_DELETE = {"a": "no action", "\x00": "no action", "r": "restrict", "c": "casc
 _C = enums.ConstrType
 _AT = enums.AlterTableType
 _OBJ = enums.ObjectType
+_JT = enums.JoinType
+_AE = enums.A_Expr_Kind
 
 
 def _map_type(tn: ast.TypeName) -> tuple[str, bool]:
@@ -356,6 +359,23 @@ def _check_plain_constraint(c: ast.Constraint) -> None:
 
 def _keys(c: ast.Constraint) -> list[str]:
     return [_ident(k.sval, "column") for k in c.keys or ()]
+
+
+_INSERT_MSG = "only INSERT ... VALUES or INSERT ... SELECT FROM (VALUES ...) JOIN is supported"
+# Every clause except the target list and the FROM: they move rows around in ways we cannot
+# resolve. Those two are legitimate in the joined form, where `_join_hint` validates them.
+_SELECT_EXTRA = ("whereClause", "groupClause", "havingClause", "sortClause", "limitCount",
+                 "limitOffset", "withClause", "larg", "rarg", "distinctClause")
+
+
+def _cols_of(node) -> tuple[str | None, str | None]:
+    """(table, column) of a ColumnRef; either part may be None."""
+    if not isinstance(node, ast.ColumnRef):
+        return None, None
+    parts = [f.sval for f in node.fields if hasattr(f, "sval")]
+    if not parts:
+        return None, None
+    return (parts[-2] if len(parts) > 1 else None), parts[-1]
 
 
 def _ident(name, what: str) -> str:
@@ -717,23 +737,99 @@ class _Translator:
                                                               first_line=first),
                          lambda: count(first))
 
+    def _join_hint(self, sel: ast.SelectStmt, line: int) -> dict | None:
+        """One-hop `FROM (VALUES ...) AS v(cols) JOIN parent ON parent.key = v.col` as metadata.
+
+        Returns None when there is no JOIN at all. The rows still come from the VALUES list --
+        this only records where the parent key would be looked up; nothing is resolved and no
+        SQL is executed here.
+        """
+        frm = sel.fromClause or ()
+        joins = [j for j in frm if isinstance(j, ast.JoinExpr)]
+        if not joins:
+            return None
+        # anything else in the FROM list (a comma before the JOIN, a second table) has no place
+        # in this shape -- and its type is not guaranteed, so it must never be indexed by luck.
+        if len(frm) != 1 or isinstance(joins[0].larg, ast.JoinExpr):
+            raise _Reject("more than one JOIN in an INSERT ... SELECT is not supported "
+                          "and nothing else may appear in its FROM list")
+        j = frm[0]
+        if j.jointype != _JT.JOIN_INNER or j.isNatural or j.usingClause or j.alias:
+            raise _Reject("a joined INSERT must have exactly one inner JOIN")
+        sub = j.larg
+        if not isinstance(sub, ast.RangeSubselect) or sub.alias is None:
+            raise _Reject("the joined INSERT must read FROM (VALUES ...) AS v(...)")
+        parent_rv = j.rarg
+        if not isinstance(parent_rv, ast.RangeVar):
+            raise _Reject("the JOIN parent must be a table")
+        qual = j.quals
+        if not isinstance(qual, ast.A_Expr) or qual.kind != _AE.AEXPR_OP or \
+                tuple(getattr(x, "sval", None) for x in qual.name or ()) != ("=",):
+            raise _Reject("the JOIN must be a single equality, parent.key = v.column")
+        left, right = qual.lexpr, qual.rexpr
+        if _cols_of(right)[0] != sub.alias.aliasname:
+            left, right = right, left
+        p_tbl, p_col = _cols_of(left)
+        s_tbl, s_col = _cols_of(right)
+        if p_tbl is None or p_col is None or s_col is None or s_tbl != sub.alias.aliasname or \
+                p_tbl != (parent_rv.alias.aliasname if parent_rv.alias else parent_rv.relname):
+            raise _Reject("the JOIN must relate the VALUES list to the parent table")
+        self._rel(parent_rv)  # same schema rule as every other name in the script
+        return {"parent": ".".join(filter(None, (parent_rv.schemaname, parent_rv.relname))),
+                "parent_key": p_col, "source_column": s_col, "line": line}
+
     def insert(self, s: ast.InsertStmt, line: int) -> None:
         if s.withClause or s.onConflictClause or s.returningClause:
             raise _Reject("INSERT with WITH / ON CONFLICT / RETURNING is not supported")
         table = self._rel(s.relation)
         sel = s.selectStmt
-        if not isinstance(sel, ast.SelectStmt) or not sel.valuesLists or any(getattr(sel, f) for f in (
-                "targetList", "fromClause", "whereClause", "groupClause", "havingClause", "sortClause",
-                "limitCount", "limitOffset", "withClause", "larg", "rarg", "distinctClause")):
-            raise _Reject("only INSERT ... VALUES is supported")
+        if not isinstance(sel, ast.SelectStmt):
+            raise _Reject(_INSERT_MSG)
+        hint = self._join_hint(sel, line)
+        # the joined form keeps its VALUES list in the subselect, whose shape _join_hint just checked
+        vsel = sel if hint is None else sel.fromClause[0].larg.subquery
+        valias = None if hint is None else sel.fromClause[0].larg.alias.aliasname
+        # join_hints keeps its documented four keys, so read the parent's alias off the AST here
+        parent_alias = None if hint is None else _cols_of(sel.fromClause[0].quals.lexpr)[0]
+        if not isinstance(vsel, ast.SelectStmt) or not vsel.valuesLists or any(
+                getattr(vsel, f) for f in ("targetList", "fromClause") + _SELECT_EXTRA):
+            raise _Reject(_INSERT_MSG)
+        picked: list[str] = []
+        if hint is not None:
+            # the select list is positional: replay the VALUES columns of the alias, in the order
+            # the INSERT names them. `v.b, v.a` onto (a, b) -- or a parent column read instead of
+            # a VALUES column -- would swap or invent a value in every row, silently.
+            for rt in sel.targetList or ():
+                if rt.indirection or not isinstance(rt.val, ast.ColumnRef) or \
+                        any(not hasattr(f, "sval") for f in rt.val.fields or ()):
+                    raise _Reject(_INSERT_MSG)
+                tbl, c = _cols_of(rt.val)
+                if c is None:
+                    raise _Reject(_INSERT_MSG)
+                if tbl == valias:
+                    picked.append(c)          # a VALUES column: positional, must match the INSERT list
+                elif tbl == parent_alias and c == hint["parent_key"]:
+                    # reading the join parent's own key column is safe: it is a value the orphan
+                    # check already validates against the live parent. It is not a VALUES column,
+                    # so stand in the INSERT's own column name here and check alignment below.
+                    picked.append(None)
+                else:
+                    raise _Reject(_INSERT_MSG)
+            if any(getattr(sel, f) for f in _SELECT_EXTRA):
+                raise _Reject(_INSERT_MSG)
         given = []
         for rt in s.cols or ():
             if rt.indirection:
                 raise _Reject("INSERT into sub-fields is not supported")
             given.append(rt.name)
         cols = self._stream_columns(table, given, "INSERT")
+        # a None slot is a parent-key select item: it takes whatever column the INSERT names there
+        paired = zip(picked, cols)
+        if hint is not None and (len(picked) != len(cols) or any(
+                p is not None and p != g for p, g in paired)):
+            raise _Reject(_INSERT_MSG)
         rows: list[list[str | None]] = []
-        for vals in sel.valuesLists:
+        for vals in vsel.valuesLists:
             if len(vals) != len(cols):
                 raise _Reject(f"INSERT row has {len(vals)} values for {len(cols)} columns")
             row: list[str | None] = []
@@ -744,6 +840,8 @@ class _Translator:
                 row.append(None if val is None else ("true" if val is True else "false" if val is False else str(val)))
             rows.append(row)
         self._add_stream(table, cols, lambda: iter(rows), lambda: repeat(line, len(rows)))
+        if hint is not None:
+            self.out.join_hints.setdefault(table, []).append(hint)
 
     def create_schema(self, s: ast.CreateSchemaStmt) -> None:
         if s.schemaElts:

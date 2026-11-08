@@ -26,8 +26,8 @@ TOOL_ROLES = {
     "propose_config_change": "editor",
     "list_users": "approver",
     "get_change": "editor",
-    "approve_change": "editor",
-    "reject_change": "editor",
+    "approve_change": "approver",   # deciding (not proposing) a change is a human's job
+    "reject_change": "approver",
     "list_pending": "approver",
     "submit_script": "editor",
     "validate_script": "editor",

@@ -7,6 +7,7 @@
 
 Who may decide:
   schema change : approvers only (editors' proposals wait in the queue)
+  script load   : approvers only (whoever ran it must not be the one who applies it)
   data change   : its proposer (editor+) or any approver
 """
 from __future__ import annotations
@@ -48,7 +49,8 @@ def _affected(ops) -> list[str]:
 
 
 def can_decide(user, change: Change) -> bool:
-    if change.kind in ("schema", "config"):  # structure, rules, settings and roles: approvers only
+    if change.source == "script" or change.kind in ("schema", "config"):
+        # structure, rules, settings, roles and every script load: approvers only
         return user.can_approve
     return user.can_approve or (user.can_edit and user.pk == change.requester_id)
 

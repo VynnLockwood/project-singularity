@@ -562,3 +562,129 @@ def test_search_path_allows_pg_catalog_and_user():
     )
     assert [e.line for e in p.errors] == [6, 7]
     assert "other" in p.errors[0].message and "text value" in p.errors[1].message
+
+
+def test_insert_select_from_values_join_is_a_stream():
+    sql = (
+        "INSERT INTO master.subdistrict (code, name, district_code) "
+        "SELECT v.code, v.name, v.district_code "
+        "FROM (VALUES ('100101', 'Bangkok', '1001')) AS v(code, name, district_code) "
+        "JOIN master.district d ON d.code = v.district_code;"
+    )
+    p = parse_script(sql)
+    assert p.errors == [], p.errors
+    assert list(p.streams["subdistrict"].columns) == ["code", "name", "district_code"]
+    assert list(p.streams["subdistrict"].rows()) == [["100101", "Bangkok", "1001"]]
+    assert p.join_hints["subdistrict"] == [
+        {"parent": "master.district", "parent_key": "code",
+         "source_column": "district_code", "line": 1}
+    ]
+
+
+def test_insert_select_swapped_select_list_rejected():
+    # positional: `v.b, v.a` onto (a, b) would silently swap two columns of every row
+    sql = (
+        "INSERT INTO t (a, b) SELECT v.b, v.a "
+        "FROM (VALUES ('1', '2')) AS v(a, b) JOIN p1 ON p1.k = v.a;"
+    )
+    p = parse_script(sql)
+    assert len(p.errors) == 1 and "only INSERT ... VALUES" in p.errors[0].message
+    assert p.streams == {} and p.join_hints == {}
+
+
+def test_insert_select_parent_key_column_in_select_list_allowed():
+    # A joined load may read the join parent's own key column: it is a value the orphan check
+    # already validates against the live parent, and the INSERT names the destination column.
+    sql = (
+        "INSERT INTO t (a, b) SELECT p1.k, v.b "
+        "FROM (VALUES ('1', '2')) AS v(a, b) JOIN p1 ON p1.k = v.a;"
+    )
+    p = parse_script(sql)
+    assert p.errors == [], p.errors
+    assert list(p.streams["t"].columns) == ["a", "b"]
+    assert p.join_hints["t"] == [{"parent": "p1", "parent_key": "k",
+                                  "source_column": "a", "line": 1}]
+
+
+def test_insert_select_other_parent_column_still_rejected():
+    # any OTHER parent column is refused: resolving it would mean executing the join.
+    sql = (
+        "INSERT INTO t (a, b) SELECT p1.other, v.b "
+        "FROM (VALUES ('1', '2')) AS v(a, b) JOIN p1 ON p1.k = v.a;"
+    )
+    p = parse_script(sql)
+    assert len(p.errors) == 1 and "only INSERT ... VALUES" in p.errors[0].message
+    assert p.streams == {} and p.join_hints == {}
+
+
+def test_insert_select_values_columns_still_must_match_position():
+    # the protection this replaced: a VALUES column out of order is still refused
+    sql = (
+        "INSERT INTO t (a, b) SELECT v.b, v.a "
+        "FROM (VALUES ('1', '2')) AS v(a, b) JOIN p1 ON p1.k = v.a;"
+    )
+    p = parse_script(sql)
+    assert len(p.errors) == 1 and "only INSERT ... VALUES" in p.errors[0].message
+    assert p.streams == {} and p.join_hints == {}
+
+
+def test_insert_select_two_joins_rejected():
+    sql = (
+        "INSERT INTO t (a, b, c) SELECT v.a, v.b, v.c "
+        "FROM (VALUES ('1', '2', '3')) AS v(a, b, c) "
+        "JOIN p1 ON p1.k = v.b JOIN p2 ON p2.k = v.c;"
+    )
+    p = parse_script(sql)
+    assert len(p.errors) == 1 and "more than one JOIN" in p.errors[0].message
+
+
+def test_plain_insert_values_still_works():
+    p = parse_script("INSERT INTO t (a) VALUES ('1');")
+    assert p.errors == []
+    assert p.join_hints == {}
+
+
+def test_insert_select_plain_select_without_values_rejected():
+    p = parse_script("INSERT INTO t (a, b) SELECT u.a, u.b FROM u;")
+    assert len(p.errors) == 1 and "only INSERT ... VALUES" in p.errors[0].message
+    assert p.join_hints == {}
+
+
+def test_insert_select_star_rejected():
+    sql = (
+        "INSERT INTO t (a, b) SELECT v.* "
+        "FROM (VALUES ('1', '2')) AS v(a, b) JOIN p2 ON p2.k = v.b;"
+    )
+    p = parse_script(sql)
+    assert len(p.errors) == 1 and "only INSERT ... VALUES" in p.errors[0].message
+    assert p.join_hints == {}
+
+
+def test_insert_select_star_bare_rejected():
+    sql = (
+        "INSERT INTO t (a, b) SELECT * "
+        "FROM (VALUES ('1', '2')) AS v(a, b) JOIN p2 ON p2.k = v.b;"
+    )
+    p = parse_script(sql)
+    assert len(p.errors) == 1 and "only INSERT ... VALUES" in p.errors[0].message
+
+
+def test_insert_select_comma_before_join_is_rejected_not_a_crash():
+    """A RangeVar in front of the JOIN used to raise AttributeError (a 500 for the user)."""
+    sql = (
+        "INSERT INTO t (a,b) SELECT v.a, v.b "
+        "FROM p1, (VALUES ('1','2')) AS v(a,b) JOIN p2 ON p2.k = v.b;"
+    )
+    p = parse_script(sql)
+    assert len(p.errors) == 1 and "more than one JOIN" in p.errors[0].message
+    assert p.join_hints == {}
+
+
+def test_insert_select_trailing_comma_after_join_is_rejected():
+    sql = (
+        "INSERT INTO t (a,b) SELECT v.a, v.b "
+        "FROM (VALUES ('1','2')) AS v(a,b) JOIN p2 ON p2.k = v.b, p1;"
+    )
+    p = parse_script(sql)
+    assert len(p.errors) == 1 and "more than one JOIN" in p.errors[0].message
+    assert p.join_hints == {}

@@ -4,6 +4,27 @@ export interface Star { x: number; y: number; size: number; alpha: number; warm:
 export interface Particle { angle: number; radius: number; speed: number; size: number; alpha: number; hue: number }
 export interface Cosmos { stars: Star[]; disk: Particle[] }
 
+/** Background intensity. `reduced` is also forced when the OS asks for reduced motion. */
+export const LEVELS = {
+  reduced: { particles: 0,    stars: 160, streak: 0,   glow: 0 },
+  calm:    { particles: 700,  stars: 160, streak: 1,   glow: 1 },
+  intense: { particles: 3200, stars: 320, streak: 2.2, glow: 2 },
+} as const;
+export type Intensity = keyof typeof LEVELS;
+
+const KEY = "singularity.cosmos_intensity";
+/** Fired when the pick changes so the open scene rebuilds; `storage` covers the other tabs. */
+export const INTENSITY_EVENT = "cosmos:intensity";
+
+/** This device's choice, kept per browser — the background is a personal preference, not a shared knob. */
+export function readIntensity(): Intensity {
+  const v = typeof localStorage === "undefined" ? null : localStorage.getItem(KEY);
+  return v && v in LEVELS ? (v as Intensity) : "intense";
+}
+export function writeIntensity(level: Intensity) {
+  if (typeof localStorage !== "undefined") localStorage.setItem(KEY, level);
+}
+
 const TAU = 6.283185307179586;
 
 /** TypeScript twin of engine/src/cosmos.rs: same xorshift32 and arithmetic, same golden cases. */

@@ -141,8 +141,9 @@ def _parent_keys(parent: str, key: str, ops, bulks, parsed, state, norm) -> set:
     keys: set = set()
     if key in state.get(parent, {}).get("columns", {}):
         with ro_connection() as conn:
+            # a ref may name its parent as the SQL does ("master.district"), so keep only the table
             q = sql.SQL("SELECT {}::text AS k FROM {} WHERE {} IS NOT NULL").format(
-                sql.Identifier(key), sqlgen.tbl(parent), sql.Identifier(key))
+                sql.Identifier(key), sqlgen.tbl(parent.rsplit(".", 1)[-1]), sql.Identifier(key))
             for r in conn.execute(q):
                 keys.add(norm(r["k"]))
     for b in bulks:
@@ -236,11 +237,13 @@ def _run(report: dict, script: Script, mapping: dict | None) -> None:
             _add_error(report, "parse", e.line, e.statement, e.message)
         return
 
+    state = introspect.snapshot()
+    external = introspect.external_state(state)  # tables the script does not create (external refs)
     if mapping is None:
         mapping = suggest_mapping(parsed)
         script.mapping = mapping
         report["mapping_used"] = "suggested"
-    mapped = apply_mapping(parsed, mapping)
+    mapped = apply_mapping(parsed, mapping, external)
     if mapped.issues:
         for i in mapped.issues:
             # line 0 = a mapping problem (statement is the mapping path); otherwise a bad data row
@@ -255,7 +258,6 @@ def _run(report: dict, script: Script, mapping: dict | None) -> None:
         _add_error(report, "rows", 0, "",
                    f"script has {len(ops)} operations, above the limit maxOpsPerScript ({max_ops})")
         return
-    state = introspect.snapshot()
     rules = rule_service.active_rules()
     res = check.run(ops, state, rules, actor=script.owner.email, max_ops=limits["maxOpsPerProposal"],
                     allow_bulk=True)
@@ -266,7 +268,8 @@ def _run(report: dict, script: Script, mapping: dict | None) -> None:
         _gate_add(gate, "blocked" if v["severity"] == "block" else "warnings", v)
 
     try:
-        _orphans(report, ops, parsed, state)
+        # external parents are in `external`, keyed "master.<table>": merge so their live rows count
+        _orphans(report, ops, parsed, {**state, **external})
     except RowStreamError as exc:  # apply_mapping already read every stream, so this is unexpected
         _add_error(report, "rows", exc.issue.line, exc.issue.statement, exc.issue.message)
         return
