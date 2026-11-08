@@ -58,9 +58,11 @@ export function GridEditor({ me, table, live, onProposed, onBusy }: Props) {
 
   useEffect(() => {
     let cancelled = false;
+    onBusy(true);
     getRows(table, { offset, limit: PAGE, sort, dir, filters: applied, inactive })
       .then((p) => { if (!cancelled) { setPage(p); setError(""); } })
-      .catch((e) => { if (!cancelled) setError(e instanceof ApiError ? e.message : "Could not load rows."); });
+      .catch((e) => { if (!cancelled) setError(e instanceof ApiError ? e.message : "Could not load rows."); })
+      .finally(() => { if (!cancelled) onBusy(false); });
     return () => { cancelled = true; };
   }, [table, offset, sort, dir, applied, inactive, reload, appliedHere]);
 
