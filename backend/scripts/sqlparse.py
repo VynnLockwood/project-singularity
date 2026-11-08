@@ -789,6 +789,8 @@ class _Translator:
         # the joined form keeps its VALUES list in the subselect, whose shape _join_hint just checked
         vsel = sel if hint is None else sel.fromClause[0].larg.subquery
         valias = None if hint is None else sel.fromClause[0].larg.alias.aliasname
+        # join_hints keeps its documented four keys, so read the parent's alias off the AST here
+        parent_alias = None if hint is None else _cols_of(sel.fromClause[0].quals.lexpr)[0]
         if not isinstance(vsel, ast.SelectStmt) or not vsel.valuesLists or any(
                 getattr(vsel, f) for f in ("targetList", "fromClause") + _SELECT_EXTRA):
             raise _Reject(_INSERT_MSG)
@@ -802,9 +804,17 @@ class _Translator:
                         any(not hasattr(f, "sval") for f in rt.val.fields or ()):
                     raise _Reject(_INSERT_MSG)
                 tbl, c = _cols_of(rt.val)
-                if c is None or tbl != valias:
+                if c is None:
                     raise _Reject(_INSERT_MSG)
-                picked.append(c)
+                if tbl == valias:
+                    picked.append(c)          # a VALUES column: positional, must match the INSERT list
+                elif tbl == parent_alias and c == hint["parent_key"]:
+                    # reading the join parent's own key column is safe: it is a value the orphan
+                    # check already validates against the live parent. It is not a VALUES column,
+                    # so stand in the INSERT's own column name here and check alignment below.
+                    picked.append(None)
+                else:
+                    raise _Reject(_INSERT_MSG)
             if any(getattr(sel, f) for f in _SELECT_EXTRA):
                 raise _Reject(_INSERT_MSG)
         given = []
@@ -813,7 +823,10 @@ class _Translator:
                 raise _Reject("INSERT into sub-fields is not supported")
             given.append(rt.name)
         cols = self._stream_columns(table, given, "INSERT")
-        if hint is not None and picked != cols:
+        # a None slot is a parent-key select item: it takes whatever column the INSERT names there
+        paired = zip(picked, cols)
+        if hint is not None and (len(picked) != len(cols) or any(
+                p is not None and p != g for p, g in paired)):
             raise _Reject(_INSERT_MSG)
         rows: list[list[str | None]] = []
         for vals in vsel.valuesLists:

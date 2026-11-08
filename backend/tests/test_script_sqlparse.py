@@ -592,10 +592,35 @@ def test_insert_select_swapped_select_list_rejected():
     assert p.streams == {} and p.join_hints == {}
 
 
-def test_insert_select_parent_column_in_select_list_rejected():
-    # the select list may only replay the VALUES columns, never the parent's
+def test_insert_select_parent_key_column_in_select_list_allowed():
+    # A joined load may read the join parent's own key column: it is a value the orphan check
+    # already validates against the live parent, and the INSERT names the destination column.
     sql = (
         "INSERT INTO t (a, b) SELECT p1.k, v.b "
+        "FROM (VALUES ('1', '2')) AS v(a, b) JOIN p1 ON p1.k = v.a;"
+    )
+    p = parse_script(sql)
+    assert p.errors == [], p.errors
+    assert list(p.streams["t"].columns) == ["a", "b"]
+    assert p.join_hints["t"] == [{"parent": "p1", "parent_key": "k",
+                                  "source_column": "a", "line": 1}]
+
+
+def test_insert_select_other_parent_column_still_rejected():
+    # any OTHER parent column is refused: resolving it would mean executing the join.
+    sql = (
+        "INSERT INTO t (a, b) SELECT p1.other, v.b "
+        "FROM (VALUES ('1', '2')) AS v(a, b) JOIN p1 ON p1.k = v.a;"
+    )
+    p = parse_script(sql)
+    assert len(p.errors) == 1 and "only INSERT ... VALUES" in p.errors[0].message
+    assert p.streams == {} and p.join_hints == {}
+
+
+def test_insert_select_values_columns_still_must_match_position():
+    # the protection this replaced: a VALUES column out of order is still refused
+    sql = (
+        "INSERT INTO t (a, b) SELECT v.b, v.a "
         "FROM (VALUES ('1', '2')) AS v(a, b) JOIN p1 ON p1.k = v.a;"
     )
     p = parse_script(sql)
