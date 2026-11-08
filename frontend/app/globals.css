@@ -56,9 +56,9 @@ body {
 
 /* ---- app shell ---- */
 .shell { min-height: 100vh; display: flex; flex-direction: column; }
-.topbar { display: flex; align-items: center; gap: 1rem; padding: 0.6rem 1rem; border-bottom: 1px solid #3a1d0e; }
+.topbar { display: flex; align-items: center; gap: 1rem; padding: 0.6rem 1rem; border-bottom: 1px solid #3a1d0e; flex-wrap: wrap; }
 .brand { font-weight: 700; letter-spacing: 0.08em; text-shadow: 0 0 12px var(--glow); }
-.topbar nav { display: flex; gap: 0.25rem; margin-right: auto; }
+.topbar nav { display: flex; gap: 0.25rem; margin-right: auto; flex-wrap: wrap; }
 .tab, .link { background: none; border: 0; color: var(--muted); font: inherit; cursor: pointer; padding: 0.3rem 0.7rem; border-radius: 6px; }
 .tab[data-active="true"], .link[data-active="true"] { color: var(--fg); background: #1c0e07; }
 .link { padding: 0.2rem 0.4rem; text-decoration: underline; text-underline-offset: 3px; }
@@ -159,6 +159,24 @@ body {
 .universe-panel h3 { margin: 0 0 0.3rem; }
 .universe-panel ul { padding-left: 1rem; }
 @media (max-width: 800px) { .universe-wrap { grid-template-columns: 1fr; } }
+
+/* ---- small screens ---- */
+@media (max-width: 860px) {
+  .topbar { gap: 0.5rem; padding: 0.5rem 0.6rem; }
+  .topbar nav { order: 3; width: 100%; margin-right: 0; overflow-x: auto; }
+  .topbar .brand { margin-right: auto; }
+  .content { padding: 0.6rem; }
+  /* the chat sidebar is a fixed 220px column on desktop; stack it instead */
+  .chat { grid-template-columns: 1fr; height: auto; }
+  .chat-list { border-right: 0; border-bottom: 1px solid #3a1d0e; padding-right: 0; max-height: 9rem; }
+  .bubble, .change, .search, .dup-list { max-width: 100%; }
+  .connect input[aria-label="Connection name"] { min-width: 0; width: 100%; }
+  .stat-card { min-width: 0; max-width: 100%; }
+  /* wide grids/tables scroll inside their own box rather than stretching the page */
+  .grid-scroll, .schema-scroll, .universe { max-width: 100%; }
+  .modal { width: 94vw; padding: 1rem; }
+  .busy-card { min-width: 0; }
+}
 
 .code { background: #050201; border: 1px solid #3a1d0e; border-radius: 8px; padding: 0.6rem 0.8rem; overflow-x: auto; white-space: pre-wrap; word-break: break-all; font-size: 0.8rem; }
 
