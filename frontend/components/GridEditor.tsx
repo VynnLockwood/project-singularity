@@ -38,6 +38,7 @@ export function GridEditor({ me, table, live, onProposed }: Props) {
   const [saving, setSaving] = useState(false);
   const [reload, setReload] = useState(0);
   const [showStats, setShowStats] = useState(false);
+  const [showRaw, setShowRaw] = useState(false);
 
   const appliedHere = live.filter((c) => c.status === "applied" && c.kind === "data" && c.tables.includes(table)).length;
 
@@ -135,6 +136,14 @@ export function GridEditor({ me, table, live, onProposed }: Props) {
     return <input {...common} value={value} onChange={(e) => setCell(key, c.name, e.target.value)} />;
   };
 
+  // Read-only cells show a raw FK id, which is useless to a human. Resolve it against the same
+  // options map the edit dropdowns already loaded — no extra request. `#id` when unresolved.
+  const displayText = (c: GridColumn, text: string): string => {
+    if (showRaw || !c.references || text === "") return text;
+    const hit = refs[c.references.table]?.options.find((o) => String(o.id) === text);
+    return hit ? hit.label : `#${text}`;
+  };
+
   if (error && !page) return <p className="problems" role="alert">{error}</p>;
   if (!page) return <p className="muted">Loading…</p>;
 
@@ -146,6 +155,9 @@ export function GridEditor({ me, table, live, onProposed }: Props) {
         <span className="muted small">{page.total === 0 ? "no rows" : `${offset + 1}–${last} of ${page.total}`}</span>
         <label className="small">
           <input type="checkbox" checked={inactive} onChange={(e) => { setInactive(e.target.checked); setOffset(0); }} /> show inactive
+        </label>
+        <label className="small" title="Resolve foreign keys to their labels, or show the stored ids">
+          <input type="checkbox" checked={!showRaw} onChange={(e) => setShowRaw(!e.target.checked)} /> show labels
         </label>
         <button className="link" aria-pressed={showStats} onClick={() => setShowStats((v) => !v)}>Column stats</button>
         <span className="spacer" />
@@ -213,7 +225,9 @@ export function GridEditor({ me, table, live, onProposed }: Props) {
                     const text = cellText(row, c.name, draft, page.primaryKey ?? "id");
                     return (
                       <td key={c.name} data-edited={edited}>
-                        {!canEdit || c.readOnly || removed ? <span>{text}</span> : input(c, id, text, edited)}
+                        {!canEdit || c.readOnly || removed
+                          ? <span title={displayText(c, text) !== text ? text : undefined}>{displayText(c, text)}</span>
+                          : input(c, id, text, edited)}
                       </td>
                     );
                   })}

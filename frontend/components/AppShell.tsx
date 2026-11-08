@@ -100,6 +100,15 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
         )}
         {tab === "queue" && <QueueView me={me} changes={mine} onDecide={onDecide} busy={busy} />}
       </main>
+      {busy && (
+        <div className="overlay busy" role="status" aria-live="polite" aria-busy="true">
+          <div className="busy-card">
+            <strong>Working…</strong>
+            <div className="busy-bar" />
+            <span className="muted small">This can take a moment.</span>
+          </div>
+        </div>
+      )}
       <ApprovalPopup
         me={me}
         changes={popupChanges}
