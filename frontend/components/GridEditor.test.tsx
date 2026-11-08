@@ -154,6 +154,13 @@ describe("GridEditor", () => {
     await waitFor(() => expect(getRows).toHaveBeenLastCalledWith("orderHeader", expect.objectContaining({ offset: 50 })));
   });
 
+  it("fetches with the chosen page size", async () => {
+    const { getRows } = await setup("viewer", page(ROWS));
+    fireEvent.change(screen.getByLabelText("Rows per page"), { target: { value: "100" } });
+    await waitFor(() => expect(getRows).toHaveBeenCalledWith(
+      expect.anything(), expect.objectContaining({ limit: 100 })));
+  });
+
   it("explains a gate rejection instead of pretending it worked", async () => {
     const { proposeChange } = await setup();
     proposeChange.mockResolvedValueOnce(change({ id: 80, kind: "data", status: "rejected" }));

@@ -11,7 +11,7 @@ import {
 
 import { ColumnStats } from "./ColumnStats";
 
-const PAGE = 50;
+const PAGE_SIZES = [25, 50, 100, 200] as const;
 
 interface Props {
   me: Me;
@@ -32,6 +32,7 @@ export function GridEditor({ me, table, live, onProposed, onBusy }: Props) {
   const [dir, setDir] = useState<"asc" | "desc">("asc");
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [applied, setApplied] = useState<Record<string, string>>({});
+  const [pageSize, setPageSize] = useState(50);
   const [inactive, setInactive] = useState(false);
   const [draft, setDraft] = useState<Draft>(emptyDraft());
   const [refs, setRefs] = useState<Record<string, RefOptions>>({});
@@ -59,12 +60,12 @@ export function GridEditor({ me, table, live, onProposed, onBusy }: Props) {
   useEffect(() => {
     let cancelled = false;
     onBusy(true);
-    getRows(table, { offset, limit: PAGE, sort, dir, filters: applied, inactive })
+    getRows(table, { offset, limit: pageSize, sort, dir, filters: applied, inactive })
       .then((p) => { if (!cancelled) { setPage(p); setError(""); } })
       .catch((e) => { if (!cancelled) setError(e instanceof ApiError ? e.message : "Could not load rows."); })
       .finally(() => { onBusy(false); });
     return () => { cancelled = true; };
-  }, [table, offset, sort, dir, applied, inactive, reload, appliedHere]);
+  }, [table, offset, pageSize, sort, dir, applied, inactive, reload, appliedHere]);
 
   // Load dropdown options for every reference column.
   useEffect(() => {
@@ -151,7 +152,7 @@ export function GridEditor({ me, table, live, onProposed, onBusy }: Props) {
   if (error && !page) return <p className="problems" role="alert">{error}</p>;
   if (!page) return <p className="muted">Loading…</p>;
 
-  const last = Math.min(offset + PAGE, page.total);
+  const last = Math.min(offset + pageSize, page.total);
   return (
     <div className="grid-editor">
       <div className="grid-bar">
@@ -160,13 +161,20 @@ export function GridEditor({ me, table, live, onProposed, onBusy }: Props) {
         <label className="small">
           <input type="checkbox" checked={inactive} onChange={(e) => { setInactive(e.target.checked); setOffset(0); }} /> show inactive
         </label>
+        <label className="small">
+          Rows per page{" "}
+          <select aria-label="Rows per page" value={pageSize}
+            onChange={(e) => { setPageSize(Number(e.target.value)); setOffset(0); }}>
+            {PAGE_SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </label>
         <label className="small" title="Resolve foreign keys to their labels, or show the stored ids">
           <input type="checkbox" checked={!showRaw} onChange={(e) => setShowRaw(!e.target.checked)} /> show labels
         </label>
         <button className="link" aria-pressed={showStats} onClick={() => setShowStats((v) => !v)}>Column stats</button>
         <span className="spacer" />
-        <button className="link" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>Previous</button>
-        <button className="link" disabled={last >= page.total} onClick={() => setOffset(offset + PAGE)}>Next</button>
+        <button className="link" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - pageSize))}>Previous</button>
+        <button className="link" disabled={last >= page.total} onClick={() => setOffset(offset + pageSize)}>Next</button>
         {canEdit && (
           <button className="button" onClick={() => setDraft((d) => ({ ...d, added: [{}, ...d.added] }))}>Add row</button>
         )}
