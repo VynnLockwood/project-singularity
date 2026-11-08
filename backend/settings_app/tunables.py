@@ -1,8 +1,13 @@
 """The quality knobs approvers can change at runtime (everything else stays in singularity.yaml)."""
+import os
 from audit.models import record
 from config.siconfig import _yaml_config, get_config, invalidate_overrides
 
 from .models import Setting
+
+# provider -> the environment variable holding its API key. The key value itself never leaves the server:
+# only `bool(env)` is ever read out (see key_set).
+PROVIDER_KEYS = {"openrouter": "OPENROUTER_API_KEY", "opencode": "OPENCODE_API_KEY"}
 
 # key -> (label, help, kind, min, max)
 TUNABLES = {
@@ -18,11 +23,16 @@ TUNABLES = {
     "limits.maxScriptRows": ("Script rows", "The most rows one script intake may contain.", "int", 1, 2000000),
     "limits.maxOpsPerScript": ("Operations per script", "The most operations one validated script may produce.", "int", 1, 100000),
     "limits.maxInlineScriptBytes": ("Inline script size (bytes)", "The largest script that may be pasted inline rather than uploaded.", "int", 1024, 1048576),
+    "chat.provider": ("Chat provider", "Which service answers chats. Its API key comes from the server environment and is never shown here.", "choice", None, None),
     "chat.defaultModel": ("Default chat model", "The model new chats start with. Choose from the models allowed in singularity.yaml.", "model", None, None),
     "chat.maxToolRounds": ("Tool rounds per message", "How many tool calls the assistant may chain for one message.", "int", 1, 20),
     "chat.messagesPerMinute": ("Messages per minute", "Chat rate limit per person.", "int", 1, 120),
     "backups.retentionDays": ("Backup retention (days)", "How long schema-change backups are kept.", "int", 1, 365),
 }
+
+# kind -> allowed values (anything else must be a number)
+OPTIONS = {"model": lambda: _yaml_config()["chat"]["allowedModels"],
+           "choice": lambda: list(PROVIDER_KEYS)}
 
 
 class TunableError(Exception):
@@ -36,9 +46,13 @@ def _default(key):
     return _yaml_config()[section][name]
 
 
+def key_set() -> dict:
+    """Which providers have an API key configured, as booleans only (the value stays in the environment)."""
+    return {provider: bool(os.environ.get(env, "")) for provider, env in PROVIDER_KEYS.items()}
+
+
 def describe() -> list[dict]:
     cfg = get_config()
-    allowed = _yaml_config()["chat"]["allowedModels"]
     overridden = set(Setting.objects.values_list("key", flat=True))
     out = []
     for key, (label, help_, kind, lo, hi) in TUNABLES.items():
@@ -46,17 +60,16 @@ def describe() -> list[dict]:
         out.append({
             "key": key, "label": label, "help": help_, "kind": kind, "min": lo, "max": hi,
             "default": _default(key), "value": cfg[section][name], "overridden": key in overridden,
-            **({"options": allowed} if kind == "model" else {}),
+            **({"options": OPTIONS[kind]()} if kind in OPTIONS else {}),
         })
     return out
 
 
 def _clean(key, value):
     label, _, kind, lo, hi = TUNABLES[key]
-    if kind == "model":
-        allowed = _yaml_config()["chat"]["allowedModels"]
-        if value not in allowed:
-            raise ValueError(f"{label}: choose one of the allowed models")
+    if kind in OPTIONS:
+        if value not in OPTIONS[kind]():
+            raise ValueError(f"{label}: choose one of the allowed {kind}s")
         return value
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{label}: must be a number")
