@@ -20,9 +20,11 @@ interface Props {
   live: Change[];
   /** Called with the proposal once saved, so the app can show the approval popup right away. */
   onProposed?: (change: Change) => void;
+  /** Set true while a page fetch is in flight; drives the overlay in AppShell. */
+  onBusy: (b: boolean) => void;
 }
 
-export function GridEditor({ me, table, live, onProposed }: Props) {
+export function GridEditor({ me, table, live, onProposed, onBusy }: Props) {
   const canEdit = me.role !== "viewer";
   const [page, setPage] = useState<RowsPage | null>(null);
   const [offset, setOffset] = useState(0);

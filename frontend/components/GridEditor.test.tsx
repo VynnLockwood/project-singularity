@@ -34,7 +34,7 @@ async function setup(role: Me["role"] = "editor", data = page(ROWS)) {
   }));
   const { GridEditor } = await import("./GridEditor");
   const onProposed = vi.fn();
-  render(<GridEditor me={me(role)} table="orderHeader" live={[]} onProposed={onProposed} />);
+  render(<GridEditor me={me(role)} table="orderHeader" live={[]} onProposed={onProposed} onBusy={vi.fn()} />);
   await screen.findByText(/\d+–\d+ of \d+/);
   return { getRows, proposeChange, onProposed };
 }
