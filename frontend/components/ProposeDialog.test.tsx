@@ -21,7 +21,7 @@ const setup = (extra: Partial<React.ComponentProps<typeof ProposeDialog>> = {}) 
   return props;
 };
 
-beforeEach(() => vi.mocked(proposeChange).mockClear());
+beforeEach(() => vi.mocked(proposeChange).mockReset());
 
 describe("ProposeDialog", () => {
   it("is an accessible dialog, focuses itself and lists operation lines", () => {
@@ -66,7 +66,7 @@ describe("ProposeDialog", () => {
   it("a refused proposal keeps the first step, the reason and the Propose button", async () => {
     vi.mocked(proposeChange).mockRejectedValueOnce(new ApiError(422, "Table still has rows"));
     const p = setup({ destructive: true });
-    fireEvent.change(screen.getByLabelText("Reason"), { target: { value: (screen.getByLabelText("Reason") as HTMLInputElement).value + "cleanup" } });
+    fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "cleanup" } });
     fireEvent.click(screen.getByRole("button", { name: "Propose" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Table still has rows");
     expect(screen.getByLabelText("Reason")).toHaveValue("cleanup");
@@ -94,5 +94,66 @@ describe("ProposeDialog", () => {
     expect(p.onClose).toHaveBeenCalledTimes(1);
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(p.onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it("double click proposes once; Close and Escape are ignored while busy", async () => {
+    let resolve!: (c: Change) => void;
+    vi.mocked(proposeChange).mockReturnValue(new Promise<Change>((r) => (resolve = r)));
+    const p = setup();
+    const btn = screen.getByRole("button", { name: "Propose" });
+    fireEvent.click(btn);
+    fireEvent.click(btn);
+    expect(proposeChange).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Close" })).toBeDisabled();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(p.onClose).not.toHaveBeenCalled();
+    resolve(change());
+    expect(await screen.findByLabelText("Change #7")).toBeInTheDocument();
+    expect(p.onProposed).toHaveBeenCalledTimes(1);
+  });
+
+  it("Escape closes after success even when focus is on body", async () => {
+    vi.mocked(proposeChange).mockResolvedValue(change());
+    const p = setup();
+    fireEvent.click(screen.getByRole("button", { name: "Propose" }));
+    await screen.findByLabelText("Change #7");
+    (document.activeElement as HTMLElement | null)?.blur();
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(p.onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("unmounting mid-request does not throw", async () => {
+    let resolve!: (c: Change) => void;
+    vi.mocked(proposeChange).mockReturnValue(new Promise<Change>((r) => (resolve = r)));
+    const props = {
+      me, schema: "crm", title: "T", build: () => [{ op: "create_schema", name: "s" }], onClose: vi.fn(), onProposed: vi.fn(),
+    };
+    const { unmount } = render(<ProposeDialog {...props} />);
+    fireEvent.click(screen.getAllByRole("button", { name: "Propose" }).at(-1)!);
+    unmount();
+    resolve(change());
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  it("a throwing onProposed does not show the network error", async () => {
+    vi.mocked(proposeChange).mockResolvedValue(change());
+    const onProposed = vi.fn(() => { throw new Error("parent"); });
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const onUnhandled = vi.fn();
+    process.on("unhandledRejection", onUnhandled);
+    setup({ onProposed });
+    fireEvent.click(screen.getByRole("button", { name: "Propose" }));
+    await screen.findByLabelText("Change #7");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(onProposed).toHaveBeenCalledTimes(1);
+    await new Promise((r) => setTimeout(r, 0));
+    process.off("unhandledRejection", onUnhandled);
+    err.mockRestore();
+  });
+
+  it("empty operations disable Propose", () => {
+    setup({ build: () => [] });
+    expect(screen.getByRole("button", { name: "Propose" })).toBeDisabled();
   });
 });

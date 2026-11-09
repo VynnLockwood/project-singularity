@@ -31,24 +31,55 @@ export function ProposeDialog({ me, schema, title, build, destructive, onClose, 
   const reasonOk = !destructive || trimmed.length >= MIN_REASON;
   const ops = build(destructive ? trimmed : "");
 
+  const busyRef = useRef(false);
+  busyRef.current = busy;
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !busyRef.current) closeRef.current();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      mounted.current = false;
+      document.removeEventListener("keydown", onKey);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (change) dialogRef.current?.focus();
+  }, [change]);
+
   useEffect(() => {
     const first = dialogRef.current?.querySelector<HTMLElement>("input, textarea, button");
     (first ?? dialogRef.current)?.focus();
   }, []);
 
   const propose = async () => {
-    if (busy || !reasonOk) return;
+    if (busyRef.current || !reasonOk || ops.length === 0) return;
+    busyRef.current = true;
     setBusy(true);
     setError(null);
+    let created: Change;
     try {
-      const created = await proposeChange(ops, title, "web", schema);
-      setChange(created);
-      onProposed(created);
+      created = await proposeChange(ops, title, "web", schema);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Could not reach the server. Try again.");
-    } finally {
+      busyRef.current = false;
+      if (mounted.current) {
+        setError(e instanceof ApiError ? e.message : "Could not reach the server. Try again.");
+        setBusy(false);
+      }
+      return;
+    }
+    busyRef.current = false;
+    if (mounted.current) {
+      setChange(created);
       setBusy(false);
     }
+    onProposed(created);
   };
 
   return (
@@ -58,18 +89,12 @@ export function ProposeDialog({ me, schema, title, build, destructive, onClose, 
         className="modal"
         role="dialog"
         aria-modal="true"
-        aria-label={title}
+        aria-labelledby="propose-dialog-title"
         tabIndex={-1}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") {
-            e.stopPropagation();
-            onClose();
-          }
-        }}
       >
-        <h2 className="modal-title">{title}</h2>
+        <h2 className="modal-title" id="propose-dialog-title">{title}</h2>
         {change ? (
-          <>
+          <div role="status">
             <ChangeCard change={change} me={me} />
             <div className="modal-foot">
               <span />
@@ -77,9 +102,14 @@ export function ProposeDialog({ me, schema, title, build, destructive, onClose, 
                 Close
               </button>
             </div>
-          </>
+          </div>
         ) : (
-          <>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void propose();
+            }}
+          >
             <ul aria-label="Operations">
               {ops.map((op, i) => (
                 <li key={i}>{describeOp(op)}</li>
@@ -93,10 +123,11 @@ export function ProposeDialog({ me, schema, title, build, destructive, onClose, 
                     value={reason}
                     onChange={(e) => setReason(e.target.value)}
                     aria-required="true"
+                    aria-describedby={reasonOk ? undefined : "propose-reason-hint"}
                     disabled={busy}
                   />
                 </label>
-                {!reasonOk && <span className="muted small"> At least {MIN_REASON} characters.</span>}
+                {!reasonOk && <span className="muted small" id="propose-reason-hint"> At least {MIN_REASON} characters.</span>}
               </p>
             )}
             {error && (
@@ -105,14 +136,14 @@ export function ProposeDialog({ me, schema, title, build, destructive, onClose, 
               </p>
             )}
             <div className="modal-foot">
-              <button className="link" onClick={onClose}>
+              <button type="button" className="link" onClick={onClose} disabled={busy}>
                 Close
               </button>
-              <button className="button" onClick={propose} disabled={busy || !reasonOk || ops.length === 0}>
+              <button type="submit" className="button" disabled={busy || !reasonOk || ops.length === 0}>
                 {busy ? "Proposing…" : "Propose"}
               </button>
             </div>
-          </>
+          </form>
         )}
       </div>
     </div>
