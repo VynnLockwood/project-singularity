@@ -95,4 +95,22 @@ describe("ChatModelSettings", () => {
     fireEvent.click(screen.getByText("Save"));
     expect(await screen.findByRole("alert")).toHaveTextContent("choose one of the allowed models");
   });
+
+  it("keeps a pasted key in this browser only and never renders it back", async () => {
+    await setup();
+    const KEY = "sk-browser-secret-abc";
+    // starts as "not set": nothing to leak
+    expect(screen.getByTestId("own-key-status")).toHaveTextContent("not set");
+    fireEvent.change(screen.getByLabelText("Your own key (this browser only)"), { target: { value: KEY } });
+    fireEvent.click(screen.getByText("Save key"));
+
+    expect(window.localStorage.getItem("singularity.chatApiKey")).toBe(KEY);
+    expect(screen.getByTestId("own-key-status")).toHaveTextContent("in use");
+    // write-only: the value must never be rendered back into the DOM
+    expect(document.body.textContent).not.toContain(KEY);
+    // and clearing removes it entirely
+    fireEvent.click(screen.getByText("Clear"));
+    expect(window.localStorage.getItem("singularity.chatApiKey")).toBeNull();
+    expect(screen.getByTestId("own-key-status")).toHaveTextContent("not set");
+  });
 });

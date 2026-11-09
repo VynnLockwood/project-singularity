@@ -94,8 +94,12 @@ def run_tool(user, conv, name: str, raw_args: str) -> dict:
         return {"error": "the tool failed"}
 
 
-def run_turn(conv, user, text: str) -> list[Message]:
-    """Store the user's message, drive the model to a final answer, return every message added."""
+def run_turn(conv, user, text: str, api_key: str = "") -> list[Message]:
+    """Store the user's message, drive the model to a final answer, return every message added.
+
+    `api_key` is a per-request, caller-supplied key. It is used only for this turn and is
+    never written to the database or a log.
+    """
     check_rate_limit(user)
     if not conv.model:
         raise ChatError("not_configured", "no chat model is configured")
@@ -107,7 +111,8 @@ def run_turn(conv, user, text: str) -> list[Message]:
     rounds = get_config()["chat"]["maxToolRounds"]
     specs = specs_for(user)
     for _ in range(rounds):
-        reply = providers.complete(get_config()["chat"]["provider"], history(conv), specs, conv.model)
+        reply = providers.complete(get_config()["chat"]["provider"], history(conv), specs, conv.model,
+                                   key=api_key)
         added.append(Message.objects.create(
             conversation=conv, role=Message.Role.ASSISTANT, content=reply["content"], tool_calls=reply["tool_calls"]))
         if not reply["tool_calls"]:
