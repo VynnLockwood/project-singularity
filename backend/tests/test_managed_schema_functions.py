@@ -119,7 +119,7 @@ def test_drop_empty_only(rw):
     call(rw, "drop", "tmp")
     assert not exists(rw, "tmp")
     for ddl in ("CREATE TABLE tmp.t(id int)", "CREATE SEQUENCE tmp.s", "CREATE VIEW tmp.v AS SELECT 1 AS x",
-                "CREATE TYPE tmp.ty AS ENUM ('a')", "CREATE FUNCTION tmp.f() RETURNS int LANGUAGE sql AS 'SELECT 1'"):
+                "CREATE TYPE tmp.ty AS ENUM ('a')", "CREATE DOMAIN tmp.d AS int", "CREATE FUNCTION tmp.f() RETURNS int LANGUAGE sql AS 'SELECT 1'"):
         call(rw, "create", "tmp")
         rw.execute(ddl)
         with pytest.raises(psycopg.errors.DependentObjectsStillExist):
@@ -143,8 +143,40 @@ def test_init_and_migration_agree():
     sql = _function_bodies((REPO / "db/migrations/2026-11-09-managed-schemas.sql").read_text())
     assert len(sh) == 3
     assert sh == sql
+    pat = r"^(?:REVOKE ALL ON FUNCTION singularity\.\w+_managed_schema|GRANT (?:EXECUTE ON FUNCTION singularity\.\w+_managed_schema|USAGE ON SCHEMA singularity TO singularity_master_rw)).*;$"
+    grants = lambda p: [re.sub(r"\s+", " ", m) for m in re.findall(pat, (REPO / p).read_text(), flags=re.M)]
+    g_sh, g_sql = grants("db/init/01-schemas-roles.sh"), grants("db/migrations/2026-11-09-managed-schemas.sql")
+    assert len(g_sh) == 7
+    assert g_sh == g_sql
 
 
 def test_rw_has_no_database_create(db):
     with connect(RW) as c:
         assert c.execute("SELECT has_database_privilege(%s, current_database(), 'CREATE')", (RW,)).fetchone()[0] is False
+
+
+def test_temp_table_cannot_spoof_catalog(rw):
+    """A pg_temp.pg_namespace made by rw must not make an unmanaged schema look managed."""
+    with connect(ADMIN) as su:
+        su.execute("DROP SCHEMA IF EXISTS victim CASCADE")
+        su.execute("CREATE SCHEMA victim")
+        try:
+            rw.execute("CREATE TEMP TABLE pg_namespace (LIKE pg_catalog.pg_namespace)")
+            rw.execute(
+                "INSERT INTO pg_temp.pg_namespace (oid, nspname, nspowner) "
+                "SELECT 1, 'victim', oid FROM pg_catalog.pg_roles WHERE rolname = %s", (RW,))
+            for fn, args in (("rename", ("victim", "taken")), ("drop", ("victim",))):
+                with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                    call(rw, fn, *args)
+            assert exists(su, "victim") and not exists(su, "taken")
+        finally:
+            rw.execute("DROP TABLE IF EXISTS pg_temp.pg_namespace")
+            su.execute("DROP SCHEMA IF EXISTS victim CASCADE")
+
+
+def test_master_owner_in_scratch_db(db):
+    with connect(RW) as c:
+        owner = c.execute(
+            "SELECT r.rolname FROM pg_namespace n JOIN pg_roles r ON r.oid=n.nspowner WHERE nspname='master'"
+        ).fetchone()[0]
+    print("master owner:", owner)
