@@ -149,12 +149,12 @@ def _result(user, change: Change) -> dict:
     return {**service.serialize(change), "next": _next_step(user, change)}
 
 
-def search_schema(user, query: str, limit: int | None = None, schema: str | None = None) -> dict:
+def search_schema(user, query: str, limit: int | None = None, schema: str = "master") -> dict:
     from search import service as search_service
     from search.embedder import SearchError
 
     try:
-        return search_service.search(query, limit, schema)
+        return search_service.search(query, limit, None if schema == "*" else schema)  # "*" = every schema
     except (SearchError, introspect.UnknownSchema) as exc:
         raise ToolFailure(str(exc)) from exc
 
@@ -200,9 +200,13 @@ def list_pending(user) -> dict:
 
 
 
-def submit_script(user, name: str, content: str, mapping: dict | None = None) -> dict:
+def submit_script(user, name: str, content: str, mapping: dict | None = None, schema: str = "master") -> dict:
     """Upload + validate inline (<= maxInlineScriptBytes). Larger scripts: upload via API/UI, pass script_id."""
     from config.siconfig import get_config
+    try:
+        introspect.require_managed(schema)  # before uploading anything
+    except introspect.UnknownSchema as exc:
+        raise ToolFailure(f"{exc} Call list_schemas to see the databases.") from exc
     data = content.encode("utf-8")
     if len(data) > get_config()["limits"]["maxInlineScriptBytes"]:
         raise ToolFailure(
@@ -210,8 +214,8 @@ def submit_script(user, name: str, content: str, mapping: dict | None = None) ->
             "Upload the file via the web UI or REST API, then call validate_script/get_script with its script_id.")
     try:
         script = script_service.upload(user, name, data)
-        report = script_service.validate(user, script.pk, mapping)
-    except storage.ScriptError as exc:
+        report = script_service.validate(user, script.pk, mapping, schema)
+    except (storage.ScriptError, introspect.UnknownSchema) as exc:
         raise ToolFailure(str(exc)) from exc
     out = {"script_id": script.pk, "report": _trim_report(report)}
     if report.get("ok"):
@@ -224,10 +228,10 @@ def submit_script(user, name: str, content: str, mapping: dict | None = None) ->
     return out
 
 
-def validate_script(user, script_id: int, mapping: dict | None = None) -> dict:
+def validate_script(user, script_id: int, mapping: dict | None = None, schema: str = "master") -> dict:
     try:
-        report = script_service.validate(user, script_id, mapping)
-    except storage.ScriptError as exc:
+        report = script_service.validate(user, script_id, mapping, schema)
+    except (storage.ScriptError, introspect.UnknownSchema) as exc:
         raise ToolFailure(str(exc)) from exc
     return {"script_id": script_id, "report": _trim_report(report)}
 

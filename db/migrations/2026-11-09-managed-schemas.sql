@@ -91,6 +91,10 @@ $$;
 REVOKE ALL ON FUNCTION singularity.create_managed_schema(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION singularity.rename_managed_schema(text, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION singularity.drop_managed_schema(text) FROM PUBLIC;
+-- pin the owner explicitly: the functions are SECURITY DEFINER, so their owner is who they run as.
+ALTER FUNCTION singularity.create_managed_schema(text) OWNER TO CURRENT_USER;
+ALTER FUNCTION singularity.rename_managed_schema(text, text) OWNER TO CURRENT_USER;
+ALTER FUNCTION singularity.drop_managed_schema(text) OWNER TO CURRENT_USER;
 -- rw needs USAGE on singularity only to be able to call the functions below (no table privileges).
 GRANT USAGE ON SCHEMA singularity TO singularity_master_rw;
 GRANT EXECUTE ON FUNCTION singularity.create_managed_schema(text) TO singularity_master_rw;
@@ -103,5 +107,8 @@ COMMIT;
 --   SELECT proname FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
 --    WHERE n.nspname='singularity' AND proname LIKE '%managed_schema';
 --   -- expects 3 rows
+--   SELECT proname, proowner::regrole, prosecdef FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+--    WHERE n.nspname='singularity' AND proname LIKE '%managed_schema';
+--   -- expects the migration owner (not singularity_master_rw) and prosecdef = true
 --   SELECT has_database_privilege('singularity_master_rw', current_database(), 'CREATE');
 --   -- expects false

@@ -119,10 +119,11 @@ async def query(sql: str, limit: int | None = None, schema: str = "master") -> d
     name="search_schema",
     description=(
         "Find where a kind of data belongs: semantic search over tables and columns (Thai or English). "
-        "Use before proposing a new column, to avoid duplicates. If 'confident' is false, nothing fits well."
+        "Use before proposing a new column, to avoid duplicates. If 'confident' is false, nothing fits well. "
+        "Searches one database (schema, default master); pass schema='*' to search all of them."
     ),
 )
-async def search_schema(query: str, limit: int | None = None, schema: str | None = None) -> dict:
+async def search_schema(query: str, limit: int | None = None, schema: str = "master") -> dict:
     return await run("search_schema", query=query, limit=limit, schema=schema)
 
 
@@ -207,11 +208,11 @@ async def list_pending() -> dict:
         "validate it against the gate and submit it as one approvable Change. No raw SQL is executed: the script is "
         "parsed into gated operations. For bigger files, tell the user to upload the file in the web app, then use "
         "validate_script with the script_id. Optional mapping: {tables: {src_table: {pk: ', srcname: table}}, "
-        "columns: {...}}; leave out to let the system suggest one."
+        "columns: {...}}; leave out to let the system suggest one. The script loads into one database (schema, default master)."
     ),
 )
-async def submit_script(name: str, content: str, mapping: dict | None = None) -> dict:
-    return await run("submit_script", name=name, content=content, mapping=mapping)
+async def submit_script(name: str, content: str, mapping: dict | None = None, schema: str = "master") -> dict:
+    return await run("submit_script", name=name, content=content, mapping=mapping, schema=schema)
 
 
 @mcp.tool(
@@ -222,8 +223,8 @@ async def submit_script(name: str, content: str, mapping: dict | None = None) ->
         "Returns the same report as at upload, so re-validation is idempotent."
     ),
 )
-async def validate_script(script_id: int, mapping: dict | None = None) -> dict:
-    return await run("validate_script", script_id=script_id, mapping=mapping)
+async def validate_script(script_id: int, mapping: dict | None = None, schema: str = "master") -> dict:
+    return await run("validate_script", script_id=script_id, mapping=mapping, schema=schema)
 
 
 @mcp.tool(

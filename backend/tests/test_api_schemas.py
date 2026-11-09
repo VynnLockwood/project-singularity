@@ -138,6 +138,7 @@ def test_duplicates_scan_and_list_take_schema(two, monkeypatch):
     g = ed.get("/api/duplicates?schema=crm").json()
     assert [x["schema"] for x in g["groups"]] == ["crm"]
     assert ed.get("/api/duplicates?schema=master").json()["groups"] == []
+    assert ed.get("/api/duplicates").json()["groups"] == []  # absent = master
 
 
 def test_search_schema_filter(two, settings, monkeypatch):
@@ -145,8 +146,9 @@ def test_search_schema_filter(two, settings, monkeypatch):
     monkeypatch.setattr(embedder, "embed", lambda texts, kind: [fake_vector(t) for t in texts])
     indexer.reindex()
     c = client(Role.VIEWER)
-    allr = c.get("/api/search?q=t&k=20").json()["results"]
+    allr = c.get("/api/search?q=t&k=20&schema=*").json()["results"]
     assert {r["schema"] for r in allr} == {"master", "crm"}
+    assert {r["schema"] for r in c.get("/api/search?q=t&k=20").json()["results"]} == {"master"}
     only = c.get("/api/search?q=t&k=20&schema=crm").json()["results"]
     assert only and {r["schema"] for r in only} == {"crm"}
 
@@ -309,3 +311,103 @@ def test_schema_ops_land_in_master_even_with_a_schema(two):
     for bad in ("", 5, ["a"]):
         with pytest.raises(tools.ToolFailure):
             tools.propose_change(u, OPS, schema=bad)
+
+
+# --- final wave ---
+
+def test_duplicates_and_search_default_to_master_and_star_means_all(two, settings, monkeypatch):
+    monkeypatch.setattr(dup, "_engine", lambda: FakeEngine)
+    apply(two, [{"op": "insert_rows", "table": "t", "rows": [{"code": "M2", "name": "Acme One"}, {"code": "M3", "name": "Acme Two"}]}])
+    ed = client(Role.EDITOR)
+    for schema in ("master", "crm"):
+        assert _post(ed, f"/api/duplicates/scan?schema={schema}", {"table": "t"}).json()["groups"] == 1
+    assert {g["schema"] for g in ed.get("/api/duplicates").json()["groups"]} == {"master"}
+    assert {g["schema"] for g in ed.get("/api/duplicates?schema=*").json()["groups"]} == {"master", "crm"}
+    assert {g["schema"] for g in ed.get("/api/duplicates?schema=crm").json()["groups"]} == {"crm"}
+    settings.EMBED_URL = "http://embed.test"
+    monkeypatch.setattr(embedder, "embed", lambda texts, kind: [fake_vector(t) for t in texts])
+    indexer.reindex()
+    assert {r["schema"] for r in ed.get("/api/search?q=t&k=20").json()["results"]} == {"master"}
+    assert {r["schema"] for r in ed.get("/api/search?q=t&k=20&schema=*").json()["results"]} == {"master", "crm"}
+    # `*` is only for these two endpoints
+    assert ed.get("/api/schema/tables?schema=*").status_code == 400
+    assert ed.get("/api/schema/export?schema=*").status_code == 400
+    assert _post(ed, "/api/query?schema=*", {"sql": "select 1"}).status_code == 400
+    assert ed.get("/api/duplicates?schema=*&schema=crm").status_code == 400
+    u = make_user(Role.VIEWER)
+    assert {r["schema"] for r in tools.search_schema(u, "t", 20)["results"]} == {"master"}
+    assert {r["schema"] for r in tools.search_schema(u, "t", 20, "*")["results"]} == {"master", "crm"}
+
+
+SCRIPT = "CREATE TABLE public.thing (id integer PRIMARY KEY, name text);\nINSERT INTO public.thing VALUES (1, 'a');\n"
+
+
+@pytest.fixture
+def script_dir(settings, tmp_path):
+    settings.SCRIPT_DIR = str(tmp_path / "scripts")
+
+
+def test_script_validate_api_takes_schema(two, script_dir):
+    from django.core.files.uploadedfile import SimpleUploadedFile
+    ed = client(Role.EDITOR)
+    sid = ed.post("/api/scripts", {"file": SimpleUploadedFile("t.sql", SCRIPT.encode())}).json()["script_id"]
+    r = _post(ed, f"/api/scripts/{sid}/validate", {"schema": "crm"})
+    assert r.status_code == 200 and r.json()["schema"] == "crm"
+    assert "thing" not in {t["name"] for t in introspect.list_tables("master")}
+    assert "thing" not in {t["name"] for t in introspect.list_tables("crm")}  # dry run rolled back
+    assert _post(ed, f"/api/scripts/{sid}/validate", {}).json()["schema"] == "master"
+    for bad in ("nope", "public", "singularity", "", 5, ["a"]):
+        assert _post(ed, f"/api/scripts/{sid}/validate", {"schema": bad}).status_code == 400, bad
+
+
+def test_script_mcp_takes_schema(two, script_dir):
+    u = make_user(Role.EDITOR)
+    out = tools.submit_script(u, "t.sql", SCRIPT, schema="crm")
+    assert out["report"]["schema"] == "crm"
+    assert Change.objects.get(pk=out["change_id"]).schema == "crm"
+    assert tools.validate_script(u, out["script_id"], schema="master")["report"]["schema"] == "master"
+    assert "thing" not in {t["name"] for t in introspect.list_tables("master")}
+    for bad in ("nope", "public", ""):
+        with pytest.raises(tools.ToolFailure):
+            tools.submit_script(u, "u.sql", SCRIPT, schema=bad)
+        with pytest.raises(tools.ToolFailure):
+            tools.validate_script(u, out["script_id"], schema=bad)
+    props = {s["function"]["name"]: s["function"]["parameters"]["properties"] for s in toolspecs.specs_for(u)}
+    assert "schema" in props["submit_script"] and "schema" in props["validate_script"]
+
+
+def test_backups_only_for_rename_schema(two, monkeypatch):
+    from approvals import service as svc
+    made = []
+    monkeypatch.setattr(svc, "backup_schema", lambda schema, label, days: made.append(schema) or __import__("pathlib").Path("x.sql"))
+    apply(two, [{"op": "create_schema", "name": "tmp"}])
+    assert made == []
+    apply(two, [{"op": "rename_schema", "schema": "tmp", "new_name": "tmp2"}])
+    assert made == ["tmp"]
+    apply(two, [{"op": "drop_schema", "schema": "tmp2", "reason": "unused"}])
+    assert made == ["tmp"]
+
+
+def test_create_schema_comment_is_in_the_rendered_sql_and_applied(two):
+    from gate import sqlgen
+    op = {"op": "create_schema", "name": "hr", "comment": "people's data"}
+    rendered = "\n".join(sqlgen.render([op], {}, "me@x.com"))
+    assert "COMMENT ON SCHEMA" in rendered and "people''s data" in rendered
+    apply(two, [op])
+    assert {s["name"]: s["comment"] for s in introspect.managed_schemas()}["hr"] == "people's data"
+
+
+def test_rename_schema_moves_duplicate_groups_and_triggers_reindex(two, monkeypatch, django_capture_on_commit_callbacks):
+    from duplicates.models import DuplicateGroup
+    from search import indexer as idx
+    monkeypatch.setattr(dup, "_engine", lambda: FakeEngine)
+    dup.scan("t", two, schema="crm")
+    old = DuplicateGroup.objects.get(schema="crm")
+    called = []
+    monkeypatch.setattr(idx, "schedule_reindex", lambda: called.append(1))
+    with django_capture_on_commit_callbacks(execute=True):
+        apply(two, [{"op": "rename_schema", "schema": "crm", "new_name": "sales"}])
+    g = DuplicateGroup.objects.get()
+    assert g.pk == old.pk and g.schema == "sales" and g.key == dup.group_key("t", g.member_ids, "sales") != old.key
+    assert called
+    assert dup.scan("t", two, schema="sales")["groups"] == 1 and DuplicateGroup.objects.count() == 1  # same group, not a new one

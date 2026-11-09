@@ -34,7 +34,7 @@ SPECS = {
     "search_schema": ("Find where a kind of data belongs: semantic search over tables and columns (Thai or English). "
                       "Use before proposing a new column. If 'confident' is false, nothing fits well.",
                       {"query": {"type": "string"}, "limit": {"type": "integer"},
-                       "schema": {"type": "string", "description": "limit to one database; omit to search all"}}, ["query"]),
+                       "schema": {"type": "string", "description": "database to search; default master, '*' searches all"}}, ["query"]),
     "propose_change": (
         "Propose structural or data changes as a list of operations (never SQL). " + _OPS +
         " Returns the checked change with a diff. The user approves it in a popup; nothing is applied until then.",
@@ -58,12 +58,13 @@ SPECS = {
         "approvable Change. No raw SQL is executed. Big scripts: tell the user to upload the file in the web app.",
         {"name": {"type": "string", "description": "file name to show (e.g. master.sql)"},
          "content": {"type": "string", "description": "the whole SQL file contents"},
-         "mapping": {"type": "object", "description": "optional table/column mapping; omit to auto-suggest"}},
+         "mapping": {"type": "object", "description": "optional table/column mapping; omit to auto-suggest"},
+         **SCHEMA},
         ["name", "content"]),
     "validate_script": (
         "Re-validate an uploaded script and return the trimmed report (errors with line numbers, gate result, "
         "orphan samples, dry-run rows).",
-        {"script_id": {"type": "integer"}, "mapping": {"type": "object"}}, ["script_id"]),
+        {"script_id": {"type": "integer"}, "mapping": {"type": "object"}, **SCHEMA}, ["script_id"]),
     "get_script": (
         "Status, stored report and change link of an uploaded/submitted script.",
         {"script_id": {"type": "integer"}}, ["script_id"]),

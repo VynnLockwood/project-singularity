@@ -235,9 +235,10 @@ def approve(user, change_id: int) -> Change:
         record(user, "change.approved", target=f"#{change.pk}")
 
         if change.kind == "schema":
-            # Creating a schema touches nothing existing; rename/drop get a cheap master safety dump.
+            # create_schema touches nothing existing and drop_schema only drops an empty schema: no backup.
+            # rename_schema backs up the schema being renamed (taken under its old name).
             if _is_database(change.operations):
-                to_back_up = "master" if any(o["op"] in ("rename_schema", "drop_schema") for o in change.operations) else None
+                to_back_up = next((o["schema"] for o in change.operations if o["op"] == "rename_schema"), None)
             else:
                 to_back_up = change.schema
             if to_back_up:
@@ -265,9 +266,24 @@ def approve(user, change_id: int) -> Change:
         change.reverse_operations = result.reverse_ops
         change.error = ""
         change.save()
+        _follow_renames(change)
         record(user, "change.applied", target=f"#{change.pk}",
                details={"kind": change.kind, "tables": change.affected_tables, "reversible": result.reverse_ops is not None})
         return change
+
+
+def _follow_renames(change: Change) -> None:
+    """After an applied rename_schema, duplicate groups of that schema follow the new name (search reindexes itself)."""
+    if change.kind != "schema":
+        return
+    from duplicates.models import DuplicateGroup
+    from duplicates.service import group_key
+    for o in change.operations:
+        if o.get("op") == "rename_schema":
+            for g in DuplicateGroup.objects.filter(schema=o["schema"]):
+                g.schema = o["new_name"]
+                g.key = group_key(g.table_name, g.member_ids, o["new_name"])  # keys embed the schema name
+                g.save(update_fields=["schema", "key"])
 
 
 def _apply_config(change: Change, user) -> Change:

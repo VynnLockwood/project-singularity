@@ -148,6 +148,9 @@ def test_init_and_migration_agree():
     g_sh, g_sql = grants("db/init/01-schemas-roles.sh"), grants("db/migrations/2026-11-09-managed-schemas.sql")
     assert len(g_sh) == 7
     assert g_sh == g_sql
+    owners = lambda p: re.findall(r"^ALTER FUNCTION singularity\.\w+_managed_schema\(.*\) OWNER TO CURRENT_USER;$", (REPO / p).read_text(), flags=re.M)
+    assert len(owners("db/init/01-schemas-roles.sh")) == 3
+    assert owners("db/init/01-schemas-roles.sh") == owners("db/migrations/2026-11-09-managed-schemas.sql")
 
 
 def test_rw_has_no_database_create(db):

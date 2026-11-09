@@ -12,12 +12,17 @@ def _valid(value, where: str) -> str:
     return value
 
 
-def schema_param(request, body: dict | None = None, default: str | None = "master") -> str | None:
+ALL = "*"
+
+
+def schema_param(request, body: dict | None = None, default: str | None = "master", *, allow_all: bool = False) -> str | None:
     """The one rule for a `schema` argument: ABSENT means `default` (master), anything present must be a
     non-empty string. Empty, non-string or conflicting values (repeated `?schema=`, or query vs JSON `body`) raise
     UnknownSchema, which `unknown_schema_is_400` turns into HTTP 400.
 
-    Pass `default=None` where absent means "all schemas" (duplicates list, search): the caller then gets None.
+    Pass `default=None` where absent means "all schemas" (the changes history list). With `allow_all=True`
+    (duplicates list and search only) an explicit `*` means all schemas and the caller gets None; absent is still
+    `default`. Everywhere else `*` is just an unknown schema, so a 400.
     """
     found = []
     if "schema" in request.GET:
@@ -26,6 +31,8 @@ def schema_param(request, body: dict | None = None, default: str | None = "maste
         found.append(_valid(body["schema"], "request body"))
     if len(set(found)) > 1:
         raise introspect.UnknownSchema("conflicting schema values were given.")
+    if found and found[0] == ALL and allow_all:
+        return None
     return found[0] if found else default
 
 

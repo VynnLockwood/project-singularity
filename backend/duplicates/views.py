@@ -23,7 +23,7 @@ def _group(pk):
 @unknown_schema_is_400
 def groups(request):
     qs = DuplicateGroup.objects.select_related("merge_change")
-    schema = schema_param(request, default=None)  # absent = ALL schemas (intentional), unlike scan which defaults to master
+    schema = schema_param(request, allow_all=True)  # absent = master like everywhere; explicit `*` = all schemas
     if schema:
         qs = qs.filter(schema=introspect.require_managed(schema))
     if table := request.GET.get("table"):

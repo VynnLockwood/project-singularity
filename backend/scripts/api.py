@@ -2,6 +2,7 @@
 from django.http import JsonResponse
 
 from accounts.api import endpoint, error
+from schema.http import schema_param, unknown_schema_is_400
 
 from . import service, storage
 from .models import Script
@@ -68,9 +69,11 @@ def scripts(request):
 
 
 @endpoint("POST", min_role="editor")
+@unknown_schema_is_400
 def validate_view(request, script_id):
     try:
-        report = service.validate(request.user, script_id, request.json.get("mapping"))
+        report = service.validate(request.user, script_id, request.json.get("mapping"),
+                                  schema_param(request, request.json))
     except storage.ScriptError as exc:
         return _err(exc)
     return JsonResponse(report)

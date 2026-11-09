@@ -225,10 +225,6 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_
             inserted_ids.append(cur.fetchone()[pk_of(before, t)])
         if k in ("update_rows", "deactivate_rows"):
             rowcount = cur.rowcount
-    if k == "create_schema" and op.get("comment"):
-        # the SQL function has no comment parameter; rw owns the new schema
-        conn.execute(sql.SQL("COMMENT ON SCHEMA {} IS {}").format(
-            sql.Identifier(op["name"]), sql.Literal(op["comment"])))
     if rowcount is not None and rowcount > max_rows:
         raise ApplyError(f"operation touched {rowcount} rows (limit {max_rows})")
 

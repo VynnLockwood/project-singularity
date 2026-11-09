@@ -126,7 +126,10 @@ def statements_for(op: dict, state_before: dict, actor: str | None, conv: Conven
     I = sql.Identifier
 
     if k == "create_schema":
-        return [Stmt(S("SELECT singularity.create_managed_schema({})").format(sql.Literal(op["name"])))]
+        out = [Stmt(S("SELECT singularity.create_managed_schema({})").format(sql.Literal(op["name"])))]
+        if op.get("comment"):  # the SQL function has no comment parameter; rw owns the new schema
+            out.append(Stmt(S("COMMENT ON SCHEMA {} IS {}").format(I(op["name"]), sql.Literal(op["comment"]))))
+        return out
 
     if k == "rename_schema":
         return [Stmt(S("SELECT singularity.rename_managed_schema({}, {})").format(
