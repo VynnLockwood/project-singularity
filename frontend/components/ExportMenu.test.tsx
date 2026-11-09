@@ -4,17 +4,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const json = (status: number, body: unknown) =>
   ({ ok: status >= 200 && status < 300, status, statusText: "Err", json: async () => body }) as Response;
 
-async function setup(canExportData: boolean, fetchImpl: () => Promise<Response>) {
+async function setup(canExportData: boolean, fetchImpl: (init?: RequestInit) => Promise<Response>) {
   vi.resetModules();
-  const fetchMock = vi.fn((_url: string, _init?: RequestInit) => fetchImpl());
+  const fetchMock = vi.fn((_url: string, init?: RequestInit) => fetchImpl(init));
   vi.stubGlobal("fetch", fetchMock);
   const clicked: string[] = [];
   vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
     clicked.push(this.getAttribute("href") ?? "");
   });
   const { ExportMenu } = await import("./ExportMenu");
-  render(<ExportMenu schema="crm" canExportData={canExportData} />);
-  return { fetchMock, clicked };
+  const r = render(<ExportMenu schema="crm" canExportData={canExportData} />);
+  const rerender = (schema: string) => r.rerender(<ExportMenu schema={schema} canExportData={canExportData} />);
+  return { fetchMock, clicked, rerender };
 }
 
 const download = () => fireEvent.click(screen.getByRole("button", { name: "Download SQL" }));
@@ -76,5 +77,37 @@ describe("ExportMenu", () => {
     download();
     expect((await screen.findByRole("alert")).textContent).toBe("Could not reach the server.");
     expect(clicked).toHaveLength(0);
+  });
+
+  it("aborts an in-flight request when the schema changes", async () => {
+    let signal: AbortSignal | undefined;
+    let resolve!: (r: Response) => void;
+    const { clicked, rerender } = await setup(true, (init) => {
+      signal = init?.signal ?? undefined;
+      return new Promise<Response>((res, rej) => {
+        resolve = res;
+        signal?.addEventListener("abort", () => rej(new DOMException("aborted", "AbortError")));
+      });
+    });
+    download();
+    await waitFor(() => expect(signal).toBeDefined());
+    rerender("sales");
+    expect(signal!.aborted).toBe(true);
+    await waitFor(() => expect((screen.getByRole("button", { name: "Download SQL" }) as HTMLButtonElement).disabled).toBe(false));
+    resolve(json(422, { error: "late" }));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(clicked).toHaveLength(0);
+  });
+
+  it("disables the button while a request is in flight", async () => {
+    let resolve!: (r: Response) => void;
+    const { clicked } = await setup(true, () => new Promise<Response>((res) => { resolve = res; }));
+    download();
+    const btn = screen.getByRole("button", { name: "Download SQL" }) as HTMLButtonElement;
+    await waitFor(() => expect(btn.disabled).toBe(true));
+    resolve(json(200, {}));
+    await waitFor(() => expect(btn.disabled).toBe(false));
+    expect(clicked).toHaveLength(1);
   });
 });

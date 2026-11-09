@@ -11,7 +11,10 @@ export function ExportMenu({ schema, canExportData }: { schema: string; canExpor
   const ctl = useRef<AbortController | null>(null);
 
   useEffect(() => () => ctl.current?.abort(), []);
-  useEffect(() => { setError(""); }, [schema, withData]);
+  useEffect(() => {
+    setError("");
+    ctl.current?.abort(); // a late result must not touch the new selection
+  }, [schema, withData]);
 
   const run = async () => {
     const url = exportUrl(schema, canExportData && withData);
@@ -21,13 +24,14 @@ export function ExportMenu({ schema, canExportData }: { schema: string; canExpor
     setError("");
     try {
       const res = await fetch(url, { credentials: "same-origin", signal: ac.signal });
+      if (ac.signal.aborted) return;
       if (!res.ok) {
         let msg = res.statusText || `Export failed (${res.status}).`;
         try {
           const body = await res.json();
           if (body && typeof body.error === "string" && body.error) msg = body.error;
         } catch { /* keep the status text */ }
-        setError(msg);
+        if (!ac.signal.aborted) setError(msg);
         return;
       }
       ac.abort(); // headers are enough; the real download is a separate request
@@ -40,7 +44,7 @@ export function ExportMenu({ schema, canExportData }: { schema: string; canExpor
     } catch {
       if (!ac.signal.aborted) setError("Could not reach the server.");
     } finally {
-      setBusy(false);
+      if (ctl.current === ac) setBusy(false);
     }
   };
 
