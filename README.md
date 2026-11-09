@@ -11,7 +11,7 @@ Milestones 1 to 7 are done: compose stack, nginx gateway, Postgres schemas and r
 
 ## Web chat
 
-Set `OPENROUTER_API_KEY` in `.env` (only the `api` container receives it) and pick models in `singularity.yaml` under `chat` (`defaultModel`, `allowedModels`, `maxToolRounds`, `messagesPerMinute`). The assistant has the same tools as an MCP client for your role, but no approve tool: the popup is the only way to approve from chat, so the model cannot approve its own proposals. Changes proposed from any source (chat, MCP client) show up live for the requester and for approvers.
+Set `OPENROUTER_API_KEY` in `.env` (only the `api` container receives it) and manage the chat provider and models on the Settings page (approvers). `defaultModel` and `allowedModels` under `chat` in `singularity.yaml` only seed the first value; `maxToolRounds` and `messagesPerMinute` are set there too. The assistant has the same tools as an MCP client for your role, but no approve tool: the popup is the only way to approve from chat, so the model cannot approve its own proposals. Changes proposed from any source (chat, MCP client) show up live for the requester and for approvers.
 
 ## Connect an AI client (MCP)
 

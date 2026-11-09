@@ -69,7 +69,7 @@ class TunableError(Exception):
 
 def _default(key):
     if key == "chat.models":
-        return list(_yaml_config()["chat"]["allowedModels"])
+        return list(_yaml_config()["chat"]["models"])
     section, name = key.split(".")
     return _yaml_config()[section][name]
 

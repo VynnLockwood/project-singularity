@@ -33,6 +33,7 @@ def client_for(u):
 def test_seed_comes_from_yaml_until_overridden(monkeypatch):
     get_config.cache_clear()
     monkeypatch.setitem(siconfig._yaml_config()["chat"], "allowedModels", ["a/b"])
+    monkeypatch.setitem(siconfig._yaml_config()["chat"], "defaultModel", "a/b")  # the seed also includes the default
     models = get_config()["chat"]["models"]
     assert models == ["a/b"]
     models.append("mutated")  # a copy: the file's list is never exposed
@@ -132,3 +133,46 @@ def test_site_change_reaches_the_next_chat(monkeypatch):
     )
     added = orchestrator.run_turn(conv, a, "hi")
     assert seen == ["x/y"] and added[-1].content == "ok"
+
+
+def _yaml(monkeypatch, tmp_path, text):
+    p = tmp_path / "singularity.yaml"
+    p.write_text(text)
+    monkeypatch.setenv("SINGULARITY_CONFIG", str(p))
+    get_config.cache_clear()
+
+
+def test_yaml_default_outside_allowed_models_still_works(monkeypatch, tmp_path):
+    _yaml(monkeypatch, tmp_path, "chat:\n  defaultModel: d/m\n")
+    assert get_config()["chat"]["models"] == ["d/m"]
+    c = client_for(user(Role.VIEWER))
+    body = json.loads(c.get("/api/chat/models").content)
+    assert body["default"] == "d/m" and "d/m" in body["allowed"]
+    r = c.post("/api/chat/conversations", data="{}", content_type="application/json")
+    assert r.status_code == 201
+    r = c.post("/api/chat/conversations", data=json.dumps({"model": "d/m"}), content_type="application/json")
+    assert r.status_code == 201
+
+
+def test_seed_appends_default_once_and_keeps_order(monkeypatch, tmp_path):
+    _yaml(monkeypatch, tmp_path, "chat:\n  defaultModel: a/2\n  allowedModels: [a/1, a/2]\n")
+    assert get_config()["chat"]["models"] == ["a/1", "a/2"]
+    _yaml(monkeypatch, tmp_path, "chat:\n  defaultModel: d/m\n  allowedModels: [a/1, a/2]\n")
+    assert get_config()["chat"]["models"] == ["a/1", "a/2", "d/m"]
+
+
+def test_full_reset_with_yaml_default_outside_allowed(monkeypatch, tmp_path):
+    _yaml(monkeypatch, tmp_path, "chat:\n  defaultModel: d/m\n  allowedModels: [a/1]\n")
+    a = user(Role.APPROVER)
+    tunables.apply(a, {"chat.models": ["x/y"], "chat.defaultModel": "x/y"})
+    tunables.apply(a, {"chat.models": None, "chat.defaultModel": None})
+    cfg = get_config()["chat"]
+    assert cfg["models"] == ["a/1", "d/m"] and cfg["defaultModel"] == "d/m"
+    assert not Setting.objects.filter(key__startswith="chat.").exists()
+
+
+def test_override_lists_are_copies(monkeypatch):
+    a = user(Role.APPROVER)
+    tunables.apply(a, {"chat.models": ["x/y", "z/w"], "chat.defaultModel": "x/y"})
+    get_config()["chat"]["models"].append("mutated")
+    assert get_config()["chat"]["models"] == ["x/y", "z/w"]
