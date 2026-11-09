@@ -1,4 +1,3 @@
-import datetime
 import json
 
 from django.http import JsonResponse, StreamingHttpResponse
@@ -38,9 +37,11 @@ def export(request):
         return error(str(exc), exc.status)
     try:
         record(request.user, "schema.export", schema, {"schema": schema, "data": with_data, "counts": ex.counts})
-        today = datetime.date.today()
-        resp = StreamingHttpResponse(ex.chunks(), content_type="text/sql; charset=utf-8")
-        resp["Content-Disposition"] = f'attachment; filename="{ex.filename(today)}"'
+        # Under ASGI Django collects a sync iterator into a list first (whole file in memory): hand it an async one.
+        chunks = ex.async_chunks() if hasattr(request, "scope") else ex.chunks()
+        resp = StreamingHttpResponse(chunks, content_type="text/sql; charset=utf-8")
+        resp["Content-Disposition"] = f'attachment; filename="{ex.filename()}"'
+        resp["Cache-Control"] = "no-store"
     except BaseException:
         ex.close()
         raise

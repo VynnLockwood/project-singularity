@@ -48,6 +48,23 @@ def body(resp):
     return b"".join(resp.streaming_content).decode()
 
 
+@pytest.fixture(autouse=True)
+def opened(master, monkeypatch):
+    """Every Export a test opens; closed at teardown so a failing test cannot block dropping the database."""
+    made = []
+    real = views.open_export
+
+    def spy(*a, **k):
+        ex = real(*a, **k)
+        made.append(ex)
+        return ex
+
+    monkeypatch.setattr(views, "open_export", spy)
+    yield made
+    for ex in made:
+        ex.close()
+
+
 def exports():
     return AuditLog.objects.filter(action="schema.export")
 
@@ -142,3 +159,118 @@ def test_limit_tunable_validates_range():
             tunables.apply(a, {"limits.maxExportRows": bad})
     tunables.apply(a, {"limits.maxExportRows": 20000000})
     assert get_config()["limits"]["maxExportRows"] == 20000000
+
+
+# --- ASGI streaming -------------------------------------------------------------------------
+
+import warnings  # noqa: E402
+
+from asgiref.sync import async_to_sync  # noqa: E402
+from django.test import AsyncRequestFactory  # noqa: E402
+
+ARF = AsyncRequestFactory()
+
+
+def acall(who, query=""):
+    req = ARF.get("/api/schema/export" + query)
+    req.user = who
+    return views.export(req)
+
+
+async def _collect(resp):
+    return [part async for part in resp.streaming_content]
+
+
+def test_asgi_response_has_async_iterator_and_same_body():
+    seed()
+    ed = user(Role.EDITOR)
+    expected = body(call(ed, "?data=1"))
+    resp = acall(ed, "?data=1")
+    assert resp.is_async and hasattr(resp.streaming_content, "__aiter__")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        parts = async_to_sync(_collect)(resp)
+    assert len(parts) > 1  # chunk by chunk, not one buffered blob
+    assert b"".join(parts).decode() == expected
+
+
+def test_asgi_does_not_buffer_synchronous_iterator_via_django_aiter():
+    seed()
+    resp = acall(user(Role.EDITOR), "?data=1")
+
+    async def consume():
+        async for _ in resp:  # what Django's ASGI handler does
+            pass
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # "must consume synchronous iterators" would raise
+        async_to_sync(consume)()
+
+
+def test_asgi_early_aclose_closes_connection(opened):
+    seed()
+    resp = acall(user(Role.EDITOR), "?data=1")
+    ex = opened[-1]
+    assert not ex.conn.closed
+
+    async def first_then_close():
+        it = resp._iterator  # the object handed to the response; Django's streaming_content wraps it
+        await it.__anext__()
+        await it.aclose()
+
+    async_to_sync(first_then_close)()
+    assert ex.conn.closed
+
+
+def test_asgi_response_close_closes_connection(opened):
+    seed()
+    resp = acall(user(Role.EDITOR), "?data=1")
+    resp.close()
+    assert opened[-1].conn.closed
+
+
+def test_asgi_runs_next_in_one_thread():
+    # the psycopg connection must only ever be used from one thread
+    seed()
+    import threading
+    resp = acall(user(Role.EDITOR), "?data=1")
+    seen = set()
+    chunks = resp._iterator._chunks
+    orig = chunks.__class__.__next__
+
+    def spy(self):
+        seen.add(threading.get_ident())
+        return orig(self)
+
+    chunks.__class__.__next__ = spy
+    try:
+        async_to_sync(_collect)(resp)
+    finally:
+        chunks.__class__.__next__ = orig
+    assert len(seen) == 1
+
+
+def test_no_store_cache_control():
+    seed()
+    r = call(user(Role.VIEWER))
+    body(r)
+    assert "no-store" in r["Cache-Control"]
+
+
+def test_asyncclient_end_to_end_streams_asynchronously():
+    from django.test import AsyncClient
+
+    seed()
+    ed = user(Role.EDITOR)
+    expected = body(call(ed, "?data=1"))
+
+    async def run():
+        client = AsyncClient()
+        await client.aforce_login(ed)
+        resp = await client.get("/api/schema/export?data=1")
+        assert resp.status_code == 200 and resp.is_async
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            return b"".join([p async for p in resp.streaming_content]).decode()
+
+    assert async_to_sync(run)() == expected

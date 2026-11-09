@@ -1,5 +1,6 @@
 """DB-free tests for the DDL renderers. The model shape is what dump_model.read_model returns."""
 import datetime
+import re
 
 from schema.export import (
     render_foreign_keys, render_header, render_identity_fix, render_indexes, render_structure,
@@ -148,3 +149,16 @@ def test_no_internal_names_leak():
                       render_structure(MODEL, "master"), render_foreign_keys(MODEL, "master"),
                       render_indexes(MODEL), render_identity_fix(MODEL, "master")]).lower()
     assert [n for n in INTERNAL if n in body] == []
+
+
+def test_session_settings_precede_create_schema():
+    out = render_structure(MODEL, "master")
+    a, b = out.index("SET client_encoding = 'UTF8';"), out.index("SET standard_conforming_strings = on;")
+    assert a < b < out.index("CREATE SCHEMA")
+
+
+def test_header_neutralises_control_characters_and_meta_commands():
+    nasty = "evil\r\\! rm -rf /\n\\i /etc/passwd\x00\x1b[31m\x85\u2028x"
+    h = render_header(nasty, True, {nasty: 1}, datetime.date(2026, 11, 9))
+    assert all(line.startswith("--") for line in h.split("\n") if line)
+    assert not re.search(r"[\x00-\x09\x0b-\x1f\x7f-\x9f\u2028\u2029]", h)

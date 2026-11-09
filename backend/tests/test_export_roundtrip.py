@@ -1,4 +1,5 @@
 """Acceptance test: an exported file loaded with psql into a fresh database reproduces the source."""
+import os
 import shutil
 import subprocess
 
@@ -99,11 +100,11 @@ def snapshot(dbname):
     return out
 
 
-def load(path, dbname):
+def load(path, dbname, env=None):
     return subprocess.run(
         ["psql", "-v", "ON_ERROR_STOP=1", "-q", "-h", pgsetup.HOST, "-p", str(pgsetup.PORT),
          "-U", pgsetup.ADMIN, "-d", dbname, "-f", str(path)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, env=env,
     )
 
 
@@ -142,6 +143,21 @@ def test_roundtrip_matches_source(dst, tmp_path):
         assert c.execute("INSERT INTO master.empty_ident (v) VALUES ('n') RETURNING id").fetchone()[0] == 1
         assert c.execute("INSERT INTO master.parent (code) VALUES ('new') RETURNING id").fetchone()[0] == 9
         assert c.execute('INSERT INTO master."order" (parent_id) VALUES (1) RETURNING id').fetchone()[0] == 21
+
+
+def test_roundtrip_loads_under_a_non_utf8_client_encoding(dst, tmp_path):
+    """The file sets client_encoding itself, so PGCLIENTENCODING=LATIN1 in the loader's environment is harmless."""
+    populate()
+    path = tmp_path / "full.sql"
+    export_to(path, data=True)
+    src = snapshot(pgsetup_src())
+    res = load(path, dst, env={**os.environ, "PGCLIENTENCODING": "LATIN1"})
+    assert res.returncode == 0, f"psql failed:\n{res.stderr}"
+    got = snapshot(dst)
+    assert got["rows"] == src["rows"]
+    with pgsetup.connect(pgsetup.ADMIN, dst) as c:
+        names = [r[0] for r in c.execute("SELECT name FROM master.parent ORDER BY id").fetchall()]
+    assert "สวัสดี" in names and "😀" in names
 
 
 def test_roundtrip_structure_only(dst, tmp_path):

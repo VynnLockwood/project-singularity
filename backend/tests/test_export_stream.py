@@ -58,7 +58,7 @@ def test_copy_escaping_round_trip_values():
     assert "0\ta\\tb" in body and "1\tx\\ny" in body
     assert "2\tback\\\\slash" in body and "3\t\\\\N" in body
     assert "4\tสวัสดี" in body and "5\t😀" in body
-    assert "6\t\\N" in body and "7\t" in body and "6\t\\N" != "7\t"
+    assert "6\t\\N" in body and "7\t" in body
 
 
 def test_order_parents_before_children_and_fks_after_data():
@@ -87,7 +87,9 @@ def test_snapshot_is_consistent():
     seed()
     exp = open_export("master", data=True, cap=100)
     build("INSERT INTO master.parent (name) VALUES ('late')")
-    assert "late" not in text(exp)
+    out = text(exp)
+    assert "late" not in out
+    assert "1\ta\n2\tb\n" in out  # rows committed before the snapshot are there
 
 
 def test_connection_closed_after_exhaust_and_after_early_close():
@@ -123,3 +125,69 @@ def test_filename_and_cycles():
     assert exp.filename(datetime.date(2026, 11, 9)) == "singularity-master-20261109.sql"
     out = text(exp)
     assert "2\t1\n" in out
+
+
+def test_close_closes_connection_even_if_generator_close_raises(monkeypatch):
+    seed()
+    exp = open_export("master", data=True, cap=100)
+    ch = exp.chunks()
+    next(ch)
+
+    class Boom:
+        def close(self):
+            raise RuntimeError("boom")
+
+    ch._gen = Boom()
+    with pytest.raises(RuntimeError):
+        ch.close()
+    assert exp.conn.closed
+
+
+def test_next_error_closes_connection_even_if_generator_close_raises():
+    seed()
+    exp = open_export("master", data=True, cap=100)
+    ch = exp.chunks()
+
+    class Bad:
+        def __next__(self):
+            raise ValueError("bad")
+
+        def close(self):
+            raise RuntimeError("boom")
+
+    ch._gen = Bad()
+    with pytest.raises(RuntimeError):
+        next(ch)
+    assert exp.conn.closed
+
+
+def test_session_settings_on_export_connection():
+    seed()
+    exp = open_export("master", data=True, cap=100)
+    try:
+        got = {k: exp.conn.execute("SELECT current_setting(%s) AS v", (k,)).fetchone()["v"]
+               for k in ("DateStyle", "IntervalStyle", "idle_in_transaction_session_timeout")}
+    finally:
+        exp.close()
+    assert got["DateStyle"].startswith("ISO") and got["IntervalStyle"] == "postgres"
+    assert got["idle_in_transaction_session_timeout"] in ("10min", "600s", "600000ms")
+
+
+def test_header_date_and_filename_use_one_clock_reading(monkeypatch):
+    import schema.export as mod
+    days = iter(datetime.date(2026, 1, d) for d in range(1, 50))
+
+    class Clock(datetime.date):
+        @classmethod
+        def today(cls):
+            return next(days)
+
+    seed()
+    monkeypatch.setattr(mod.datetime, "date", Clock)
+    exp = open_export("master", data=False, cap=0)
+    out = text(exp)
+    first = exp.filename()
+    assert exp.filename() == first
+    stamp = exp.today.isoformat()
+    assert f"-- date: {stamp}" in out and first == f"singularity-master-{stamp.replace('-', '')}.sql"
+    assert exp.filename(datetime.date.__new__(datetime.date, 2020, 2, 2)) == "singularity-master-20200202.sql"
