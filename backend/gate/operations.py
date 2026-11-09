@@ -40,8 +40,23 @@ SCHEMA_OPS = {
 DATA_OPS = {"insert_rows", "update_rows", "deactivate_rows", "bulk_insert"}
 # Produced only by script intake; the normal propose path refuses it (see gate.check.run allow_bulk).
 INTERNAL_OPS = {"bulk_insert"}
-ALL_OPS = SCHEMA_OPS | DATA_OPS
-DESTRUCTIVE_OPS = {"drop_column", "drop_table", "drop_index", "drop_constraint"}
+# Database-level ops: one per change, never mixed with table or data ops.
+DATABASE_OPS = {"create_schema", "rename_schema", "drop_schema"}
+ALL_OPS = SCHEMA_OPS | DATA_OPS | DATABASE_OPS
+DESTRUCTIVE_OPS = {"drop_column", "drop_table", "drop_index", "drop_constraint", "drop_schema"}
+
+SCHEMA_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}\Z")
+RESERVED_SCHEMAS = frozenset({"singularity", "public", "information_schema"})
+
+
+def valid_schema_name(name) -> str | None:
+    """Return an error message when `name` cannot be a managed schema name, else None."""
+    if not isinstance(name, str) or not SCHEMA_NAME_RE.match(name):
+        return (f"schema name {name!r} must match ^[a-z][a-z0-9_]{{0,62}}$ "
+                "(lowercase letters, digits and underscores, starting with a letter)")
+    if name in RESERVED_SCHEMAS or name.startswith("pg_"):
+        return f"schema name {name!r} is reserved (singularity, public, information_schema and pg_* are refused)"
+    return None
 
 SCALAR = (str, int, float, bool, type(None))
 
@@ -317,6 +332,25 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
                     errs.append(f"{where}: duplicate column names")
             if "comment" in op and not isinstance(op["comment"], str):
                 errs.append(f"{where}: comment must be text")
+        elif kind == "create_schema":
+            keys("name", "comment")
+            msg = valid_schema_name(op.get("name"))
+            if msg:
+                errs.append(f"{where}: {msg}")
+            if "comment" in op and not isinstance(op["comment"], str):
+                errs.append(f"{where}: comment must be text")
+        elif kind == "rename_schema":
+            keys("schema", "new_name")
+            for key in ("schema", "new_name"):
+                msg = valid_schema_name(op.get(key))
+                if msg:
+                    errs.append(f"{where}: {key}: {msg}")
+        elif kind == "drop_schema":
+            keys("schema", "reason")
+            msg = valid_schema_name(op.get("schema"))
+            if msg:
+                errs.append(f"{where}: schema: {msg}")
+            _reason(op, errs, where)
         elif kind == "add_column":
             keys("table", "column")
             _ident(op.get("table"), "table", errs, where)
@@ -456,6 +490,11 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
         if extra:
             errs.append(f"{where}: unknown keys {sorted(extra)}")
 
+    kinds = {op.get("op") for op in raw if isinstance(op, dict)}
+    if kinds & DATABASE_OPS and (len(raw) > 1):
+        errs.append("schema operations (create_schema, rename_schema, drop_schema) must be proposed alone, "
+                    "one per change, not mixed with other operations")
+
     if errs:
         raise OpError(errs)
     return raw
@@ -463,12 +502,14 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
 
 def kind_of(ops: list[dict]) -> str:
     """'schema' if any operation changes structure, else 'data'."""
-    return "schema" if any(o["op"] in SCHEMA_OPS for o in ops) else "data"
+    return "schema" if any(o["op"] in SCHEMA_OPS or o["op"] in DATABASE_OPS for o in ops) else "data"
 
 
 def affected_tables(ops: list[dict]) -> list[str]:
     out: set[str] = set()
     for o in ops:
+        if o["op"] in DATABASE_OPS:
+            continue
         if o["op"] == "create_table":
             out.add(o["name"])
         elif o["op"] == "rename_table":

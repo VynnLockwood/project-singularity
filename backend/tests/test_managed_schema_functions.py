@@ -179,4 +179,6 @@ def test_master_owner_in_scratch_db(db):
         owner = c.execute(
             "SELECT r.rolname FROM pg_namespace n JOIN pg_roles r ON r.oid=n.nspowner WHERE nspname='master'"
         ).fetchone()[0]
-    print("master owner:", owner)
+    # Scratch DBs are built by the init script as the superuser; the rw role owns managed
+    # schemas it creates later, not master itself.
+    assert owner != "singularity_master_rw"
