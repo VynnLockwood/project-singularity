@@ -8,7 +8,9 @@ from __future__ import annotations
 import re
 
 import psycopg
+from psycopg import sql
 
+from . import introspect
 from .conn import ro_connection
 from .util import jsonable
 
@@ -19,7 +21,9 @@ class QueryError(Exception):
     pass
 
 
-def run_select(text: str, *, limit: int = 500, timeout_ms: int = 5000) -> dict:
+def run_select(text: str, *, limit: int = 500, timeout_ms: int = 5000,
+               schema: str = "master") -> dict:
+    introspect.require_managed(schema)
     if not isinstance(text, str) or not _START.match(text):
         raise QueryError("only SELECT queries are allowed")
     body = text.strip().rstrip(";").strip()
@@ -30,7 +34,7 @@ def run_select(text: str, *, limit: int = 500, timeout_ms: int = 5000) -> dict:
         with ro_connection() as conn:
             conn.execute("SET TRANSACTION READ ONLY")
             conn.execute(f"SET LOCAL statement_timeout = {int(timeout_ms)}")
-            conn.execute("SET LOCAL search_path = master")
+            conn.execute(sql.SQL("SET LOCAL search_path = {}").format(sql.Identifier(schema)))
             cur = conn.execute(body)
             if cur.description is None:
                 raise QueryError("query returned no result set")

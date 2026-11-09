@@ -26,8 +26,11 @@ def _engine():
     return singularity_engine
 
 
-def _describe(table: str) -> dict:
-    d = introspect.describe_table(table)
+def _describe(table: str, schema: str = "master") -> dict:
+    try:
+        d = introspect.describe_table(table, schema)
+    except introspect.UnknownSchema as exc:
+        raise DuplicateError(str(exc), 400) from exc
     if d is None:
         raise DuplicateError("table not found", 404)
     return d
@@ -46,8 +49,9 @@ def default_fields(columns: dict, skip: set[str] = frozenset()) -> list[str]:
     return [label] if label else []
 
 
-def group_key(table: str, ids: list[int]) -> str:
-    return hashlib.sha256(f"{table}:{','.join(map(str, sorted(ids)))}".encode()).hexdigest()
+def group_key(table: str, ids: list[int], schema: str = "master") -> str:
+    prefix = table if schema == "master" else f"{schema}.{table}"  # master keys unchanged
+    return hashlib.sha256(f"{prefix}:{','.join(map(str, sorted(ids)))}".encode()).hexdigest()
 
 
 def audit_columns(described: dict) -> set[str]:
@@ -56,8 +60,9 @@ def audit_columns(described: dict) -> set[str]:
     return roles.hidden_columns() | {c for r, c in role_cols.items() if r != "primary_key"}
 
 
-def scan(table: str, user, *, fields: list[str] | None = None, threshold: float | None = None) -> dict:
-    d = _describe(table)
+def scan(table: str, user, *, fields: list[str] | None = None, threshold: float | None = None,
+         schema: str = "master") -> dict:
+    d = _describe(table, schema)
     columns = {c["name"]: c for c in d["columns"]}
     role_cols = roles.roles_of(d)
     pk = role_cols.get("primary_key")
@@ -78,7 +83,7 @@ def scan(table: str, user, *, fields: list[str] | None = None, threshold: float 
     active = role_cols.get("is_active")
     q = sql.SQL("SELECT {pk} AS pk, {cols} FROM {t}{w} ORDER BY {pk} LIMIT {n}").format(
         pk=sql.Identifier(pk),
-        cols=sql.SQL(", ").join(sql.Identifier(f) for f in fields), t=sql.Identifier("master", table),
+        cols=sql.SQL(", ").join(sql.Identifier(f) for f in fields), t=sql.Identifier(schema, table),
         w=sql.SQL(" WHERE {} IS DISTINCT FROM false").format(sql.Identifier(active)) if active else sql.SQL(""),
         n=sql.Literal(max_rows + 1))
     with ro_connection() as conn:
@@ -89,21 +94,21 @@ def scan(table: str, user, *, fields: list[str] | None = None, threshold: float 
 
     found = _engine().find_duplicates([(r["pk"], [r[f] or "" for f in fields]) for r in data], float(threshold))
 
-    existing = {g.key: g for g in DuplicateGroup.objects.filter(table_name=table)}
+    existing = {g.key: g for g in DuplicateGroup.objects.filter(schema=schema, table_name=table)}
     keep, created = set(), 0
     for ids, score in found:
-        key = group_key(table, ids)
+        key = group_key(table, ids, schema)
         keep.add(key)
         g = existing.get(key)
         if g is None:
-            DuplicateGroup.objects.create(table_name=table, fields=fields, key=key, member_ids=ids, score=score)
+            DuplicateGroup.objects.create(schema=schema, table_name=table, fields=fields, key=key, member_ids=ids, score=score)
             created += 1
         else:
             g.score, g.fields = score, fields
             g.save(update_fields=["score", "fields"])
     stale = [g.pk for k, g in existing.items() if k not in keep]
     DuplicateGroup.objects.filter(pk__in=stale).delete()
-    return {"table": table, "scanned": len(data), "truncated": truncated, "groups": len(found),
+    return {"schema": schema, "table": table, "scanned": len(data), "truncated": truncated, "groups": len(found),
             "new": created, "removed": len(stale), "fields": fields}
 
 
@@ -118,28 +123,28 @@ def state(g: DuplicateGroup) -> str:
 
 
 def summary(g: DuplicateGroup) -> dict:
-    return {"id": g.pk, "table": g.table_name, "fields": g.fields, "memberIds": g.member_ids,
+    return {"id": g.pk, "schema": g.schema, "table": g.table_name, "fields": g.fields, "memberIds": g.member_ids,
             "score": round(g.score, 3), "status": state(g), "detectedAt": g.detected_at.isoformat(),
             "mergeChange": g.merge_change_id}
 
 
 def detail(g: DuplicateGroup) -> dict:
-    d = _describe(g.table_name)
-    pk = _table_pk(g.table_name)
+    d = _describe(g.table_name, g.schema)
+    pk = _table_pk(g.table_name, g.schema)
     present = {c["name"] for c in d["columns"]}
     drop = audit_columns(d) & present
     q = sql.SQL("SELECT * FROM {t} WHERE {pk} = ANY(%s) ORDER BY {pk}").format(
-        t=sql.Identifier("master", g.table_name), pk=sql.Identifier(pk))
+        t=sql.Identifier(g.schema, g.table_name), pk=sql.Identifier(pk))
     with ro_connection() as conn:
         conn.execute("SET TRANSACTION READ ONLY")
         members = [{k: jsonable(v) for k, v in r.items() if k not in drop} for r in conn.execute(q, (g.member_ids,)).fetchall()]
-    refs = [r for r in introspect.graph()["relations"] if r["to"]["table"] == g.table_name]
+    refs = [r for r in introspect.graph(g.schema)["relations"] if r["to"]["table"] == g.table_name]
     return {**summary(g), "members": members, "primaryKey": pk, "hiddenColumns": sorted(drop),
             "referencedBy": [{"table": r["from"]["table"], "column": r["from"]["column"]} for r in refs]}
 
 
-def _table_pk(table: str) -> str:
-    d = _describe(table)
+def _table_pk(table: str, schema: str = "master") -> str:
+    d = _describe(table, schema)
     pk = roles.roles_of(d).get("primary_key")
     if pk is None:
         raise DuplicateError("this table has no primary key column")
@@ -150,9 +155,9 @@ def merge_operations(g: DuplicateGroup, survivor_id: int) -> list[dict]:
     if survivor_id not in g.member_ids:
         raise DuplicateError("the survivor must be one of the group's records")
     losers = [i for i in g.member_ids if i != survivor_id]
-    pk = _table_pk(g.table_name)
+    pk = _table_pk(g.table_name, g.schema)
     ops = []
-    for r in introspect.graph()["relations"]:
+    for r in introspect.graph(g.schema)["relations"]:
         if r["to"]["table"] == g.table_name and r["to"]["column"] == pk:
             ops.append({"op": "update_rows", "table": r["from"]["table"],
                         "where": {r["from"]["column"]: losers if len(losers) > 1 else losers[0]},
@@ -167,7 +172,7 @@ def propose_merge(g: DuplicateGroup, survivor_id: int, user) -> Change:
     ops = merge_operations(g, survivor_id)
     try:
         change = changes.propose(user, ops, source="web",
-                                 prompt=f"Merge duplicates in {g.table_name}: keep #{survivor_id}")
+                                 prompt=f"Merge duplicates in {g.table_name}: keep #{survivor_id}", schema=g.schema)
     except changes.ChangeError as exc:
         raise DuplicateError(exc.message, 403 if exc.code == "forbidden" else 400) from exc
     g.merge_change = change

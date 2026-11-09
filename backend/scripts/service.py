@@ -25,16 +25,18 @@ def upload(user, name: str, data: bytes) -> Script:
     return storage.save(user, name, data)
 
 
-def validate(user, script_id: int, mapping: dict | None) -> dict:
+def validate(user, script_id: int, mapping: dict | None, schema: str = "master") -> dict:
     _require_edit(user)
     script = Script.objects.filter(pk=script_id).first()
     if script is None:
         raise storage.ScriptError(f"script #{script_id} does not exist")
-    return validate_mod.validate(script, mapping)
+    return validate_mod.validate(script, mapping, schema)
 
 
-def submit(user, script_id: int, note: str = ""):
-    """Turn a validated script into a pending Change (script row locked while deciding)."""
+def submit(user, script_id: int, note: str = "", schema: str | None = None):
+    """Turn a validated script into a pending Change (script row locked while deciding).
+
+    The change targets the schema the script was validated against; a different `schema` is refused."""
     _require_edit(user)
     with transaction.atomic():
         script = (Script.objects.select_for_update().filter(pk=script_id).first())
@@ -45,9 +47,13 @@ def submit(user, script_id: int, note: str = ""):
         if script.status != Script.Status.VALIDATED:
             raise storage.ScriptError(
                 f"script #{script.pk} is {script.status}, not validated; validate it first")
+        validated = (script.report or {}).get("schema", "master")
+        if schema is not None and schema != validated:
+            raise storage.ScriptError(
+                f"script #{script.pk} was validated for schema {validated!r}, not {schema!r}; validate it again")
         ops = _bound_ops(script)  # ScriptError when the file is missing/tampered
 
-        change = approvals_service.propose(user, ops, source="script", prompt=note)
+        change = approvals_service.propose(user, ops, source="script", prompt=note, schema=validated)
         script.status = Script.Status.SUBMITTED
         script.change = change
         script.save(update_fields=["status", "change"])

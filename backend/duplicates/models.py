@@ -9,6 +9,7 @@ class DuplicateGroup(models.Model):
         OPEN = "open"
         DISMISSED = "dismissed"  # a person said "not duplicates"; stays dismissed while the same group is found
 
+    schema = models.CharField(max_length=63, default="master")
     table_name = models.CharField(max_length=63, db_index=True)
     fields = models.JSONField(default=list)       # the columns that were compared
     key = models.CharField(max_length=64)         # hash of table + member ids: the same group keeps its identity across scans
@@ -21,5 +22,5 @@ class DuplicateGroup(models.Model):
 
     class Meta:
         db_table = "duplicate_groups"
-        constraints = [models.UniqueConstraint(fields=["table_name", "key"], name="duplicateGroupUnique")]
+        constraints = [models.UniqueConstraint(fields=["schema", "table_name", "key"], name="duplicateGroupUnique")]
         ordering = ["-score", "id"]

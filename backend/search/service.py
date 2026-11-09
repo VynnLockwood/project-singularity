@@ -36,7 +36,7 @@ def search(query: str, top_k: int | None = None) -> dict:
             .annotate(name_lower=Lower(own_name), cos=cos, sim=sim)
             .annotate(score=score).order_by("-score")[:k])
     results = [{
-        "kind": r.kind, "table": r.table_name, "column": r.column_name or None,
+        "schema": r.schema, "kind": r.kind, "table": r.table_name, "column": r.column_name or None,
         # honest confidence: a strong meaning match or a strong name match, whichever is higher
         "confidence": round(max(0.0, min(1.0, max(r.cos, r.sim, 1.0 if r.name_lower == squashed else 0.0))), 3),
         "description": r.content,
