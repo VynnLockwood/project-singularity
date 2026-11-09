@@ -5,6 +5,7 @@ import {
   ApiError, getSettings, listRules, listUsers, rollbackRule, ruleVersions, saveSettings, setUserRole, updateRule,
   type Me, type Rule, type RuleVersion, type SettingsPayload, type Tunable,
 } from "@/lib/api";
+import { ChatModelSettings } from "@/components/ChatModelSettings";
 import { INTENSITY_EVENT, LEVELS, readIntensity, writeIntensity, type Intensity } from "@/lib/cosmos";
 
 type Section = "quality" | "rules" | "team";
@@ -28,6 +29,10 @@ export function QualitySettings({ canEdit }: { canEdit: boolean }) {
 
   const items = data.settings;
   const chat = items.filter((t) => t.key.startsWith("chat."));
+  const CHAT_MANAGED = ["chat.provider", "chat.models", "chat.defaultModel"];
+  const chatProvider = items.find((t) => t.key === "chat.provider");
+  const chatModels = items.find((t) => t.key === "chat.models");
+  const chatDefault = items.find((t) => t.key === "chat.defaultModel");
   const keys = Object.entries(data.keySet);
   const dirty = Object.keys(draft);
   const save = async () => {
@@ -78,18 +83,24 @@ export function QualitySettings({ canEdit }: { canEdit: boolean }) {
       </ul>
       {(chat.length > 0 || keys.length > 0) && (
         <ul className="settings-list" aria-label="Chat">
-          {rows(chat)}
-          <li>
-            <div>
-              <strong>Chat provider keys</strong>
-              <p className="muted small">Read from the server environment. Only whether a key exists is shown here — never its value, and there is nothing to type in.</p>
-            </div>
-            <div className="setting-input">
-              {keys.map(([provider, isSet]) => (
-                <span key={provider} className="muted small" aria-label={`${provider} API key`}>{provider}: {isSet ? "set" : "missing"}</span>
-              ))}
-            </div>
-          </li>
+          {chatProvider && chatModels && chatDefault && (
+            <ChatModelSettings provider={chatProvider} models={chatModels} defaultModel={chatDefault}
+              keySet={data.keySet} canEdit={canEdit} onSaved={(p) => { setData(p); setDraft({}); }} />
+          )}
+          {rows(chat.filter((t) => !CHAT_MANAGED.includes(t.key)))}
+          {!(chatProvider && chatModels && chatDefault) && (
+            <li>
+              <div>
+                <strong>Chat provider keys</strong>
+                <p className="muted small">Read from the server environment. Only whether a key exists is shown here — never its value, and there is nothing to type in.</p>
+              </div>
+              <div className="setting-input">
+                {keys.map(([provider, isSet]) => (
+                  <span key={provider} className="muted small" aria-label={`${provider} API key`}>{provider}: {isSet ? "set" : "missing"}</span>
+                ))}
+              </div>
+            </li>
+          )}
         </ul>
       )}
       {canEdit && <button className="button" disabled={dirty.length === 0} onClick={save}>Save changes</button>}

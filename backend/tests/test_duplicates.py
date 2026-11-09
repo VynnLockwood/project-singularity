@@ -135,6 +135,27 @@ def test_detail_shows_member_records_and_who_points_at_them(data):
     assert api().get("/api/duplicates/99999").status_code == 404
 
 
+def test_detail_hides_audit_columns_but_keeps_the_primary_key(approver):
+    apply(approver, [{"op": "create_table", "name": "vendor", "columns": [
+        {"name": "name", "type": "text"}, {"name": "created_at", "type": "timestamptz"},
+        {"name": "updated_at", "type": "timestamptz"}, {"name": "created_by", "type": "text"},
+        {"name": "is_active", "type": "boolean"}]}])
+    apply(approver, [{"op": "insert_rows", "table": "vendor", "rows": [{"name": "Acme"}, {"name": "Acme"}]}])
+    g = DuplicateGroup.objects.create(table_name="vendor", fields=["name"], key="k", member_ids=[1, 2], score=1.0)
+    d = api(Role.VIEWER).get(f"/api/duplicates/{g.pk}").json()
+    for m in d["members"]:
+        assert set(m) == {"vendor_id", "name"}
+    assert d["primaryKey"] == "vendor_id"
+    assert d["hiddenColumns"] == ["created_at", "created_by", "is_active", "updated_at"]
+
+
+def test_detail_keeps_every_data_column(data):
+    g = DuplicateGroup.objects.create(table_name="customer", fields=["name"], key="k2", member_ids=[1, 2, 7], score=1.0)
+    d = api(Role.VIEWER).get(f"/api/duplicates/{g.pk}").json()
+    assert set(d["members"][0]) == {"customer_id", "customer_code", "name"}
+    assert set(d["hiddenColumns"]) == {"created_at", "updated_at", "created_by", "is_active"}
+
+
 # ---- permissions ----------------------------------------------------------------
 
 def test_viewers_can_look_but_not_change_anything(data):

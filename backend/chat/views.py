@@ -6,8 +6,8 @@ from approvals.models import Change
 from config.siconfig import get_config
 
 from . import orchestrator
+from .errors import ChatError
 from .models import Conversation, Message
-from .openrouter import ChatError
 
 CHAT_STATUS = {"not_configured": 503, "unavailable": 502, "provider_error": 502, "rate_limited": 429}
 
@@ -37,7 +37,7 @@ def _summary(c):
 @endpoint("GET")
 def models(request):
     cfg = get_config()["chat"]
-    return JsonResponse({"default": cfg["defaultModel"], "allowed": cfg["allowedModels"]})
+    return JsonResponse({"default": cfg["defaultModel"], "allowed": cfg["models"]})
 
 
 @endpoint(["GET", "POST"])
@@ -47,8 +47,7 @@ def conversations(request):
         return JsonResponse({"conversations": [_summary(c) for c in items]})
     cfg = get_config()["chat"]
     model = request.json.get("model") or cfg["defaultModel"]
-    allowed = set(cfg["allowedModels"]) | ({cfg["defaultModel"]} if cfg["defaultModel"] else set())
-    if not model or model not in allowed:
+    if not model or model not in cfg["models"]:
         return error("model is not allowed", 400)
     conv = Conversation.objects.create(user=request.user, model=model)
     return JsonResponse(_summary(conv), status=201)

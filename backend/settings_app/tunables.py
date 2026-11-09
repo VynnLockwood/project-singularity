@@ -1,5 +1,6 @@
 """The quality knobs approvers can change at runtime (everything else stays in singularity.yaml)."""
 import os
+import re
 from audit.models import record
 from config.siconfig import _yaml_config, get_config, invalidate_overrides
 
@@ -24,15 +25,40 @@ TUNABLES = {
     "limits.maxOpsPerScript": ("Operations per script", "The most operations one validated script may produce.", "int", 1, 100000),
     "limits.maxInlineScriptBytes": ("Inline script size (bytes)", "The largest script that may be pasted inline rather than uploaded.", "int", 1024, 1048576),
     "chat.provider": ("Chat provider", "Which service answers chats. Its API key comes from the server environment and is never shown here.", "choice", None, None),
-    "chat.defaultModel": ("Default chat model", "The model new chats start with. Choose from the models allowed in singularity.yaml.", "model", None, None),
+    "chat.defaultModel": ("Default chat model", "The model new chats start with. It must be one of the chat models.", "model", None, None),
+    "chat.models": ("Chat models", "Models the chat may use. Add or remove ids here; no deploy needed.", "models", None, None),
     "chat.maxToolRounds": ("Tool rounds per message", "How many tool calls the assistant may chain for one message.", "int", 1, 20),
     "chat.messagesPerMinute": ("Messages per minute", "Chat rate limit per person.", "int", 1, 120),
     "backups.retentionDays": ("Backup retention (days)", "How long schema-change backups are kept.", "int", 1, 365),
 }
 
 # kind -> allowed values (anything else must be a number)
-OPTIONS = {"model": lambda: _yaml_config()["chat"]["allowedModels"],
+OPTIONS = {"model": lambda: get_config()["chat"]["models"],
            "choice": lambda: list(PROVIDER_KEYS)}
+
+
+MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,119}\Z")
+MAX_MODELS = 50
+DANGLING = "default model must stay in the list"
+
+
+def validate_models(models: object) -> list[str]:
+    """The cleaned model list, or ValueError with a message an approver can act on."""
+    if not isinstance(models, list):
+        raise ValueError("Chat models: must be a list of model ids")
+    if not models:
+        raise ValueError("Chat models: keep at least one model")
+    if len(models) > MAX_MODELS:
+        raise ValueError(f"Chat models: at most {MAX_MODELS} models")
+    seen = set()
+    for m in models:
+        if not isinstance(m, str) or not MODEL_ID_RE.match(m):
+            raise ValueError(f"Chat models: {m!r} is not a valid model id "
+                             "(letters, digits and . _ : / @ + - only, up to 120 characters)")
+        if m in seen:
+            raise ValueError(f"Chat models: {m!r} is listed twice")
+        seen.add(m)
+    return list(models)
 
 
 class TunableError(Exception):
@@ -42,6 +68,8 @@ class TunableError(Exception):
 
 
 def _default(key):
+    if key == "chat.models":
+        return list(_yaml_config()["chat"]["models"])
     section, name = key.split(".")
     return _yaml_config()[section][name]
 
@@ -67,6 +95,8 @@ def describe() -> list[dict]:
 
 def _clean(key, value):
     label, _, kind, lo, hi = TUNABLES[key]
+    if kind == "models":
+        return validate_models(value)
     if kind in OPTIONS:
         if value not in OPTIONS[kind]():
             raise ValueError(f"{label}: choose one of the allowed {kind}s")
@@ -99,12 +129,26 @@ def apply(actor, changes: dict) -> list[dict]:
             clean[key] = None
             continue
         try:
-            clean[key] = _clean(key, value)
+            if key == "chat.defaultModel":
+                if not isinstance(value, str) or not value:
+                    raise ValueError("Default chat model: choose one of the allowed models")
+                clean[key] = value
+            else:
+                clean[key] = _clean(key, value)
         except ValueError as exc:
             errors.append(str(exc))
+    before = get_config()
+    bad_models = "chat.models" in changes and "chat.models" not in clean  # already reported
+    if not bad_models and ("chat.models" in clean or "chat.defaultModel" in changes):
+        models = (clean["chat.models"] if clean.get("chat.models") is not None else
+                  _default("chat.models") if "chat.models" in clean else before["chat"]["models"])
+        default = (clean["chat.defaultModel"] if clean.get("chat.defaultModel") is not None else
+                   _default("chat.defaultModel") if "chat.defaultModel" in changes else before["chat"]["defaultModel"])
+        if default and default not in models:
+            errors.append("Default chat model: choose one of the allowed models"
+                          if "chat.defaultModel" in clean and clean["chat.defaultModel"] is not None else DANGLING)
     if errors:
         raise TunableError(errors)
-    before = get_config()
     for key, value in clean.items():
         if value is None:
             Setting.objects.filter(key=key).delete()

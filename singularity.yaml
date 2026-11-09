@@ -24,6 +24,7 @@ embedding:
 chat:
   provider: openrouter
   defaultModel: anthropic/claude-sonnet-4.5
+  # allowedModels seeds the site's model list (Settings > chat models) until an approver changes it there.
   allowedModels:
     - anthropic/claude-sonnet-4.5
 

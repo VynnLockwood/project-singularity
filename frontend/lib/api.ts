@@ -226,6 +226,8 @@ export interface DuplicateSummary {
 export interface DuplicateDetail extends DuplicateSummary {
   /** primary key column of the table; older servers send none, meaning "id" */
   primaryKey?: string;
+  /** audit columns the server left out of members (older servers send none) */
+  hiddenColumns?: string[];
   members: Record<string, unknown>[];
   referencedBy: { table: string; column: string }[];
 }
@@ -265,15 +267,18 @@ export const revokeToken = (id: number) => call<{ ok: boolean }>("DELETE", `/mcp
 
 // ---- settings: quality knobs, rules, team -------------------------------------
 
+/** Same pattern as the server (settings_app/tunables.py) for a chat model id. */
+export const CHAT_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,119}$/;
+export const CHAT_MODELS_MAX = 50;
 export interface Tunable {
   key: string;
   label: string;
   help: string;
-  kind: "int" | "float" | "model" | "choice";
+  kind: "int" | "float" | "model" | "choice" | "models";
   min: number | null;
   max: number | null;
-  default: number | string;
-  value: number | string;
+  default: number | string | string[];
+  value: number | string | string[];
   overridden: boolean;
   options?: string[];
 }
@@ -284,7 +289,7 @@ export interface SettingsPayload {
 }
 export const getSettings = () => call<SettingsPayload>("GET", "/settings");
 /** value null resets a setting to the singularity.yaml default */
-export const saveSettings = (changes: Record<string, number | string | null>) =>
+export const saveSettings = (changes: Record<string, number | string | string[] | null>) =>
   call<SettingsPayload>("PATCH", "/settings", changes);
 
 export interface Rule {

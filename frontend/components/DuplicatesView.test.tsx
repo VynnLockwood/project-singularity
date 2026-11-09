@@ -49,6 +49,17 @@ describe("DuplicatesView", () => {
     expect(await screen.findByText(/Scanned 40 records/)).toBeInTheDocument();
   });
 
+  it("hides the columns the server lists as hidden", async () => {
+    await setup();
+    const stale = { ...detail, primaryKey: "id", hiddenColumns: ["created_at"],
+      members: [{ id: 1, name: "A", created_at: "2026-01-01" }, { id: 2, name: "B", created_at: "2026-01-02" }] };
+    const api = await import("@/lib/api");
+    (api.getDuplicate as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(stale);
+    fireEvent.click(await screen.findByText(/2 records · 96%/));
+    await screen.findByLabelText("keep record 2");
+    expect(screen.getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["keep", "id", "name"]);
+  });
+
   it("merges into the chosen survivor and hands the change up", async () => {
     const { mergeDuplicate, onProposed } = await setup();
     fireEvent.click(await screen.findByText(/2 records · 96%/));

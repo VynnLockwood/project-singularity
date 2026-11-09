@@ -7,6 +7,7 @@ const tunables: Tunable[] = [
   { key: "search.minConfidence", label: "Search confidence", help: "h", kind: "float", min: 0, max: 1, default: 0.8, value: 0.8, overridden: false },
   { key: "search.topK", label: "Search results", help: "h", kind: "int", min: 1, max: 20, default: 5, value: 9, overridden: true },
   { key: "chat.provider", label: "Chat provider", help: "h", kind: "choice", min: null, max: null, default: "openrouter", value: "openrouter", overridden: false, options: ["openrouter", "opencode"] },
+  { key: "chat.models", label: "Chat models", help: "h", kind: "models", min: null, max: null, default: ["a/b", "c/d"], value: ["a/b", "c/d"], overridden: false },
   { key: "chat.defaultModel", label: "Default chat model", help: "h", kind: "model", min: null, max: null, default: "a/b", value: "a/b", overridden: false, options: ["a/b", "c/d"] },
 ];
 const rule: Rule = { id: 4, name: "noFloat", type: "forbidden_type", params: { types: ["real"] }, severity: "block", enabled: true, description: "No floats.", version: 2 };
@@ -49,15 +50,15 @@ describe("SettingsView", () => {
 
   it("picks the default model from the allowed list", async () => {
     const { saveSettings } = await setup("approver");
-    fireEvent.change(await screen.findByLabelText("Default chat model"), { target: { value: "c/d" } });
-    fireEvent.click(screen.getByText("Save changes"));
+    fireEvent.click(await screen.findByLabelText("Use c/d as default"));
+    fireEvent.click(screen.getByText("Save"));
     await waitFor(() => expect(saveSettings).toHaveBeenCalledWith({ "chat.defaultModel": "c/d" }));
   });
 
   it("lets an approver pick a provider and saves it as a string", async () => {
     const { saveSettings } = await setup("approver");
     fireEvent.change(await screen.findByLabelText("Chat provider"), { target: { value: "opencode" } });
-    fireEvent.click(screen.getByText("Save changes"));
+    fireEvent.click(screen.getByText("Save"));
     await waitFor(() => expect(saveSettings).toHaveBeenCalledWith({ "chat.provider": "opencode" }));
     expect(await screen.findByText(/Saved/)).toBeInTheDocument();
   });
@@ -71,7 +72,8 @@ describe("SettingsView", () => {
   it("is read-only for editors and hides the Team section", async () => {
     await setup("editor");
     expect(await screen.findByLabelText("Search confidence")).toBeDisabled();
-    expect(screen.getByLabelText("Chat provider")).toBeDisabled();
+    expect(await screen.findByLabelText("Chat provider")).toBeDisabled();
+    expect(screen.getByLabelText("Add chat model")).toBeDisabled();
     expect(screen.queryByText("Save changes")).toBeNull();
     expect(screen.queryByText("Team")).toBeNull();
   });

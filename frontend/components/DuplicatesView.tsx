@@ -85,7 +85,7 @@ export function DuplicatesView({ me, refreshKey, onProposed }: Props) {
     });
 
   const visible = groups.filter((g) => showAll || g.status === "open" || g.status === "merge_pending");
-  const columns = open ? Object.keys(open.members[0] ?? {}).filter((c) => !["createdAt", "updatedAt", "createdBy"].includes(c)) : [];
+  const columns = open ? Object.keys(open.members[0] ?? {}).filter((c) => !(open.hiddenColumns ?? []).includes(c)) : [];
 
   return (
     <div className="duplicates">

@@ -8,9 +8,9 @@ from django.utils import timezone
 from config.siconfig import get_config
 from mcp_server import tools as mcp_tools
 
-from . import openrouter
+from . import providers
+from .errors import ChatError
 from .models import Message
-from .openrouter import ChatError
 from .toolspecs import specs_for
 
 log = logging.getLogger(__name__)
@@ -106,7 +106,7 @@ def run_turn(conv, user, text: str) -> list[Message]:
     rounds = get_config()["chat"]["maxToolRounds"]
     specs = specs_for(user)
     for _ in range(rounds):
-        reply = openrouter.complete(history(conv), specs, conv.model)
+        reply = providers.complete(get_config()["chat"]["provider"], history(conv), specs, conv.model)
         added.append(Message.objects.create(
             conversation=conv, role=Message.Role.ASSISTANT, content=reply["content"], tool_calls=reply["tool_calls"]))
         if not reply["tool_calls"]:
