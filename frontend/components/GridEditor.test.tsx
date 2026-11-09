@@ -148,6 +148,18 @@ describe("GridEditor", () => {
     expect(screen.queryByText("Acme")).toBeNull();
   });
 
+  it("the labels toggle also drives editable FK cells", async () => {
+    await setup("editor", page(ROWS));
+    // editor => FK renders as <select>; its displayed text must obey "show labels" too
+    const fk = () => screen.getByLabelText("customerId 1") as HTMLSelectElement;
+    await waitFor(() => expect(fk().tagName).toBe("SELECT"), { timeout: 4000 }); // options load async
+    await waitFor(() => expect(fk().options[fk().selectedIndex].textContent).toBe("Acme"));
+    expect(fk().value).toBe("10"); // option VALUES stay ids, so editing still saves the FK
+    fireEvent.click(screen.getByRole("checkbox", { name: /show labels/i }));
+    expect(fk().options[fk().selectedIndex].textContent).toBe("10");
+    expect(fk().value).toBe("10");
+  });
+
   it("pages forward", async () => {
     const { getRows } = await setup("editor", page(ROWS, 120));
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
