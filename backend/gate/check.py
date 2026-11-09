@@ -29,14 +29,6 @@ class CheckResult:
         }
 
 
-def _describe_database_op(o: dict) -> str:
-    if o["op"] == "create_schema":
-        return f"create schema {o['name']}"
-    if o["op"] == "rename_schema":
-        return f"rename schema {o['schema']} to {o['new_name']}"
-    return f"drop schema {o['schema']}"
-
-
 def _validate_database_ops(ops: list[dict], managed: dict[str, int], max_schemas: int) -> list[str]:
     """Validate schema-level ops against the managed schemas (name -> table count)."""
     errors: list[str] = []
@@ -118,12 +110,9 @@ def run(raw_ops, schema_state: dict, rule_list: list[dict], *, actor: str | None
         errors, _ = state_mod.validate(ops_out, schema_state, conv)
     errors = pre_errors + errors
     res = CheckResult(ok=False, operations=ops_out, errors=errors, violations=violations, auto_added=auto)
-    if not errors and any(o["op"] in operations.DATABASE_OPS for o in ops_out):
-        # SQL rendering for database ops arrives with sqlgen (Task 4); the diff is plain text.
-        res.diff = [_describe_database_op(o) for o in ops_out]
-    elif not errors:
+    if not errors:
         try:
-            res.sql = sqlgen.render(ops_out, schema_state, actor, conv)
+            res.sql = sqlgen.render(ops_out, schema_state, actor, conv, schema)
             res.diff = [sqlgen.describe(o) for o in ops_out]
         except sqlgen.UnsafeOp as exc:
             res.errors.append(str(exc))
