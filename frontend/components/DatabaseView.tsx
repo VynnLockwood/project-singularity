@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { getGraph, getSchemas, type Change, type Me, type SchemaGraph, type SchemaInfo } from "@/lib/api";
 import { SchemaView } from "./SchemaView";
+import { ExportMenu } from "./ExportMenu";
 
 export type DbTab = "fields" | "relations" | "erd" | "overview";
 
@@ -17,7 +18,6 @@ export function DatabaseView({ me, refreshKey }: {
   me: Me; live: Change[]; refreshKey: number;
   onProposed: (c: Change) => void; onAskAssistant: (text: string) => void;
 }) {
-  void me;
   const [schemas, setSchemas] = useState<SchemaInfo[] | null>(null);
   const [schemasError, setSchemasError] = useState("");
   const [schema, setSchema] = useState("master");
@@ -101,7 +101,10 @@ export function DatabaseView({ me, refreshKey }: {
           )}
       </nav>
       <section className="db-main">
-        <h2>{schema}{table ? <> / {table}</> : null}</h2>
+        <div className="grid-bar">
+          <h2>{schema}{table ? <> / {table}</> : null}</h2>
+          <ExportMenu schema={schema} canExportData={me.role !== "viewer"} />
+        </div>
         <div className="db-tabs" role="tablist" aria-label="Database sections">
           {TABS.map((t) => (
             <button key={t.id} role="tab" className="tab" aria-selected={tab === t.id} data-active={tab === t.id} onClick={() => setTab(t.id)}>{t.label}</button>
