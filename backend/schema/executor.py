@@ -35,7 +35,7 @@ def _where_sql(where: dict):
 
 
 def _before_rows(conn, table: str, where: dict, cols: list[str], max_rows: int, pk: str,
-                 schema: str = "master") -> list[dict]:
+                 schema: str) -> list[dict]:
     """Rows about to change, each with its primary key under the key "pk"."""
     q = sql.SQL("SELECT {} FROM {} WHERE {} LIMIT {} FOR UPDATE").format(
         sql.SQL(", ").join([sql.SQL("{} AS pk").format(sql.Identifier(pk)), *(sql.Identifier(c) for c in cols)]),
@@ -62,7 +62,7 @@ def _group_updates(table: str, rows: list[dict], cols: list[str], pk: str) -> li
     ]
 
 
-def _col_type(conn, table: str, column: str, schema: str = "master") -> str | None:
+def _col_type(conn, table: str, column: str, schema: str) -> str | None:
     row = conn.execute(
         "SELECT format_type(a.atttypid, a.atttypmod) AS t FROM pg_attribute a "
         "WHERE a.attrelid = format('%%I.%%I', %s::text, %s::text)::regclass AND a.attname = %s AND NOT a.attisdropped",
@@ -71,7 +71,7 @@ def _col_type(conn, table: str, column: str, schema: str = "master") -> str | No
     return row["t"] if row else None
 
 
-def _col_comment(conn, table: str, column: str, schema: str = "master") -> str:
+def _col_comment(conn, table: str, column: str, schema: str) -> str:
     row = conn.execute(
         "SELECT col_description(a.attrelid, a.attnum) AS c FROM pg_attribute a "
         "WHERE a.attrelid = format('%%I.%%I', %s::text, %s::text)::regclass AND a.attname = %s",
@@ -80,7 +80,7 @@ def _col_comment(conn, table: str, column: str, schema: str = "master") -> str:
     return (row["c"] if row else None) or ""
 
 
-def _table_comment(conn, table: str, schema: str = "master") -> str:
+def _table_comment(conn, table: str, schema: str) -> str:
     row = conn.execute(
         "SELECT obj_description(format('%%I.%%I', %s::text, %s::text)::regclass) AS c", (schema, table)
     ).fetchone()
@@ -103,7 +103,7 @@ def _cast(col: sql.Composable, pg_type: str) -> sql.Composable:
     return sql.SQL("NULLIF({}, '')::{}").format(col, sql.SQL(pg_type))
 
 
-def _bulk_insert(conn, op: dict, before: dict, actor: str | None, row_source, schema: str = "master") -> list[dict] | None:
+def _bulk_insert(conn, op: dict, before: dict, actor: str | None, row_source, schema: str) -> list[dict] | None:
     """COPY the rows into a temp table of text columns, then INSERT ... SELECT into the target.
 
     Temp-table columns are exactly op["columns"], in that order, and row_source(op) must yield
@@ -192,13 +192,13 @@ def _bulk_insert(conn, op: dict, before: dict, actor: str | None, row_source, sc
     return None
 
 
-def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_source=None,
-            schema: str = "master"):
+def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_source=None, *,
+            schema: str):
     """Execute one operation; return its reverse op(s) (a list) or None if irreversible."""
     k = op["op"]
     t = op.get("table")
     if k == "bulk_insert":
-        return _bulk_insert(conn, op, before, actor, row_source, schema)
+        return _bulk_insert(conn, op, before, actor, row_source, schema=schema)
 
     # --- capture what we need before changing anything
     prev_type = prev_comment = rows_before = None
@@ -284,7 +284,7 @@ LOCK_TIMEOUT = "5s"
 STATEMENT_TIMEOUT = "120s"
 
 
-def _sequence_states(conn, tables: list[str], schema: str = "master") -> list[dict]:
+def _sequence_states(conn, tables: list[str], schema: str) -> list[dict]:
     """Name, last value and start value of every sequence owned by (serial or identity) one of `tables`."""
     out = []
     for t in tables:
@@ -311,7 +311,7 @@ def _restore_sequences(conn, states: list[dict]) -> None:
             conn.execute("SELECT setval(%s::regclass, %s, true)", (s["name"], s["last_value"]))
 
 
-def _insert_targets(ops: list[dict], state: dict, schema: str = "master") -> list[str]:
+def _insert_targets(ops: list[dict], state: dict, schema: str) -> list[str]:
     """Existing tables that insert_rows / bulk_insert write to (the ones whose sequences a run advances)."""
     seen: list[str] = []
     for op in ops:
@@ -349,7 +349,7 @@ def execute(ops: list[dict], state: dict, actor: str | None, *, max_rows: int = 
                 conn.execute("SAVEPOINT dry_run_ops")
             try:
                 for op, before, stmts in sqlgen.plan(ops, state, actor, Conventions.from_rules(rules), schema):
-                    reverse.append(_run_op(conn, op, before, stmts, max_rows, actor, row_source, schema))
+                    reverse.append(_run_op(conn, op, before, stmts, max_rows, actor, row_source, schema=schema))
                     count += len(stmts) or 1
             except BaseException:
                 if dry_run:

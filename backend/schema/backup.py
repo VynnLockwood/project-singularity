@@ -1,4 +1,4 @@
-"""pg_dump of `master` before every applied schema change (spec section 6)."""
+"""pg_dump of a managed schema before every applied schema change (spec section 6)."""
 from __future__ import annotations
 
 import os
@@ -26,6 +26,8 @@ def backup_master(label: str, retention_days: int = 14) -> Path:
 def backup_schema(schema: str, label: str, retention_days: int = 14) -> Path:
     if not isinstance(schema, str) or not SCHEMA_RE.match(schema):
         raise BackupError(f"invalid schema name {schema!r}")
+    if not isinstance(label, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", label) or ".." in label:
+        raise BackupError(f"invalid backup label {label!r}")
     c = settings.MASTER_DB
     folder = Path(settings.BACKUP_DIR)
     try:

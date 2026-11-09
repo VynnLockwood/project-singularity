@@ -176,3 +176,14 @@ def test_prune_handles_schema_dumps_and_ignores_other_files(tmp_path):
         os.utime(f, (0, 0))
     assert backup.prune(folder, 14) == 1
     assert not old.exists() and stray.exists()
+
+
+def test_backup_rejects_bad_label():
+    for bad in ("../x", "a/b", "", "a b", "x..y"):
+        with pytest.raises(backup.BackupError):
+            backup.backup_schema("master", bad)
+
+
+def test_helpers_require_schema():
+    with pytest.raises(TypeError):
+        executor._insert_targets([], {})
