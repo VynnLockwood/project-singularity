@@ -37,7 +37,7 @@ def _summary(c):
 @endpoint("GET")
 def models(request):
     cfg = get_config()["chat"]
-    return JsonResponse({"default": cfg["defaultModel"], "allowed": cfg["allowedModels"]})
+    return JsonResponse({"default": cfg["defaultModel"], "allowed": cfg["models"]})
 
 
 @endpoint(["GET", "POST"])
@@ -47,8 +47,7 @@ def conversations(request):
         return JsonResponse({"conversations": [_summary(c) for c in items]})
     cfg = get_config()["chat"]
     model = request.json.get("model") or cfg["defaultModel"]
-    allowed = set(cfg["allowedModels"]) | ({cfg["defaultModel"]} if cfg["defaultModel"] else set())
-    if not model or model not in allowed:
+    if not model or model not in cfg["models"]:
         return error("model is not allowed", 400)
     conv = Conversation.objects.create(user=request.user, model=model)
     return JsonResponse(_summary(conv), status=201)

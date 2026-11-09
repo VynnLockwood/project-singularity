@@ -25,7 +25,7 @@ DEFAULTS = {
         "maxInlineScriptBytes": 20480,
     },
     "embedding": {"model": "intfloat/multilingual-e5-small", "dimension": 384},
-    "chat": {"provider": "openrouter", "defaultModel": "", "allowedModels": [], "maxToolRounds": 8,
+    "chat": {"provider": "openrouter", "defaultModel": "", "allowedModels": [], "models": [], "maxToolRounds": 8,
              "messagesPerMinute": 20},
     "search": {"topK": 5, "minConfidence": 0.8, "sampleValues": 5},
     "duplicates": {"threshold": 0.9, "maxRows": 20000},
@@ -59,6 +59,7 @@ def _yaml_config() -> dict:
     cfg = _merge(DEFAULTS, loaded)
     cfg["auth"]["allowedDomains"] = [d.lower() for d in cfg["auth"]["allowedDomains"]]
     cfg["auth"]["seedAdmins"] = [e.lower() for e in cfg["auth"]["seedAdmins"]]
+    cfg["chat"]["models"] = list(cfg["chat"]["allowedModels"])  # seed for the site-managed list
     return cfg
 
 
@@ -91,6 +92,7 @@ def invalidate_overrides() -> None:
 def get_config() -> dict:
     """The file's config with the approvers' runtime overrides applied (a fresh copy each time)."""
     cfg = copy.deepcopy(_yaml_config())
+    cfg["chat"]["models"] = list(cfg["chat"]["allowedModels"])  # seed until chat.models is overridden
     for key, value in overrides().items():
         section, _, name = key.partition(".")
         if name and isinstance(cfg.get(section), dict):
