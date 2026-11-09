@@ -110,6 +110,39 @@ describe("DatabaseView", () => {
     expect(mocks.getGraph).toHaveBeenCalledWith("master");
   });
 
+  describe("New table", () => {
+    it("viewers never see New table, even in an empty database", async () => {
+      await setup({}, 0, viewer);
+      await screen.findByRole("button", { name: "customer" });
+      expect(screen.queryByRole("button", { name: "New table" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "crm (0)" }));
+      await screen.findAllByText("No tables yet.");
+      expect(screen.queryByRole("button", { name: "New table" })).toBeNull();
+    });
+
+    it("editors propose create_table in the selected database, also when it is empty", async () => {
+      const { mocks } = await setup();
+      fireEvent.click(await screen.findByRole("button", { name: "crm (0)" }));
+      await screen.findAllByText("No tables yet.");
+      fireEvent.click(screen.getByRole("button", { name: "New table" }));
+      fireEvent.change(screen.getByLabelText("Table name"), { target: { value: "order" } });
+      fireEvent.change(screen.getByLabelText("Field 1 name"), { target: { value: "id" } });
+      fireEvent.click(screen.getByRole("button", { name: "Review" }));
+      fireEvent.click(screen.getByRole("button", { name: "Propose" }));
+      await waitFor(() => expect(mocks.proposeChange).toHaveBeenCalled());
+      expect(mocks.proposeChange.mock.calls[0][0]).toEqual([{ op: "create_table", name: "order", columns: [{ name: "id", type: "text" }] }]);
+      expect(mocks.proposeChange.mock.calls[0][3]).toBe("crm");
+    });
+
+    it("switching database closes the open New table form", async () => {
+      await setup();
+      fireEvent.click(await screen.findByRole("button", { name: "New table" }));
+      expect(screen.getByLabelText("Table name")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "crm (0)" }));
+      await waitFor(() => expect(screen.queryByLabelText("Table name")).toBeNull());
+    });
+  });
+
   it("viewers see no New database, Rename or Delete", async () => {
     await setup({}, 0, viewer);
     await screen.findByRole("button", { name: "customer" });

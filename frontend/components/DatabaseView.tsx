@@ -6,6 +6,7 @@ import { SchemaView } from "./SchemaView";
 import { NewDatabaseForm } from "./NewDatabaseForm";
 import { ProposeDialog } from "./ProposeDialog";
 import { dropSchemaOp, dropTableOp, renameSchemaOp, renameTableOp, validateName, validateSchemaName } from "@/lib/databaseOps";
+import { NewTableForm } from "./NewTableForm";
 import { FieldsTab } from "./FieldsTab";
 import { ExportMenu } from "./ExportMenu";
 
@@ -30,7 +31,7 @@ export function DatabaseView({ me, live, refreshKey, onProposed }: {
   const [table, setTable] = useState<string | null>(null);
   const [tab, setTab] = useState<DbTab>("overview");
   const [filter, setFilter] = useState("");
-  const [panel, setPanel] = useState<"new" | "rename" | "rename-review" | "drop" | "trename" | "trename-review" | "tdrop" | null>(null);
+  const [panel, setPanel] = useState<"new" | "rename" | "rename-review" | "drop" | "trename" | "trename-review" | "tdrop" | "newtable" | null>(null);
   const [newName, setNewName] = useState("");
   const [target, setTarget] = useState("");
   const seq = useRef(0);
@@ -53,7 +54,7 @@ export function DatabaseView({ me, live, refreshKey, onProposed }: {
     setTable(null);
     setTab((t) => (t === "erd" ? t : "overview"));
     setFilter("");
-    setPanel((p) => (p === "trename" || p === "trename-review" || p === "tdrop" ? null : p));
+    setPanel((p) => (p === "trename" || p === "trename-review" || p === "tdrop" || p === "newtable" ? null : p));
     setSchema(name);
   };
 
@@ -149,6 +150,19 @@ export function DatabaseView({ me, live, refreshKey, onProposed }: {
           )}
         </div>
         <h3>Tables</h3>
+        {canWrite && graph && panel !== "newtable" && (
+          <button className="button" onClick={() => setPanel("newtable")}>New table</button>
+        )}
+        {canWrite && graph && panel === "newtable" && (
+          <NewTableForm
+            key={schema}
+            me={me}
+            schema={schema}
+            tables={graph.tables}
+            onClose={closePanel}
+            onProposed={(c) => onProposed(c)}
+          />
+        )}
         <input aria-label="Filter tables" placeholder="Filter tables" value={filter} onChange={(e) => setFilter(e.target.value)} />
         {graphError ? <p className="problems">{graphError}</p>
           : !graph ? <p className="muted">Loading…</p>
