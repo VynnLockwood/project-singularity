@@ -15,7 +15,7 @@ export function QualitySettings({ canEdit }: { canEdit: boolean }) {
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [msg, setMsg] = useState("");
   const [error, setError] = useState("");
-  const [intensity, setIntensity] = useState<Intensity>("intense");
+  const [intensity, setIntensity] = useState<Intensity>("steady");
   const [reduce, setReduce] = useState(false);
 
   useEffect(() => {
@@ -77,17 +77,17 @@ export function QualitySettings({ canEdit }: { canEdit: boolean }) {
         <li>
           <div>
             <strong>Background animation</strong>
-            <p className="muted small">How heavy the star field behind the app is. Your own browser remembers it; {reduce ? "your system asks for reduced motion, so this stays on reduced." : "reduced draws one still frame."}</p>
+            <p className="muted small">How heavy the star field behind the app is, in five steps from still to supernova. Your own browser remembers it; {reduce ? "your system asks for reduced motion, so this stays on still." : "still draws one frame and nothing else moves."}</p>
           </div>
           <div className="setting-input">
-            <select aria-label="Background animation" value={reduce ? "reduced" : intensity} disabled={reduce}
+            <select aria-label="Background animation" value={reduce ? "still" : intensity} disabled={reduce}
               onChange={(e) => {
                 const v = e.target.value as Intensity;
                 setIntensity(v); writeIntensity(v); dispatchEvent(new Event(INTENSITY_EVENT));
               }}>
               {(Object.keys(LEVELS) as Intensity[]).map((o) => <option key={o}>{o}</option>)}
             </select>
-            <span className="muted small">default intense</span>
+            <span className="muted small">default steady</span>
           </div>
         </li>
       </ul>

@@ -1,7 +1,7 @@
 import { render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Cosmos } from "./Cosmos";
-import type { Intensity } from "@/lib/cosmos";
+import { LEVELS, readIntensity, type Intensity } from "@/lib/cosmos";
 
 /** jsdom has no 2D context; without one Cosmos bails out before it can animate, which would make
  *  every "no rAF" assertion pass for the wrong reason. Stub enough of one to reach the drawing. */
@@ -39,24 +39,36 @@ describe("Cosmos background", () => {
     unmount();
   });
 
-  it("never schedules an animation frame at intensity reduced", async () => {
+  it("never schedules an animation frame at intensity still", async () => {
     motion(false);
-    const { raf, unmount } = await mount("reduced");
+    const { raf, unmount } = await mount("still");
     expect(raf).not.toHaveBeenCalled();
     unmount();
   });
 
-  it("animates at intensity intense", async () => {
+  it("animates at intensity steady", async () => {
     motion(false);
-    const { raf, unmount } = await mount("intense");
+    const { raf, unmount } = await mount("steady");
     expect(raf).toHaveBeenCalled();
     unmount();
   });
 
-  it("forces reduced when the system asks for reduced motion, whatever the pick is", async () => {
+  it("forces still when the system asks for reduced motion, whatever the pick is", async () => {
     motion(true);
-    const { raf, unmount } = await mount("intense");
+    const { raf, unmount } = await mount("supernova");
     expect(raf).not.toHaveBeenCalled();
     unmount();
+  });
+
+  it("offers five tiers including two above steady", async () => {
+    expect(Object.keys(LEVELS)).toEqual(["still", "subtle", "steady", "vivid", "supernova"]);
+  });
+
+  it("migrates a stored legacy level instead of resetting it", async () => {
+    const migrated = { reduced: "still", calm: "subtle", intense: "steady" };
+    for (const [old, expected] of Object.entries(migrated)) {
+      localStorage.setItem("singularity.cosmos_intensity", old);
+      expect(readIntensity()).toBe(expected);
+    }
   });
 });
