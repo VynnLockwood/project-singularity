@@ -103,3 +103,32 @@ def test_chat_models_endpoint_and_create_conversation():
     assert r.status_code == 201
     r = c.post("/api/chat/conversations", data=json.dumps({"model": "nope/m"}), content_type="application/json")
     assert r.status_code == 400
+
+
+@pytest.mark.usefixtures("master")
+def test_site_change_reaches_the_next_chat(monkeypatch):
+    from chat import orchestrator, providers
+    from chat.models import Conversation
+
+    a = user(Role.APPROVER)
+    c = client_for(a)
+    r = c.patch(
+        "/api/settings",
+        data=json.dumps({"chat.provider": "opencode", "chat.models": ["x/y"], "chat.defaultModel": "x/y"}),
+        content_type="application/json",
+    )
+    assert r.status_code == 200, r.content
+    get_config.cache_clear()
+
+    r = c.post("/api/chat/conversations", data="{}", content_type="application/json")
+    assert r.status_code == 201
+    conv = Conversation.objects.get(pk=r.json()["id"])
+    assert conv.model == "x/y"
+
+    seen = []
+    monkeypatch.setitem(
+        providers._CLIENTS, "opencode",
+        lambda m, t, model, **kw: seen.append(model) or {"content": "ok", "tool_calls": []},
+    )
+    added = orchestrator.run_turn(conv, a, "hi")
+    assert seen == ["x/y"] and added[-1].content == "ok"
