@@ -22,7 +22,7 @@ def allowed_schemas() -> list[str]:
 
 
 _TABLES = """
-SELECT c.oid, c.relname AS name, obj_description(c.oid, 'pg_class') AS comment
+SELECT c.oid, c.relname AS name, c.relkind, c.relispartition, obj_description(c.oid, 'pg_class') AS comment
 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = %s AND c.relkind IN ('r', 'p')
 ORDER BY c.relname
@@ -31,7 +31,7 @@ ORDER BY c.relname
 _COLUMNS = """
 SELECT a.attrelid AS rel, a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type,
        NOT a.attnotnull AS nullable, pg_get_expr(d.adbin, d.adrelid) AS "default",
-       a.attidentity AS identity, col_description(a.attrelid, a.attnum) AS comment
+       a.attidentity AS identity, a.attgenerated AS generated, col_description(a.attrelid, a.attnum) AS comment
 FROM pg_attribute a
 JOIN pg_class c ON c.oid = a.attrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -46,7 +46,7 @@ SELECT k.conrelid AS rel, k.conname AS name, k.contype AS kind,
 FROM pg_constraint k
 JOIN pg_class c ON c.oid = k.conrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE n.nspname = %s AND k.contype IN ('p', 'u', 'c', 'f')
+WHERE n.nspname = %s AND k.contype IN ('p', 'u', 'c', 'f', 'x')
 ORDER BY k.conrelid, k.conname
 """
 
@@ -72,6 +72,10 @@ JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = %s AND k.contype = 'f'
 """
 
+def _q(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
 _IDENTITY = {"a": "always", "d": "by default"}
 
 
@@ -79,18 +83,29 @@ def read_model(conn, schema: str) -> dict:
     def fetch(sql: str) -> list[dict]:
         return conn.execute(sql, (schema,)).fetchall()
 
+    rows = fetch(_TABLES)
+    for t in rows:
+        if t["relkind"] == "p" or t["relispartition"]:
+            raise ExportError(
+                f'Table {_q(t["name"])} is {"a partition" if t["relispartition"] else "partitioned"}; '
+                "partitioned tables cannot be exported.", 422)
+
     tables = {t["oid"]: {"name": t["name"], "comment": t["comment"], "columns": [],
                          "constraints": [], "indexes": [], "references": []}
-              for t in fetch(_TABLES)}
+              for t in rows}
 
     for c in fetch(_COLUMNS):
         t = tables.get(c["rel"])
         if t is None:
             continue
+        if c["generated"]:
+            raise ExportError(
+                f'Column {_q(t["name"])}.{_q(c["name"])} is a generated column; '
+                "generated columns cannot be exported.", 422)
         default = c["default"]
         if default is not None and "nextval(" in default:
             raise ExportError(
-                f'Column "{t["name"]}"."{c["name"]}" uses a sequence default ({default}); '
+                f'Column {_q(t["name"])}.{_q(c["name"])} uses a sequence default ({default}); '
                 "sequence-backed defaults cannot be exported. Use an identity column instead.",
                 422,
             )
@@ -101,6 +116,10 @@ def read_model(conn, schema: str) -> dict:
 
     for k in fetch(_CONSTRAINTS):
         if k["rel"] in tables:
+            if k["kind"] == "x":
+                raise ExportError(
+                    f'Table {_q(tables[k["rel"]]["name"])} has exclusion constraint {_q(k["name"])}; '
+                    "exclusion constraints cannot be exported.", 422)
             tables[k["rel"]]["constraints"].append(
                 {"name": k["name"], "kind": k["kind"], "definition": k["definition"]})
 

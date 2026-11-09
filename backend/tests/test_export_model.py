@@ -88,7 +88,7 @@ def test_sequence_default_is_a_clear_error():
     with pytest.raises(ExportError) as ei:
         model()
     assert ei.value.status == 422
-    assert "seqy" in str(ei.value) and "id" in str(ei.value)
+    assert '"seqy"."id"' in str(ei.value)
 
 
 def test_references_and_order():
@@ -125,3 +125,51 @@ def test_table_order_is_pure_and_alphabetical():
         {"name": "q", "references": ["p"]}, {"name": "p", "references": ["q"]}, {"name": "r", "references": []},
     ]}
     assert table_order(cyc) == ["r", "p", "q"]
+
+
+def test_generated_column_is_a_clear_error():
+    build("CREATE TABLE master.gen (a integer, b integer GENERATED ALWAYS AS (a * 2) STORED)")
+    with pytest.raises(ExportError) as ei:
+        model()
+    assert ei.value.status == 422 and '"gen"."b"' in str(ei.value)
+
+
+def test_partitioned_parent_is_a_clear_error():
+    build("CREATE TABLE master.pt (id integer, d date) PARTITION BY RANGE (d)")
+    with pytest.raises(ExportError) as ei:
+        model()
+    assert ei.value.status == 422 and '"pt"' in str(ei.value)
+
+
+def test_partition_is_a_clear_error():
+    build(
+        "CREATE TABLE master.pt (id integer, d date) PARTITION BY RANGE (d)",
+        "CREATE TABLE master.pt_1 PARTITION OF master.pt FOR VALUES FROM ('2020-01-01') TO ('2021-01-01')",
+    )
+    with pytest.raises(ExportError) as ei:
+        model()
+    assert ei.value.status == 422 and "partition" in str(ei.value)
+
+
+def test_exclusion_constraint_is_a_clear_error():
+    build(
+        "CREATE TABLE master.ex (r int4range, CONSTRAINT ex_excl EXCLUDE USING gist (r WITH &&))",
+    )
+    with pytest.raises(ExportError) as ei:
+        model()
+    assert ei.value.status == 422 and '"ex"' in str(ei.value) and '"ex_excl"' in str(ei.value)
+
+
+def test_awkward_names_come_back_raw():
+    build(
+        'CREATE TABLE master."order" (id integer, "we""ird" text)',
+        'CREATE TABLE master."we""ird" (id integer, "order" integer)',
+    )
+    try:
+        m = model()
+    finally:  # pgsetup.wipe_master does not escape quotes in names
+        build('DROP TABLE master."we""ird"', 'DROP TABLE master."order"')
+    assert [t["name"] for t in m["tables"]] == ["order", 'we"ird']
+    assert [c["name"] for c in m["tables"][0]["columns"]] == ["id", 'we"ird']
+    assert [c["name"] for c in m["tables"][1]["columns"]] == ["id", "order"]
+    assert table_order(m) == ["order", 'we"ird']
