@@ -279,7 +279,11 @@ def _follow_renames(change: Change) -> None:
     from duplicates.models import DuplicateGroup
     from duplicates.service import group_key
     for o in change.operations:
+        if o.get("op") == "drop_schema":
+            DuplicateGroup.objects.filter(schema=o["schema"]).delete()  # the schema is gone, so are its groups
         if o.get("op") == "rename_schema":
+            # groups left over from an earlier schema of that name would collide on (schema, table, key)
+            DuplicateGroup.objects.filter(schema=o["new_name"]).delete()
             for g in DuplicateGroup.objects.filter(schema=o["schema"]):
                 g.schema = o["new_name"]
                 g.key = group_key(g.table_name, g.member_ids, o["new_name"])  # keys embed the schema name

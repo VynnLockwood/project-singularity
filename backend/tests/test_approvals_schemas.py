@@ -206,3 +206,27 @@ def test_revert_rename_schema(approver):
     assert rev.status == "applied"
     names = [m["name"] for m in introspect.managed_schemas()]
     assert "crm" in names and "sales" not in names
+
+
+def _group(schema, key):
+    from duplicates.models import DuplicateGroup
+    return DuplicateGroup.objects.create(schema=schema, table_name="customer", key=key, member_ids=[1, 2], score=0.9)
+
+
+def test_drop_schema_deletes_its_duplicate_groups(approver):
+    from duplicates.models import DuplicateGroup
+    make_crm(approver)
+    _group("crm", "k1")
+    run(approver, [{"op": "drop_schema", "schema": "crm", "reason": "unused"}])
+    assert not DuplicateGroup.objects.filter(schema="crm").exists()
+
+
+def test_rename_onto_a_name_with_leftover_groups_does_not_collide(approver):
+    from duplicates.models import DuplicateGroup
+    from duplicates.service import group_key
+    make_crm(approver)
+    _group("sales", group_key("customer", [1, 2], "sales"))  # leftover from an earlier, dropped "sales"
+    _group("crm", group_key("customer", [1, 2], "crm"))
+    run(approver, [{"op": "rename_schema", "schema": "crm", "new_name": "sales"}])
+    groups = DuplicateGroup.objects.all()
+    assert [g.schema for g in groups] == ["sales"]
