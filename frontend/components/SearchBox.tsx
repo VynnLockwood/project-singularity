@@ -9,9 +9,11 @@ interface Props {
   canPropose: boolean;
   /** Approvers can rebuild the whole index (needed after changing the embedding model). */
   canReindex?: boolean;
+  /** Database to search in; omitted means master. */
+  schema?: string;
 }
 
-export function SearchBox({ onAskAssistant, canPropose, canReindex }: Props) {
+export function SearchBox({ onAskAssistant, canPropose, canReindex, schema }: Props) {
   const [q, setQ] = useState("");
   const [asked, setAsked] = useState("");
   const [result, setResult] = useState<SearchResult | null>(null);
@@ -25,7 +27,7 @@ export function SearchBox({ onAskAssistant, canPropose, canReindex }: Props) {
     setBusy(true);
     setError("");
     try {
-      setResult(await searchSchema(query));
+      setResult(await searchSchema(query, schema));
       setAsked(query);
     } catch (e) {
       setResult(null);
@@ -69,8 +71,9 @@ export function SearchBox({ onAskAssistant, canPropose, canReindex }: Props) {
         <>
           <ul className="hits" aria-label="Search results">
             {result.results.map((h) => (
-              <li key={`${h.table}.${h.column ?? ""}`} data-confident={result.confident && h === result.results[0]}>
+              <li key={`${h.schema ?? ""}.${h.table}.${h.column ?? ""}`} data-confident={result.confident && h === result.results[0]}>
                 <strong>{h.column ? `${h.table}.${h.column}` : h.table}</strong>
+                {h.schema && <span className="muted small"> · {h.schema}</span>}
                 <span className="muted small"> · {Math.round(h.confidence * 100)}%</span>
                 <p className="muted small">{h.description}</p>
               </li>
@@ -80,7 +83,7 @@ export function SearchBox({ onAskAssistant, canPropose, canReindex }: Props) {
             <p>
               <span className="muted">{result.suggestion}</span>{" "}
               {canPropose && (
-                <button className="link" onClick={() => onAskAssistant(`I need to store: ${asked}. Is there a place for it, or should we add a new column?`)}>
+                <button className="link" onClick={() => onAskAssistant(`I need to store: ${asked}${schema ? ` (in the ${schema} database)` : ""}. Is there a place for it, or should we add a new column?`)}>
                   Ask the assistant to propose a new column
                 </button>
               )}

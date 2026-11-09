@@ -8,7 +8,7 @@ const master: SchemaGraph = { tables: [tbl("customer"), tbl("orders"), tbl("item
 const empty: SchemaGraph = { tables: [], relations: [] };
 const editor: Me = { id: 1, email: "e@x.io", name: "", role: "editor" };
 
-type Api = { getTable: ReturnType<typeof vi.fn>; getSchemas: ReturnType<typeof vi.fn>; getGraph: ReturnType<typeof vi.fn>; proposeChange: ReturnType<typeof vi.fn> };
+type Api = { getTable: ReturnType<typeof vi.fn>; getSchemas: ReturnType<typeof vi.fn>; getGraph: ReturnType<typeof vi.fn>; proposeChange: ReturnType<typeof vi.fn>; searchSchema?: ReturnType<typeof vi.fn> };
 const viewer: Me = { ...editor, role: "viewer" };
 const aChange = { id: 9, status: "pending", kind: "schema", source: "web", requester: "e@x.io", prompt: "t", createdAt: "", decidedBy: null, error: "", decisionNote: "", tables: [], diff: ["+ x"], check: {} };
 
@@ -18,6 +18,7 @@ async function setup(api: Partial<Api> = {}, refreshKey = 0, me: Me = editor) {
     getSchemas: api.getSchemas ?? vi.fn().mockResolvedValue([{ name: "master", tables: 3, comment: null }, { name: "crm", tables: 0, comment: null }]),
     proposeChange: api.proposeChange ?? vi.fn().mockResolvedValue(aChange),
     getTable: api.getTable ?? vi.fn().mockResolvedValue({ name: "t", comment: null, constraints: [], indexes: [], hiddenColumns: [], columns: [] }),
+    ...(api.searchSchema ? { searchSchema: api.searchSchema } : {}),
     getGraph: api.getGraph ?? vi.fn(async (s: string) => (s === "crm" ? empty : master)),
   };
   vi.doMock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), ...mocks }));
@@ -293,6 +294,30 @@ describe("DatabaseView", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Relations" }));
     fireEvent.click(screen.getByRole("button", { name: "master (3)" }));
     expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("Relations tab shows the graph's links for the selected table", async () => {
+    const g: SchemaGraph = { ...master, relations: [
+      { from: { table: "customer", column: "region_id" }, to: { table: "item", column: "id" } },
+      { from: { table: "orders", column: "customer_id" }, to: { table: "customer", column: "id" } },
+    ] };
+    const { mocks } = await setup({ getGraph: vi.fn().mockResolvedValue(g) });
+    fireEvent.click(await screen.findByRole("button", { name: "customer" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Relations" }));
+    expect(await screen.findByText("region_id → item.id")).toBeInTheDocument();
+    expect(screen.getByText("orders.customer_id → id")).toBeInTheDocument();
+    expect(mocks.getTable).toHaveBeenCalledWith("customer", "master");
+  });
+
+  it("Overview mounts the search scoped to the selected database", async () => {
+    const searchSchema = vi.fn().mockResolvedValue({ results: [], confident: true, suggestion: null });
+    await setup({ searchSchema } as never);
+    fireEvent.click(await screen.findByRole("button", { name: "crm (0)" }));
+    await screen.findAllByText("No tables yet.");
+    expect(await screen.findByText("0 tables")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Search the schema"), { target: { value: "x" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() => expect(searchSchema).toHaveBeenCalledWith("x", "crm"));
   });
 
   describe("table actions", () => {

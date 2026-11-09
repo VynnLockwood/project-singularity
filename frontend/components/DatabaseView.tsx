@@ -10,6 +10,7 @@ import { NewTableForm } from "./NewTableForm";
 import { FieldsTab } from "./FieldsTab";
 import { RelationsTab } from "./RelationsTab";
 import { ExportMenu } from "./ExportMenu";
+import { OverviewTab } from "./OverviewTab";
 
 export type DbTab = "fields" | "relations" | "erd" | "overview";
 
@@ -20,7 +21,7 @@ const TABS: { id: DbTab; label: string }[] = [
   { id: "overview", label: "Overview" },
 ];
 
-export function DatabaseView({ me, live, refreshKey, onProposed }: {
+export function DatabaseView({ me, live, refreshKey, onProposed, onAskAssistant }: {
   me: Me; live: Change[]; refreshKey: number;
   onProposed: (c: Change) => void; onAskAssistant: (text: string) => void;
 }) {
@@ -265,7 +266,7 @@ export function DatabaseView({ me, live, refreshKey, onProposed }: {
         {tab === "relations" && (table
           ? <RelationsTab key={`${schema}/${table}`} me={me} schema={schema} table={table} graph={graph} refreshKey={refreshKey} onProposed={onProposed} />
           : <p className="muted">Select a table to see its relations.</p>)}
-        {tab === "overview" && <p className="muted">Overview is coming soon.</p>}
+        {tab === "overview" && <OverviewTab me={me} schema={schema} comment={info?.comment} graph={graph} onAskAssistant={onAskAssistant} />}
         {tab === "erd" && <SchemaView schema={schema} refreshKey={refreshKey} />}
       </section>
     </div>
