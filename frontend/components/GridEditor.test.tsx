@@ -20,7 +20,7 @@ const ROWS = [
 ];
 const me = (role: Me["role"]): Me => ({ id: 1, email: "ed@example.com", name: "", role });
 
-async function setup(role: Me["role"] = "editor", data = page(ROWS)) {
+async function setup(role: Me["role"] = "editor", data = page(ROWS), onBusy: (b: boolean) => void = vi.fn()) {
   vi.resetModules();
   const getRows = vi.fn().mockResolvedValue(data);
   const proposeChange = vi.fn().mockResolvedValue(change({ id: 77, kind: "data", status: "pending" }));
@@ -34,7 +34,7 @@ async function setup(role: Me["role"] = "editor", data = page(ROWS)) {
   }));
   const { GridEditor } = await import("./GridEditor");
   const onProposed = vi.fn();
-  render(<GridEditor me={me(role)} table="orderHeader" live={[]} onProposed={onProposed} />);
+  render(<GridEditor me={me(role)} table="orderHeader" live={[]} onProposed={onProposed} onBusy={onBusy} />);
   await screen.findByText(/\d+–\d+ of \d+/);
   return { getRows, proposeChange, onProposed };
 }
@@ -51,6 +51,12 @@ describe("GridEditor", () => {
     await waitFor(() => expect(within(fk()).getByText("Acme")).toBeInTheDocument(), { timeout: 4000 });
     expect(fk().value).toBe("10");
     expect(within(fk()).getByText("Beta")).toBeInTheDocument();
+  });
+
+  it("reports busy while a page is loading", async () => {
+    const busy: boolean[] = [];
+    await setup("editor", page(ROWS), (b) => busy.push(b));
+    expect(busy).toContain(true);
   });
 
   it("read-only columns are not editable", async () => {
@@ -146,6 +152,13 @@ describe("GridEditor", () => {
     const { getRows } = await setup("editor", page(ROWS, 120));
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     await waitFor(() => expect(getRows).toHaveBeenLastCalledWith("orderHeader", expect.objectContaining({ offset: 50 })));
+  });
+
+  it("fetches with the chosen page size", async () => {
+    const { getRows } = await setup("viewer", page(ROWS));
+    fireEvent.change(screen.getByLabelText("Rows per page"), { target: { value: "100" } });
+    await waitFor(() => expect(getRows).toHaveBeenCalledWith(
+      expect.anything(), expect.objectContaining({ limit: 100 })));
   });
 
   it("explains a gate rejection instead of pretending it worked", async () => {

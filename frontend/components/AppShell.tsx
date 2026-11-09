@@ -87,7 +87,7 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
           </>
         )}
         {tab === "data" && (
-          <DataView me={me} live={live} refreshKey={schemaKey}
+          <DataView me={me} live={live} refreshKey={schemaKey} onBusy={setBusy}
             onProposed={(c) => setLive((l) => upsert(l, c))} />
         )}
         {tab === "duplicates" && (

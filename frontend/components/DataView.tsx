@@ -9,9 +9,10 @@ interface Props {
   live: Change[];
   refreshKey: number;
   onProposed?: (change: Change) => void;
+  onBusy: (b: boolean) => void;
 }
 
-export function DataView({ me, live, refreshKey, onProposed }: Props) {
+export function DataView({ me, live, refreshKey, onProposed, onBusy }: Props) {
   const [tables, setTables] = useState<string[] | null>(null);
   const [table, setTable] = useState("");
   const [error, setError] = useState("");
@@ -38,7 +39,7 @@ export function DataView({ me, live, refreshKey, onProposed }: Props) {
           {tables.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
       </label>
-      {table && <GridEditor me={me} table={table} live={live} onProposed={onProposed} />}
+      {table && <GridEditor me={me} table={table} live={live} onProposed={onProposed} onBusy={onBusy} />}
     </div>
   );
 }
