@@ -9,16 +9,25 @@ from config.siconfig import get_config
 from . import introspect, query, rows as rows_mod
 from .dump_model import ExportError
 from .export import open_export
+from .http import schema_param, unknown_schema_is_400
 
 
 @endpoint("GET")
+def schemas(request):
+    """The managed schemas ("databases" in the UI): `{"schemas": [{"name", "tables", "comment"}]}`, master first."""
+    return JsonResponse({"schemas": introspect.managed_schemas()})
+
+
+@endpoint("GET")
+@unknown_schema_is_400
 def tables(request):
-    return JsonResponse({"tables": introspect.list_tables()})
+    return JsonResponse({"tables": introspect.list_tables(schema_param(request))})
 
 
 @endpoint("GET")
+@unknown_schema_is_400
 def graph(request):
-    return JsonResponse(introspect.graph())
+    return JsonResponse(introspect.graph(schema_param(request)))
 
 
 @endpoint("GET")
@@ -49,14 +58,16 @@ def export(request):
 
 
 @endpoint("GET")
+@unknown_schema_is_400
 def table_detail(request, name):
-    d = introspect.describe_table(name)
+    d = introspect.describe_table(name, schema_param(request))
     if d is None:
         return error("not found", 404)
     return JsonResponse(d)
 
 
 @endpoint("POST")
+@unknown_schema_is_400
 def run_query(request):
     limits = get_config()["limits"]
     try:
@@ -65,7 +76,8 @@ def run_query(request):
         return error("limit must be a number")
     try:
         return JsonResponse(query.run_select(
-            request.json.get("sql"), limit=limit, timeout_ms=limits["queryTimeoutMs"]))
+            request.json.get("sql"), limit=limit, timeout_ms=limits["queryTimeoutMs"],
+            schema=request.GET.get("schema") or request.json.get("schema") or "master"))
     except query.QueryError as exc:
         return error(str(exc), 400)
 
@@ -75,6 +87,7 @@ def _rows_error(exc):
 
 
 @endpoint("GET")
+@unknown_schema_is_400
 def table_rows(request, name):
     g = request.GET
     try:
@@ -83,7 +96,8 @@ def table_rows(request, name):
             raise ValueError
         return JsonResponse(rows_mod.read_rows(
             name, offset=int(g.get("offset", 0)), limit=int(g.get("limit", 50)), sort=g.get("sort") or None,
-            direction=g.get("dir", "asc"), filters=filters, include_inactive=g.get("inactive") == "1"))
+            direction=g.get("dir", "asc"), filters=filters, include_inactive=g.get("inactive") == "1",
+            schema=schema_param(request)))
     except (ValueError, TypeError):
         return error("offset, limit and filters are not valid")
     except rows_mod.RowsError as exc:
@@ -91,9 +105,11 @@ def table_rows(request, name):
 
 
 @endpoint("GET")
+@unknown_schema_is_400
 def table_options(request, name):
     try:
-        return JsonResponse(rows_mod.options(name, q=request.GET.get("q", ""), limit=int(request.GET.get("limit", 100))))
+        return JsonResponse(rows_mod.options(name, q=request.GET.get("q", ""), limit=int(request.GET.get("limit", 100)),
+                                                 schema=schema_param(request)))
     except ValueError:
         return error("limit is not valid")
     except rows_mod.RowsError as exc:

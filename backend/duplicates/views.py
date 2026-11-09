@@ -4,6 +4,8 @@ from django.http import JsonResponse
 from accounts.api import endpoint, error
 from approvals import service as changes
 from audit.models import record
+from schema import introspect
+from schema.http import unknown_schema_is_400
 
 from . import service
 from .models import DuplicateGroup
@@ -18,14 +20,20 @@ def _group(pk):
 
 
 @endpoint("GET")
+@unknown_schema_is_400
 def groups(request):
     qs = DuplicateGroup.objects.select_related("merge_change")
+    if schema := request.GET.get("schema"):
+        qs = qs.filter(schema=introspect.require_managed(schema))
     if table := request.GET.get("table"):
         qs = qs.filter(table_name=table)
     items = [service.summary(g) for g in qs]
     if status := request.GET.get("status"):
         items = [g for g in items if g["status"] == status]
-    tables = DuplicateGroup.objects.filter(status="open").values("table_name").annotate(n=Count("id"))
+    open_groups = DuplicateGroup.objects.filter(status="open")
+    if schema:
+        open_groups = open_groups.filter(schema=schema)
+    tables = open_groups.values("table_name").annotate(n=Count("id"))
     return JsonResponse({"groups": items, "tables": {t["table_name"]: t["n"] for t in tables}})
 
 
@@ -41,13 +49,15 @@ def group_detail(request, group_id):
 
 
 @endpoint("POST", min_role="editor")
+@unknown_schema_is_400
 def scan(request):
     b = request.json
     fields = b.get("fields")
     if fields is not None and (not isinstance(fields, list) or not all(isinstance(f, str) for f in fields)):
         return error("fields must be a list of column names")
     try:
-        result = service.scan(str(b.get("table", "")), request.user, fields=fields, threshold=b.get("threshold"))
+        result = service.scan(str(b.get("table", "")), request.user, fields=fields, threshold=b.get("threshold"),
+                              schema=request.GET.get("schema") or b.get("schema") or "master")
     except service.DuplicateError as exc:
         return _fail(exc)
     record(request.user, "duplicates.scanned", target=result["table"], details=result)

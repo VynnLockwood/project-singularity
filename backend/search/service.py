@@ -6,6 +6,7 @@ from django.db.models.functions import Lower
 from pgvector.django import CosineDistance
 
 from config.siconfig import get_config
+from schema import introspect
 
 from . import embedder
 from .models import SchemaEmbedding
@@ -14,8 +15,11 @@ VECTOR_WEIGHT = 0.75   # ranking = meaning (vector) + name similarity, so names 
 EXACT_BOOST = 0.5      # the query is exactly this table's/column's name: it goes first, whatever the model says
 
 
-def search(query: str, top_k: int | None = None) -> dict:
+def search(query: str, top_k: int | None = None, schema: str | None = None) -> dict:
+    """Semantic search; `schema` limits it to one managed schema (None = all of them)."""
     query = (query or "").strip()
+    if schema is not None:
+        introspect.require_managed(schema)
     if not query:
         raise embedder.SearchError("query is required")
     cfg = get_config()["search"]
@@ -32,7 +36,8 @@ def search(query: str, top_k: int | None = None) -> dict:
         Value(VECTOR_WEIGHT) * cos + Value(1 - VECTOR_WEIGHT) * sim + Value(EXACT_BOOST) * exact,
         output_field=FloatField(),
     )
-    rows = (SchemaEmbedding.objects
+    base = SchemaEmbedding.objects.all() if schema is None else SchemaEmbedding.objects.filter(schema=schema)
+    rows = (base
             .annotate(name_lower=Lower(own_name), cos=cos, sim=sim)
             .annotate(score=score).order_by("-score")[:k])
     results = [{
