@@ -136,12 +136,42 @@ describe("FieldsTab", () => {
     const { mocks } = await setup();
     await screen.findByText("email");
     fireEvent.click(screen.getByRole("button", { name: "Type id" }));
-    fireEvent.change(screen.getByLabelText("New type"), { target: { value: "vector" } });
-    expect(screen.getByRole("button", { name: "Review" })).toBeDisabled();
     fireEvent.change(screen.getByLabelText("New type"), { target: { value: "bigint" } });
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
     const call = await propose(mocks);
     expect(call[0]).toEqual([{ op: "alter_column_type", table: "customer", column: "id", type: "bigint" }]);
+  });
+
+  it("Type form does not flag a server-formatted type and needs a different type", async () => {
+    const d = { ...detail, columns: [c("id", "integer"), c("name", "character varying(40)")] };
+    const { mocks } = await setup({ getTable: vi.fn().mockResolvedValue(d) });
+    await screen.findByText("name");
+    fireEvent.click(screen.getByRole("button", { name: "Type name" }));
+    expect(screen.queryByText(/Unsupported type/)).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "Review" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("New type"), { target: { value: "text" } });
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    const call = await propose(mocks);
+    expect(call[0]).toEqual([{ op: "alter_column_type", table: "customer", column: "name", type: "text" }]);
+  });
+
+  it("Type form keeps Review disabled while the current type is unchanged", async () => {
+    await setup();
+    await screen.findByText("email");
+    fireEvent.click(screen.getByRole("button", { name: "Type id" }));
+    expect(screen.getByRole("button", { name: "Review" })).toBeDisabled();
+  });
+
+  it("an empty comment is allowed and clears the comment", async () => {
+    const d = { ...detail, columns: [{ ...c("email"), comment: "login" }], hiddenColumns: [] };
+    const { mocks } = await setup({ getTable: vi.fn().mockResolvedValue(d) });
+    await screen.findByText("email");
+    fireEvent.click(screen.getByRole("button", { name: "Comment email" }));
+    fireEvent.change(screen.getByLabelText("Comment"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    const call = await propose(mocks);
+    expect(call[0]).toEqual([{ op: "set_column_comment", table: "customer", column: "email", comment: "" }]);
   });
 
   it("Comment sends set_column_comment", async () => {

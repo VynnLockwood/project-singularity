@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { getTable, type Change, type Me, type TableDetail } from "@/lib/api";
 import { usePersistentFlag } from "@/lib/storage";
 import {
-  addColumnOp, alterColumnTypeOp, COLUMN_TYPES, dropColumnOp, renameColumnOp, setColumnCommentOp,
+  addColumnOp, alterColumnTypeOp, COLUMN_TYPES, dropColumnOp, normalizeType, renameColumnOp, setColumnCommentOp,
   validateName, validateType, type ColumnSpec,
 } from "@/lib/databaseOps";
 import { ProposeDialog } from "./ProposeDialog";
@@ -70,6 +70,7 @@ export function FieldsTab({ me, schema, table, refreshKey, onProposed }: {
   const canReview =
     action?.kind === "comment" ? true
     : action?.kind === "add" ? text !== "" && !fieldError && !typeBlocked
+    : action?.kind === "type" ? text !== "" && !fieldError && normalizeType(text) !== normalizeType(current?.type ?? "")
     : text !== "" && !fieldError;
 
   const spec = (): ColumnSpec => {
@@ -130,7 +131,7 @@ export function FieldsTab({ me, schema, table, refreshKey, onProposed }: {
                       {!hidden.has(c.name) && (
                         <>
                           <button className="link" aria-label={`Rename ${c.name}`} onClick={() => open({ kind: "rename", column: c.name })}>Rename</button>{" "}
-                          <button className="link" aria-label={`Type ${c.name}`} onClick={() => open({ kind: "type", column: c.name }, c.type)}>Type</button>{" "}
+                          <button className="link" aria-label={`Type ${c.name}`} onClick={() => open({ kind: "type", column: c.name }, validateType(c.type) === null ? normalizeType(c.type) : "")}>Type</button>{" "}
                           <button className="link" aria-label={`Comment ${c.name}`} onClick={() => open({ kind: "comment", column: c.name }, c.comment ?? "")}>Comment</button>{" "}
                           <button className="link" aria-label={`Drop ${c.name}`} onClick={() => { setAction({ kind: "drop", column: c.name }); setReview(true); }}>Drop</button>
                         </>
@@ -165,9 +166,21 @@ export function FieldsTab({ me, schema, table, refreshKey, onProposed }: {
               <label>Default<input value={fDefault} onChange={(e) => setFDefault(e.target.value)} /></label>
               <label>Field comment<input value={fComment} onChange={(e) => setFComment(e.target.value)} /></label>
             </>
+          ) : action.kind === "type" ? (
+            <>
+              <label>New type
+                <select value={COLUMN_TYPES.includes(text) ? text : ""} onChange={(e) => setText(e.target.value)} autoFocus>
+                  <option value="" disabled>Choose a type</option>
+                  {COLUMN_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </label>
+              {text !== "" && (!COLUMN_TYPES.includes(text) || validateType(text) !== null) && (
+                <label>Exact type<input value={text} onChange={(e) => setText(e.target.value)} aria-invalid={fieldError ? "true" : undefined} /></label>
+              )}
+            </>
           ) : (
             <label>
-              {action.kind === "rename" ? "New name" : action.kind === "type" ? "New type" : "Comment"}
+              {action.kind === "rename" ? "New name" : "Comment"}
               <input value={text} onChange={(e) => setText(e.target.value)} aria-invalid={fieldError ? "true" : undefined} autoFocus />
             </label>
           )}
