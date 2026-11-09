@@ -11,7 +11,7 @@ const graph: SchemaGraph = {
   relations: [{ from: { table: "orderHeader", column: "customerId" }, to: { table: "customer", column: "id" } }],
 };
 
-async function setup(webgl: boolean) {
+async function setup(webgl: boolean, canExportData = true) {
   vi.resetModules();
   vi.doMock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), getGraph: vi.fn().mockResolvedValue(graph) }));
   // jsdom has no WebGL: stand in for the scene and expose its props
@@ -25,7 +25,7 @@ async function setup(webgl: boolean) {
     ),
   }));
   const { SchemaView } = await import("./SchemaView");
-  render(<SchemaView refreshKey={0} />);
+  render(<SchemaView refreshKey={0} canExportData={canExportData} />);
 }
 
 describe("SchemaView", () => {
@@ -69,5 +69,28 @@ describe("SchemaView", () => {
     await setup(true);
     fireEvent.click(await screen.findByText("break"));
     expect(await screen.findByRole("img", { name: "Schema diagram" })).toBeInTheDocument();
+  });
+
+  it("offers a Download SQL link, schema only by default", async () => {
+    await setup(false);
+    const link = await screen.findByRole("link", { name: "Download SQL" });
+    expect(link).toHaveAttribute("href", "/api/schema/export?schema=master&data=0");
+    expect(link).toHaveAttribute("download");
+    expect(screen.getByLabelText("Include data")).not.toBeChecked();
+  });
+
+  it("ticking Include data switches the link to data=1", async () => {
+    await setup(false);
+    fireEvent.click(await screen.findByLabelText("Include data"));
+    expect(screen.getByRole("link", { name: "Download SQL" })).toHaveAttribute("href", "/api/schema/export?schema=master&data=1");
+  });
+
+  it("a viewer cannot include data", async () => {
+    await setup(false, false);
+    const box = await screen.findByLabelText("Include data");
+    expect(box).toBeDisabled();
+    expect(box).toHaveAttribute("title", "Editors can export data");
+    fireEvent.click(box);
+    expect(screen.getByRole("link", { name: "Download SQL" })).toHaveAttribute("href", "/api/schema/export?schema=master&data=0");
   });
 });

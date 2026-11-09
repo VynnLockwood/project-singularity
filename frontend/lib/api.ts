@@ -19,6 +19,11 @@ export async function getMe(): Promise<Me | null> {
 
 export const googleLoginUrl = `${BASE}/auth/google/login`;
 
+/** Link for the SQL export; a plain href lets the browser stream the download. */
+export function exportUrl(schema: string, data: boolean): string {
+  return `${BASE}/schema/export?schema=${encodeURIComponent(schema)}&data=${data ? 1 : 0}`;
+}
+
 function csrfToken(): string {
   const m = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
   return m ? decodeURIComponent(m[1]) : "";

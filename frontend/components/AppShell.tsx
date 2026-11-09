@@ -83,7 +83,7 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
         {tab === "schema" && (
           <>
             <SearchBox canPropose={me.role !== "viewer"} canReindex={me.role === "approver"} onAskAssistant={(t) => { setDraft(t); setTab("chat"); }} />
-            <SchemaView refreshKey={schemaKey} />
+            <SchemaView refreshKey={schemaKey} canExportData={me.role !== "viewer"} />
           </>
         )}
         {tab === "data" && (
