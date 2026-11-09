@@ -22,6 +22,7 @@ TUNABLES = {
     "limits.queryTimeoutMs": ("Query timeout (ms)", "A read-only query is stopped after this long.", "int", 500, 60000),
     "limits.maxScriptBytes": ("Script file size (bytes)", "The largest SQL script file that may be uploaded for intake.", "int", 1024, 209715200),
     "limits.maxScriptRows": ("Script rows", "The most rows one script intake may contain.", "int", 1, 2000000),
+    "limits.maxExportRows": ("Export row cap", "The most rows one data export may contain.", "int", 1000, 20000000),
     "limits.maxOpsPerScript": ("Operations per script", "The most operations one validated script may produce.", "int", 1, 100000),
     "limits.maxInlineScriptBytes": ("Inline script size (bytes)", "The largest script that may be pasted inline rather than uploaded.", "int", 1024, 1048576),
     "chat.provider": ("Chat provider", "Which service answers chats. Its API key comes from the server environment and is never shown here.", "choice", None, None),
