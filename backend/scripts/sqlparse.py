@@ -443,7 +443,7 @@ class _Translator:
             self.pending_schema = name
         elif name != current:
             raise _Reject(f"schema {name!r} is not allowed: this script already uses schema {current!r} "
-                          "(only one schema per script; it is loaded into master)")
+                          "(only one schema per script; it is loaded into the target schema)")
 
     def _schema_of_text(self, qualified: str) -> None:
         """Schema check for a name written inside a string, e.g. setval('sch.seq', ...)."""

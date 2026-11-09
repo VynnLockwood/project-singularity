@@ -1,6 +1,6 @@
 """Validate an uploaded script: parse, map, gate, orphan check and a rolled-back dry run (spec 2.6).
 
-validate(script, mapping) never changes `master`: the dry run runs the generated operations through
+validate(script, mapping) never changes any managed schema: the dry run runs the generated operations through
 schema.executor with dry_run=True (one transaction, always rolled back, sequences restored).
 
 Pipeline (each step stops the pipeline when it finds errors, except that the gate and the orphan
@@ -25,7 +25,7 @@ scripts that are "submitted" or "expired" are refused. script.status becomes "va
 a failing re-validation never downgrades a validated script. The mapping used is stored on script.mapping.
 
 Orphans: a child row whose ref key (non-NULL, non-empty) is not among the parent's keys. Parent keys
-come from the parent's rows in the script plus, when the parent table already exists in master, its
+come from the parent's rows in the script plus, when the parent table already exists in the target schema, its
 current rows. Integer / numeric keys are compared as numbers (like the executor's cast); others as text.
 """
 from __future__ import annotations
@@ -192,11 +192,12 @@ def validate(script: Script, mapping: dict | None, schema: str = "master") -> di
     introspect.require_managed(schema)
     report = _new_report(script)
     report["schema"] = schema
+    kept = (script.mapping, (script.report or {}).get("validated_schema", "master"))
     if script.status in (Script.Status.SUBMITTED, Script.Status.EXPIRED):
         _add_error(report, "storage", 0, "",
                    f"script #{script.pk} is {script.status}; only uploaded or validated scripts can be validated")
         report["ok"] = False
-        _save(script, report)
+        _save(script, report, kept)
         return report
     try:
         _run(report, script, mapping, schema)
@@ -207,12 +208,17 @@ def validate(script: Script, mapping: dict | None, schema: str = "master") -> di
     report["ok"] = (not report["errors"] and not report["errors_truncated"] and not report["gate"]["errors"]
                     and not report["gate"]["blocked"] and all(t["orphans"] == 0 for t in report["tables"])
                     and report["dry_run"]["ok"])
-    _save(script, report)
+    _save(script, report, kept)
     return report
 
 
-def _save(script: Script, report: dict) -> None:
+def _save(script: Script, report: dict, kept: tuple) -> None:
     fields = ["report", "mapping"]
+    if report["ok"]:
+        report["validated_schema"] = report["schema"]
+    elif script.status == Script.Status.VALIDATED:
+        # a failed run never replaces what passed: keep the validated mapping and schema for submit
+        script.mapping, report["validated_schema"] = kept
     script.report = report
     # validated -> uploaded on failure was reverted by review: never downgrade a validated script
     if script.status == Script.Status.UPLOADED or (script.status == Script.Status.VALIDATED and report["ok"]):

@@ -1,4 +1,4 @@
-"""Paged, sortable, filterable reads of one `master` table for the grid editor (read-only role)."""
+"""Paged, sortable, filterable reads of one table in a managed schema for the grid editor (read-only role)."""
 from __future__ import annotations
 
 import psycopg

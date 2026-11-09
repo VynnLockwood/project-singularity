@@ -177,3 +177,55 @@ def test_validate_refuses_unmanaged_schema(two, settings, tmp_path):
     s = storage.save(two, "d.sql", SCRIPT.encode())
     with pytest.raises(introspect.UnknownSchema):
         validate(s, None, "public")
+
+
+def test_failed_revalidation_for_another_schema_keeps_the_validated_one(two, settings, tmp_path):
+    from scripts import service as script_service
+    settings.SCRIPT_DIR = str(tmp_path / "scripts")
+    s = storage.save(two, "d.sql", SCRIPT.encode())
+    assert validate(s, None, "master")["ok"]
+    apply(two, [{"op": "create_table", "name": "province", "columns": [{"name": "code", "type": "integer"}]}], "crm")
+    bad = validate(s, {"tables": {}}, "crm")  # fails: province exists in crm / mapping does not fit
+    assert not bad["ok"]
+    s.refresh_from_db()
+    assert s.status == "validated" and s.report["validated_schema"] == "master"
+    with pytest.raises(storage.ScriptError):
+        script_service.submit(two, s.pk, schema="crm")
+    ch = script_service.submit(two, s.pk)
+    assert ch.schema == "master"
+
+
+def test_reindex_leaves_other_schemas_alone_and_search_keeps_same_names_apart(two, settings, monkeypatch):
+    from search import service as search_service
+    settings.EMBED_URL = "http://embed.test"
+    monkeypatch.setattr(embedder, "embed", lambda texts, kind: [fake_vector(t) for t in texts])
+    indexer.reindex()
+    hits = search_service.search("t", top_k=20)["results"]
+    assert {(h["schema"], h["table"]) for h in hits if h["kind"] == "table" and h["table"] == "t"} == {("master", "t"), ("crm", "t")}
+    apply(two, [{"op": "drop_table", "table": "t", "reason": "gone"}], "crm")
+    out = indexer.reindex()
+    assert out["removed"] > 0
+    assert not SchemaEmbedding.objects.filter(schema="crm").exists()
+    assert SchemaEmbedding.objects.filter(schema="master", table_name="t").count() == 3
+
+
+@pytest.mark.django_db(transaction=True)
+def test_migrations_give_existing_rows_master():
+    from django.db import connection
+    from django.db.migrations.executor import MigrationExecutor
+    targets = [("duplicates", "0001_initial"), ("search", "0001_initial")]
+    ex = MigrationExecutor(connection)
+    ex.migrate(targets)
+    try:
+        old = ex.loader.project_state(targets).apps
+        old.get_model("search", "SchemaEmbedding").objects.create(
+            kind="table", table_name="t", content="x", content_hash="h", embedding=[0.0] * DIMENSIONS)
+        old.get_model("duplicates", "DuplicateGroup").objects.create(
+            table_name="t", key="k", member_ids=[1, 2], score=0.9)
+        ex = MigrationExecutor(connection)
+        ex.migrate(ex.loader.graph.leaf_nodes())
+        assert SchemaEmbedding.objects.get().schema == "master"
+        assert DuplicateGroup.objects.get().schema == "master"
+    finally:
+        ex = MigrationExecutor(connection)
+        ex.migrate(ex.loader.graph.leaf_nodes())

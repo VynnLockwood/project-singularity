@@ -1,4 +1,4 @@
-"""Build one document per table/column of `master`, embed what changed, and keep the index in step."""
+"""Build one document per table/column of every managed schema, embed what changed, and keep the index in step."""
 import hashlib
 import logging
 import threading

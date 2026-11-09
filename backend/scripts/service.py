@@ -47,7 +47,7 @@ def submit(user, script_id: int, note: str = "", schema: str | None = None):
         if script.status != Script.Status.VALIDATED:
             raise storage.ScriptError(
                 f"script #{script.pk} is {script.status}, not validated; validate it first")
-        validated = (script.report or {}).get("schema", "master")
+        validated = (script.report or {}).get("validated_schema", "master")
         if schema is not None and schema != validated:
             raise storage.ScriptError(
                 f"script #{script.pk} was validated for schema {validated!r}, not {schema!r}; validate it again")

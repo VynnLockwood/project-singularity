@@ -3,7 +3,7 @@ from django.db import models
 
 
 class DuplicateGroup(models.Model):
-    """Records in one master table that look like the same thing (found by the Rust engine)."""
+    """Records in one table of a managed schema that look like the same thing (found by the Rust engine)."""
 
     class Status(models.TextChoices):
         OPEN = "open"

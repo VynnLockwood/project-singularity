@@ -5,7 +5,7 @@ DIMENSIONS = 384  # multilingual-e5-small; changing the model means a new migrat
 
 
 class SchemaEmbedding(models.Model):
-    """One searchable document per table and per column of `master`."""
+    """One searchable document per table and per column of a managed schema."""
 
     schema = models.CharField(max_length=63, default="master")
     kind = models.CharField(max_length=8)  # table | column
