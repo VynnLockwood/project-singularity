@@ -1,6 +1,7 @@
 from django.http import JsonResponse
 
 from accounts.api import endpoint, error, limit_param
+from schema.http import schema_param, unknown_schema_is_400
 
 from . import service
 from .models import Change
@@ -13,12 +14,13 @@ def _err(exc: service.ChangeError):
 
 
 @endpoint(["GET", "POST"])
+@unknown_schema_is_400
 def changes(request):
     if request.method == "GET":
         qs = Change.objects.select_related("requester", "decided_by")
         if status := request.GET.get("status"):
             qs = qs.filter(status=status)
-        if schema := request.GET.get("schema"):
+        if (schema := schema_param(request, default=None)) is not None:  # absent = all schemas
             qs = qs.filter(schema=schema)
         if kind := request.GET.get("kind"):
             qs = qs.filter(kind=kind)
@@ -36,7 +38,7 @@ def changes(request):
         change = service.propose(
             request.user, body.get("operations"), source=source,
             prompt=str(body.get("prompt", ""))[:10_000], conversation_id=body.get("conversation_id"),
-            schema=body.get("schema") or "master",
+            schema=schema_param(request, body),
         )
     except service.ChangeError as exc:
         return _err(exc)

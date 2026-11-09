@@ -249,3 +249,63 @@ def test_chat_dispatch_forwards_schema(two):
     ops = [{"op": "create_table", "name": "extra", "columns": [{"name": "x", "type": "text"}]}]
     out = orchestrator.run_tool(u, conv, "propose_change", json.dumps({"operations": ops, "schema": "crm"}))
     assert Change.objects.get(pk=out["id"]).schema == "crm"
+
+
+# --- one rule for the schema argument: absent = master, present must be a non-empty managed string ---
+
+BAD_VALUES = ["", 0, False, [], {}, 5, ["a", "b"]]
+OPS = [{"op": "create_table", "name": "extra", "columns": [{"name": "x", "type": "text"}]}]
+
+
+def _post(c, url, body):
+    return c.post(url, json.dumps(body), content_type="application/json")
+
+
+@pytest.mark.parametrize("bad", BAD_VALUES, ids=repr)
+def test_bad_schema_values_in_body_are_400(two, bad):
+    ed = client(Role.EDITOR)
+    for url, body in [("/api/query", {"sql": "select 1"}), ("/api/duplicates/scan", {"table": "t"}),
+                      ("/api/changes", {"operations": OPS})]:
+        r = _post(ed, url, {**body, "schema": bad})
+        assert r.status_code == 400, (url, bad, r.status_code)
+        assert r.json()["error"]
+    assert not Change.objects.filter(requester__email="editor@x.com").exists()
+
+
+@pytest.mark.parametrize("qs", ["schema=", "schema=a&schema=b", "schema=crm&schema=master"])
+def test_bad_schema_values_in_query_are_400(two, qs, opened):
+    ed = client(Role.EDITOR)
+    for r in [
+        ed.get(f"/api/schema/export?{qs}"), ed.get(f"/api/schema/tables?{qs}"), ed.get(f"/api/search?q=t&{qs}"),
+        ed.get(f"/api/duplicates?{qs}"), ed.get(f"/api/changes?{qs}"),
+        _post(ed, f"/api/query?{qs}", {"sql": "select 1"}), _post(ed, f"/api/duplicates/scan?{qs}", {"table": "t"}),
+        _post(ed, f"/api/changes?{qs}", {"operations": OPS}),
+    ]:
+        assert r.status_code == 400, (r.request["PATH_INFO"], qs, r.status_code)
+
+
+def test_export_empty_schema_is_400_not_master(two, opened):
+    assert client(Role.VIEWER).get("/api/schema/export?schema=").status_code == 400
+    r = client(Role.EDITOR).get("/api/schema/export")  # absent = master
+    assert r.status_code == 200
+    assert "only_crm" not in b"".join(r.streaming_content).decode()
+
+
+def test_absent_schema_is_master_and_query_body_conflict_is_400(two):
+    ed = client(Role.EDITOR)
+    assert _post(ed, "/api/query", {"sql": "select code from t"}).json()["rows"] == [["M1"]]
+    assert _post(ed, "/api/query?schema=crm", {"sql": "select code from t", "schema": "crm"}).json()["rows"] == [["C1"], ["C2"]]
+    assert _post(ed, "/api/query?schema=crm", {"sql": "select 1", "schema": "master"}).status_code == 400
+    assert _post(ed, "/api/changes?schema=crm", {"operations": OPS, "schema": "master"}).status_code == 400
+    r = _post(ed, "/api/changes", {"operations": OPS})
+    assert Change.objects.get(pk=r.json()["id"]).schema == "master"
+
+
+def test_schema_ops_land_in_master_even_with_a_schema(two):
+    u = make_user(Role.EDITOR)
+    op = [{"op": "create_schema", "name": "hr"}]
+    assert Change.objects.get(pk=tools.propose_change(u, op, schema="crm")["id"]).schema == "master"
+    assert service.propose(u, op, source="web", schema="crm").schema == "master"
+    for bad in ("", 5, ["a"]):
+        with pytest.raises(tools.ToolFailure):
+            tools.propose_change(u, OPS, schema=bad)

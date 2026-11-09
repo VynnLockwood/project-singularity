@@ -31,9 +31,10 @@ def graph(request):
 
 
 @endpoint("GET")
+@unknown_schema_is_400
 def export(request):
     """Download a schema as Postgres SQL: `?schema=master&data=0|1`. Data needs the editor role."""
-    schema = request.GET.get("schema", "master")
+    schema = schema_param(request)
     flag = request.GET.get("data", "0")
     if flag not in ("0", "1"):
         return error("data must be 0 or 1", 400)
@@ -77,7 +78,7 @@ def run_query(request):
     try:
         return JsonResponse(query.run_select(
             request.json.get("sql"), limit=limit, timeout_ms=limits["queryTimeoutMs"],
-            schema=request.GET.get("schema") or request.json.get("schema") or "master"))
+            schema=schema_param(request, request.json)))
     except query.QueryError as exc:
         return error(str(exc), 400)
 

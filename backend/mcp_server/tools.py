@@ -163,7 +163,7 @@ def propose_change(user, operations: list, prompt: str = "", *, source: str = "m
                    conversation_id: int | None = None, schema: str = "master") -> dict:
     try:
         change = service.propose(user, operations, source=source, prompt=prompt[:10_000],
-                                 conversation_id=conversation_id, schema=schema or "master")
+                                 conversation_id=conversation_id, schema=schema)
     except service.ChangeError as exc:
         raise ToolFailure(exc.message) from exc
     return _result(user, change)

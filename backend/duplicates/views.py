@@ -5,7 +5,7 @@ from accounts.api import endpoint, error
 from approvals import service as changes
 from audit.models import record
 from schema import introspect
-from schema.http import unknown_schema_is_400
+from schema.http import schema_param, unknown_schema_is_400
 
 from . import service
 from .models import DuplicateGroup
@@ -23,7 +23,8 @@ def _group(pk):
 @unknown_schema_is_400
 def groups(request):
     qs = DuplicateGroup.objects.select_related("merge_change")
-    if schema := request.GET.get("schema"):
+    schema = schema_param(request, default=None)  # absent = ALL schemas (intentional), unlike scan which defaults to master
+    if schema:
         qs = qs.filter(schema=introspect.require_managed(schema))
     if table := request.GET.get("table"):
         qs = qs.filter(table_name=table)
@@ -57,7 +58,7 @@ def scan(request):
         return error("fields must be a list of column names")
     try:
         result = service.scan(str(b.get("table", "")), request.user, fields=fields, threshold=b.get("threshold"),
-                              schema=request.GET.get("schema") or b.get("schema") or "master")
+                              schema=schema_param(request, b))
     except service.DuplicateError as exc:
         return _fail(exc)
     record(request.user, "duplicates.scanned", target=result["table"], details=result)

@@ -2,7 +2,7 @@ from django.http import JsonResponse
 
 from accounts.api import endpoint, error
 from audit.models import record
-from schema.http import unknown_schema_is_400
+from schema.http import schema_param, unknown_schema_is_400
 
 from . import indexer, service
 from .embedder import SearchError
@@ -16,7 +16,8 @@ def search(request):
     except ValueError:
         return error("k must be a number")
     try:
-        return JsonResponse(service.search(request.GET.get("q", ""), top_k, request.GET.get("schema") or None))
+        # absent schema = all schemas (intentional)
+        return JsonResponse(service.search(request.GET.get("q", ""), top_k, schema_param(request, default=None)))
     except SearchError as exc:
         return error(str(exc), 400 if "required" in str(exc) else 503)
 
