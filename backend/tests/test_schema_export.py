@@ -1,5 +1,6 @@
-"""The export endpoint (structure-only stub until Task 4) and a real-Postgres round-trip."""
+"""The export endpoint (real view) and a real-Postgres round-trip."""
 
+import pytest
 from django.contrib.auth.models import AnonymousUser
 from django.test import RequestFactory
 from django.urls import resolve
@@ -10,6 +11,7 @@ from schema import views
 from . import pgsetup
 from .test_export_render import INTERNAL
 
+pytestmark = pytest.mark.django_db
 RF = RequestFactory()
 
 SEED = """
@@ -28,7 +30,7 @@ SCRATCH = "export_roundtrip"
 
 def export_as(user):
     """Call the real view with a hand-built request; no client."""
-    req = RF.get("/api/schema/export?format=sql")
+    req = RF.get("/api/schema/export")
     req.user = user
     return views.export(req)
 
@@ -47,8 +49,8 @@ def test_export_returns_sql_attachment(master):
     r = export_as(User(role=Role.VIEWER))
     assert r.status_code == 200
     assert r["Content-Type"].startswith("text/sql")
-    assert r["Content-Disposition"] == 'attachment; filename="singularity-schema.sql"'
-    body = r.content.decode()
+    assert r["Content-Disposition"].startswith('attachment; filename="singularity-master-')
+    body = b"".join(r.streaming_content).decode()
     assert 'CREATE TABLE "master"."province"' in body
     assert 'ALTER TABLE "master"."district"' in body
 
@@ -56,7 +58,7 @@ def test_export_returns_sql_attachment(master):
 def test_export_leaks_no_singularity_internals(master):
     with pgsetup.connect("singularity_master_rw", master) as rw:
         rw.execute(SEED)
-    body = export_as(User(role=Role.VIEWER)).content.decode().lower()
+    body = b"".join(export_as(User(role=Role.VIEWER)).streaming_content).decode().lower()
     assert [name for name in INTERNAL if name in body] == []
 
 
@@ -69,7 +71,7 @@ def test_exported_sql_loads_into_a_real_postgres(master):
 
     r = export_as(User(role=Role.VIEWER))
     assert r.status_code == 200
-    sql = r.content.decode()
+    sql = b"".join(r.streaming_content).decode()
     assert sql.count("CREATE TABLE") == 3
 
     with pgsetup.connect(pgsetup.ADMIN, "postgres") as admin:

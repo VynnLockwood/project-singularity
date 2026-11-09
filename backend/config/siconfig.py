@@ -23,6 +23,7 @@ DEFAULTS = {
         "maxScriptRows": 200000,
         "maxOpsPerScript": 1000,
         "maxInlineScriptBytes": 20480,
+        "maxExportRows": 1000000,
     },
     "embedding": {"model": "intfloat/multilingual-e5-small", "dimension": 384},
     "chat": {"provider": "openrouter", "defaultModel": "", "allowedModels": [], "models": [], "maxToolRounds": 8,
