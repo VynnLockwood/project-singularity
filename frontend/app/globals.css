@@ -228,3 +228,6 @@ textarea.code { width: 100%; font-family: ui-monospace, monospace; color: var(--
 .db-main { min-width: 0; }
 .db-tabs { display: flex; gap: 0.3rem; margin: 0.6rem 0; }
 @media (max-width: 800px) { .db-layout { grid-template-columns: 1fr; } }
+.db-rail-actions { display: flex; flex-direction: column; gap: 0.4rem; }
+.db-inline-form { display: flex; flex-direction: column; gap: 0.4rem; margin: 0.4rem 0; }
+.db-inline-form label { display: flex; flex-direction: column; gap: 0.2rem; }
