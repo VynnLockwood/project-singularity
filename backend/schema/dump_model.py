@@ -18,7 +18,9 @@ class ExportError(Exception):
 
 
 def allowed_schemas() -> list[str]:
-    return ["master"]
+    from . import introspect
+
+    return [m["name"] for m in introspect.managed_schemas()]
 
 
 _TABLES = """
@@ -31,10 +33,12 @@ ORDER BY c.relname
 _COLUMNS = """
 SELECT a.attrelid AS rel, a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type,
        NOT a.attnotnull AS nullable, pg_get_expr(d.adbin, d.adrelid) AS "default",
-       a.attidentity AS identity, a.attgenerated AS generated, col_description(a.attrelid, a.attnum) AS comment
+       a.attidentity AS identity, a.attgenerated AS generated, tn.nspname AS type_schema, col_description(a.attrelid, a.attnum) AS comment
 FROM pg_attribute a
 JOIN pg_class c ON c.oid = a.attrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_type ty ON ty.oid = a.atttypid
+JOIN pg_namespace tn ON tn.oid = ty.typnamespace
 LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
 WHERE n.nspname = %s AND c.relkind IN ('r', 'p') AND a.attnum > 0 AND NOT a.attisdropped
 ORDER BY a.attrelid, a.attnum
@@ -102,6 +106,10 @@ def read_model(conn, schema: str) -> dict:
             raise ExportError(
                 f'Column {_q(t["name"])}.{_q(c["name"])} is a generated column; '
                 "generated columns cannot be exported.", 422)
+        if c["type_schema"] != "pg_catalog":
+            raise ExportError(
+                f'Column {_q(t["name"])}.{_q(c["name"])} has type {c["type"]} from schema '
+                f'{_q(c["type_schema"])}; only built-in (pg_catalog) types can be exported.', 422)
         default = c["default"]
         if default is not None and "nextval(" in default:
             raise ExportError(
