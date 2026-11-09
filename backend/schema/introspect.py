@@ -15,7 +15,7 @@ class UnknownSchema(Exception):
 
 MANAGED_SQL = """
 SELECT n.nspname AS name, obj_description(n.oid, 'pg_namespace') AS comment,
-       (SELECT count(*) FROM pg_class c WHERE c.relnamespace = n.oid AND c.relkind = 'r') AS tables
+       (SELECT count(*) FROM pg_class c WHERE c.relnamespace = n.oid AND c.relkind IN ('r', 'p')) AS tables
 FROM pg_namespace n
 WHERE n.nspname NOT IN ('singularity', 'public', 'information_schema') AND n.nspname NOT LIKE 'pg\\_%'
   AND (n.nspname = 'master'
@@ -116,7 +116,7 @@ def external_state(state: dict | None = None, schema: str = "master") -> dict:
     out = {}
     for t, v in state.items():
         out[f"{schema}.{t}"] = {"columns": v["columns"],
-                              "primary_key": [v["pk"]] if v["pk"] else [], "unique": []}
+                                "primary_key": [v["pk"]] if v["pk"] else [], "unique": []}
     with ro_connection() as conn:
         for r in conn.execute(UNIQUE_KEYS_SQL, {"schema": schema}):
             out[f"{schema}.{r['table_name']}"]["unique"].append([r["column_name"]])
