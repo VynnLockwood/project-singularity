@@ -247,4 +247,13 @@ describe("FieldsTab", () => {
     expect(await screen.findByText("No fields.")).toBeInTheDocument();
     expect(screen.queryByRole("button")).toBeNull();
   });
+
+  it("keeps the Exact type input mounted once typed in, even when it becomes a listed type", async () => {
+    await setup();
+    await screen.findByText("email");
+    fireEvent.click(screen.getByRole("button", { name: "Add field" }));
+    fireEvent.change(screen.getByLabelText("Field type"), { target: { value: "varchar(n)" } });
+    fireEvent.change(screen.getByLabelText("Exact type"), { target: { value: "integer" } });
+    expect(screen.getByLabelText("Exact type")).toHaveValue("integer");
+  });
 });

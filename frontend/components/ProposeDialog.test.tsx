@@ -182,4 +182,15 @@ describe("ProposeDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(p.onClose).toHaveBeenCalled();
   });
+
+  it("Escape after a successful create calls onClose, not onBack", async () => {
+    vi.mocked(proposeChange).mockResolvedValue(change());
+    const onBack = vi.fn();
+    const p = setup({ onBack });
+    fireEvent.click(screen.getByRole("button", { name: "Propose" }));
+    await screen.findByRole("status");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(p.onClose).toHaveBeenCalled();
+    expect(onBack).not.toHaveBeenCalled();
+  });
 });

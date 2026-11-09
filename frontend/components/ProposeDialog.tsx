@@ -45,7 +45,7 @@ export function ProposeDialog({ me, schema, title, build, destructive, onClose, 
   const busyRef = useRef(false);
   busyRef.current = busy;
   const closeRef = useRef(onBack ?? onClose);
-  closeRef.current = onBack ?? onClose;
+  closeRef.current = change ? onClose : (onBack ?? onClose);
   const mounted = useRef(true);
 
   useEffect(() => {

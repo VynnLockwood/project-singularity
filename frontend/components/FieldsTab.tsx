@@ -24,6 +24,7 @@ export function FieldsTab({ me, schema, table, refreshKey, onProposed }: {
   const [text, setText] = useState("");
   // add-field form
   const [fType, setFType] = useState("text");
+  const [customType, setCustomType] = useState(false);
   const [fNullable, setFNullable] = useState("");
   const [fUnique, setFUnique] = useState(false);
   const [fDefault, setFDefault] = useState("");
@@ -55,7 +56,7 @@ export function FieldsTab({ me, schema, table, refreshKey, onProposed }: {
     setAction(a);
     setReview(false);
     setText(initial);
-    setFType("text"); setFNullable(""); setFUnique(false); setFDefault(""); setFComment("");
+    setFType("text"); setCustomType(false); setFNullable(""); setFUnique(false); setFDefault(""); setFComment("");
   };
   const close = () => { setAction(null); setReview(false); };
 
@@ -153,13 +154,13 @@ export function FieldsTab({ me, schema, table, refreshKey, onProposed }: {
             <>
               <label>Field name<input value={text} onChange={(e) => setText(e.target.value)} aria-invalid={fieldError ? "true" : undefined} autoFocus /></label>
               <label>Field type
-                <select value={COLUMN_TYPES.includes(fType) ? fType : ""} onChange={(e) => setFType(e.target.value)}>
+                <select value={COLUMN_TYPES.includes(fType) ? fType : ""} onChange={(e) => { setCustomType(false); setFType(e.target.value); }}>
                   <option value="" disabled>Custom</option>
                   {COLUMN_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
                 </select>
               </label>
-              {(!COLUMN_TYPES.includes(fType) || validateType(fType) !== null) && (
-                <label>Exact type<input value={fType} onChange={(e) => setFType(e.target.value)} aria-invalid={typeBlocked ? "true" : undefined} /></label>
+              {(customType || !COLUMN_TYPES.includes(fType) || validateType(fType) !== null) && (
+                <label>Exact type<input value={fType} onChange={(e) => { setCustomType(true); setFType(e.target.value); }} aria-invalid={typeBlocked ? "true" : undefined} /></label>
               )}
               <label>Nullable
                 <select value={fNullable} onChange={(e) => setFNullable(e.target.value)}>
@@ -173,13 +174,13 @@ export function FieldsTab({ me, schema, table, refreshKey, onProposed }: {
           ) : action.kind === "type" ? (
             <>
               <label>New type
-                <select value={COLUMN_TYPES.includes(text) ? text : ""} onChange={(e) => setText(e.target.value)} autoFocus>
+                <select value={COLUMN_TYPES.includes(text) ? text : ""} onChange={(e) => { setCustomType(false); setText(e.target.value); }} autoFocus>
                   <option value="" disabled>Choose a type</option>
                   {COLUMN_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
                 </select>
               </label>
-              {text !== "" && (!COLUMN_TYPES.includes(text) || validateType(text) !== null) && (
-                <label>Exact type<input value={text} onChange={(e) => setText(e.target.value)} aria-invalid={fieldError ? "true" : undefined} /></label>
+              {text !== "" && (customType || !COLUMN_TYPES.includes(text) || validateType(text) !== null) && (
+                <label>Exact type<input value={text} onChange={(e) => { setCustomType(true); setText(e.target.value); }} aria-invalid={fieldError ? "true" : undefined} /></label>
               )}
             </>
           ) : (
