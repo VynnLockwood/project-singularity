@@ -5,7 +5,8 @@ import { getGraph, getSchemas, type Change, type Me, type SchemaGraph, type Sche
 import { SchemaView } from "./SchemaView";
 import { NewDatabaseForm } from "./NewDatabaseForm";
 import { ProposeDialog } from "./ProposeDialog";
-import { dropSchemaOp, renameSchemaOp, validateSchemaName } from "@/lib/databaseOps";
+import { dropSchemaOp, dropTableOp, renameSchemaOp, renameTableOp, validateName, validateSchemaName } from "@/lib/databaseOps";
+import { FieldsTab } from "./FieldsTab";
 import { ExportMenu } from "./ExportMenu";
 
 export type DbTab = "fields" | "relations" | "erd" | "overview";
@@ -29,7 +30,7 @@ export function DatabaseView({ me, live, refreshKey, onProposed }: {
   const [table, setTable] = useState<string | null>(null);
   const [tab, setTab] = useState<DbTab>("overview");
   const [filter, setFilter] = useState("");
-  const [panel, setPanel] = useState<"new" | "rename" | "rename-review" | "drop" | null>(null);
+  const [panel, setPanel] = useState<"new" | "rename" | "rename-review" | "drop" | "trename" | "trename-review" | "tdrop" | null>(null);
   const [newName, setNewName] = useState("");
   const [target, setTarget] = useState("");
   const seq = useRef(0);
@@ -52,6 +53,7 @@ export function DatabaseView({ me, live, refreshKey, onProposed }: {
     setTable(null);
     setTab((t) => (t === "erd" ? t : "overview"));
     setFilter("");
+    setPanel((p) => (p === "trename" || p === "trename-review" || p === "tdrop" ? null : p));
     setSchema(name);
   };
 
@@ -99,6 +101,7 @@ export function DatabaseView({ me, live, refreshKey, onProposed }: {
   };
 
   const pickTable = (name: string | null) => {
+    setPanel((p) => (p === "trename" || p === "trename-review" || p === "tdrop" ? null : p));
     setTable(name);
     setTab(name ? "fields" : "overview");
   };
@@ -109,6 +112,7 @@ export function DatabaseView({ me, live, refreshKey, onProposed }: {
   const hasTables = (info?.tables ?? 0) > 0;
   const taken = (schemas ?? []).map((x) => x.name);
   const renameError = newName === "" ? null : validateSchemaName(newName, taken);
+  const tableRenameError = newName === "" ? null : validateName(newName, (graph?.tables ?? []).map((t) => t.name));
   const closePanel = () => { setPanel(null); setNewName(""); };
 
   const shown = (graph?.tables ?? []).filter((t) => t.name.toLowerCase().includes(filter.trim().toLowerCase()));
@@ -175,6 +179,12 @@ export function DatabaseView({ me, live, refreshKey, onProposed }: {
                 >Delete</button>{" "}
               </>
             )}
+            {canWrite && table && (
+              <>
+                <button className="link" onClick={() => { setNewName(""); setPanel("trename"); }}>Rename table</button>{" "}
+                <button className="link" onClick={() => setPanel("tdrop")}>Drop table</button>{" "}
+              </>
+            )}
             <ExportMenu schema={schema} canExportData={me.role !== "viewer"} />
           </div>
         </div>
@@ -210,12 +220,33 @@ export function DatabaseView({ me, live, refreshKey, onProposed }: {
             onProposed={onProposed}
           />
         )}
+        {canWrite && table && panel === "trename" && (
+          <form className="db-inline-form" onSubmit={(e) => { e.preventDefault(); if (newName && !tableRenameError) setPanel("trename-review"); }}>
+            <label>
+              New table name
+              <input value={newName} onChange={(e) => setNewName(e.target.value)} aria-invalid={tableRenameError ? "true" : undefined} autoFocus />
+            </label>
+            {tableRenameError && <p className="problems small" role="alert">{tableRenameError}</p>}
+            <button type="submit" className="button" disabled={!newName || !!tableRenameError}>Review</button>{" "}
+            <button type="button" className="link" onClick={closePanel}>Cancel</button>
+          </form>
+        )}
+        {canWrite && table && panel === "trename-review" && (
+          <ProposeDialog me={me} schema={schema} title={`Rename table ${table} to ${newName}`}
+            build={() => [renameTableOp(table, newName)]} onClose={closePanel} onProposed={onProposed} />
+        )}
+        {canWrite && table && panel === "tdrop" && (
+          <ProposeDialog me={me} schema={schema} destructive title={`Drop table ${table}`}
+            build={(reason) => [dropTableOp(table, reason)]} onClose={closePanel} onProposed={onProposed} />
+        )}
         <div className="db-tabs" role="tablist" aria-label="Database sections">
           {TABS.map((t) => (
             <button key={t.id} role="tab" className="tab" aria-selected={tab === t.id} data-active={tab === t.id} onClick={() => setTab(t.id)}>{t.label}</button>
           ))}
         </div>
-        {tab === "fields" && <p className="muted">Fields are coming soon.</p>}
+        {tab === "fields" && (table
+          ? <FieldsTab key={`${schema}/${table}`} me={me} schema={schema} table={table} refreshKey={refreshKey} onProposed={onProposed} />
+          : <p className="muted">Select a table to see its fields.</p>)}
         {tab === "relations" && <p className="muted">Relations are coming soon.</p>}
         {tab === "overview" && <p className="muted">Overview is coming soon.</p>}
         {tab === "erd" && <SchemaView schema={schema} refreshKey={refreshKey} />}

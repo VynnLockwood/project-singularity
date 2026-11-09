@@ -8,7 +8,7 @@ const master: SchemaGraph = { tables: [tbl("customer"), tbl("orders"), tbl("item
 const empty: SchemaGraph = { tables: [], relations: [] };
 const editor: Me = { id: 1, email: "e@x.io", name: "", role: "editor" };
 
-type Api = { getSchemas: ReturnType<typeof vi.fn>; getGraph: ReturnType<typeof vi.fn>; proposeChange: ReturnType<typeof vi.fn> };
+type Api = { getTable: ReturnType<typeof vi.fn>; getSchemas: ReturnType<typeof vi.fn>; getGraph: ReturnType<typeof vi.fn>; proposeChange: ReturnType<typeof vi.fn> };
 const viewer: Me = { ...editor, role: "viewer" };
 const aChange = { id: 9, status: "pending", kind: "schema", source: "web", requester: "e@x.io", prompt: "t", createdAt: "", decidedBy: null, error: "", decisionNote: "", tables: [], diff: ["+ x"], check: {} };
 
@@ -17,6 +17,7 @@ async function setup(api: Partial<Api> = {}, refreshKey = 0, me: Me = editor) {
   const mocks: Api = {
     getSchemas: api.getSchemas ?? vi.fn().mockResolvedValue([{ name: "master", tables: 3, comment: null }, { name: "crm", tables: 0, comment: null }]),
     proposeChange: api.proposeChange ?? vi.fn().mockResolvedValue(aChange),
+    getTable: api.getTable ?? vi.fn().mockResolvedValue({ name: "t", comment: null, constraints: [], indexes: [], hiddenColumns: [], columns: [] }),
     getGraph: api.getGraph ?? vi.fn(async (s: string) => (s === "crm" ? empty : master)),
   };
   vi.doMock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), ...mocks }));
@@ -259,5 +260,38 @@ describe("DatabaseView", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Relations" }));
     fireEvent.click(screen.getByRole("button", { name: "master (3)" }));
     expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  describe("table actions", () => {
+    const withDetail = async (me: Me) => {
+      const getTable = vi.fn().mockResolvedValue({ name: "customer", comment: null, constraints: [], indexes: [], hiddenColumns: [], columns: [{ name: "id", type: "integer", nullable: false, default: null, comment: null, identity: false }] });
+      const r = await setup({ getTable }, 0, me);
+      return r;
+    };
+    it("editor can drop a table with a reason", async () => {
+      const { mocks } = await withDetail(editor);
+      fireEvent.click(await screen.findByRole("button", { name: "customer" }));
+      fireEvent.click(screen.getByRole("button", { name: "Drop table" }));
+      fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "obsolete" } });
+      fireEvent.click(screen.getByRole("button", { name: "Propose" }));
+      await waitFor(() => expect(mocks.proposeChange).toHaveBeenCalled());
+      expect(mocks.proposeChange.mock.calls[0][0]).toEqual([{ op: "drop_table", table: "customer", reason: "obsolete" }]);
+    });
+    it("editor can rename a table", async () => {
+      const { mocks } = await withDetail(editor);
+      fireEvent.click(await screen.findByRole("button", { name: "customer" }));
+      fireEvent.click(screen.getByRole("button", { name: "Rename table" }));
+      fireEvent.change(screen.getByLabelText("New table name"), { target: { value: "client" } });
+      fireEvent.click(screen.getByRole("button", { name: "Review" }));
+      fireEvent.click(screen.getByRole("button", { name: "Propose" }));
+      await waitFor(() => expect(mocks.proposeChange).toHaveBeenCalled());
+      expect(mocks.proposeChange.mock.calls[0][0]).toEqual([{ op: "rename_table", table: "customer", new_name: "client" }]);
+    });
+    it("viewer sees no table actions", async () => {
+      await withDetail(viewer);
+      fireEvent.click(await screen.findByRole("button", { name: "customer" }));
+      expect(screen.queryByRole("button", { name: "Drop table" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Rename table" })).toBeNull();
+    });
   });
 });
