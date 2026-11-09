@@ -36,7 +36,7 @@ const PLAIN_TYPES = new Set([
 ]);
 
 export function validateType(t: string): string | null {
-  const n = t.trim().toLowerCase().replace(/\s+/g, " ").replace(", ", ",");
+  const n = normalizeType(t);
   if (PLAIN_TYPES.has(n)) return null;
   const num = /^numeric\((\d{1,2}),\s?(\d{1,2})\)$/.exec(n);
   if (num) {
@@ -54,15 +54,33 @@ export function validateType(t: string): string | null {
 }
 
 const DEFAULT_FUNCS = ["now()", "gen_random_uuid()", "current_date"];
+const NUMERIC_TYPES = new Set(["integer", "bigint", "smallint", "real", "double precision", "numeric"]);
 
-export function parseDefault(input: string): unknown {
+export function normalizeType(t: string): string {
+  return t.trim().toLowerCase().replace(/\s+/g, " ").replace(", ", ",");
+}
+
+export function parseDefault(input: string, type?: string): unknown {
   const s = input.trim();
   if (s === "") return undefined;
-  if (DEFAULT_FUNCS.includes(s)) return s;
-  if (s === "true") return true;
-  if (s === "false") return false;
-  if (s === "null") return null;
-  if (/^-?\d+(\.\d+)?$/.test(s)) return Number(s);
+  const fn = s.toLowerCase();
+  if (DEFAULT_FUNCS.includes(fn)) return fn;
+  const t = type === undefined ? "" : normalizeType(type);
+  if (NUMERIC_TYPES.has(t) || t.startsWith("numeric(")) {
+    const n = Number(s);
+    return Number.isFinite(n) && String(n) === s ? n : s;
+  }
+  if (t === "boolean") {
+    const l = s.toLowerCase();
+    return l === "true" ? true : l === "false" ? false : s;
+  }
+  if (t === "jsonb") {
+    try {
+      return JSON.parse(s);
+    } catch {
+      return s;
+    }
+  }
   return s;
 }
 
@@ -77,10 +95,10 @@ export interface ColumnSpec {
 }
 
 function columnObject(c: ColumnSpec): Record<string, unknown> {
-  const out: Record<string, unknown> = { name: c.name, type: c.type };
+  const out: Record<string, unknown> = { name: c.name, type: normalizeType(c.type) };
   if (c.nullable !== undefined) out.nullable = c.nullable;
   if (c.unique !== undefined) out.unique = c.unique;
-  const d = c.default === undefined ? undefined : parseDefault(c.default);
+  const d = c.default === undefined ? undefined : parseDefault(c.default, c.type);
   if (d !== undefined) out.default = d;
   if (c.comment) out.comment = c.comment;
   if (c.references && c.references.table) {
@@ -109,7 +127,7 @@ export const renameTableOp = (table: string, newName: string): Operation =>
 export const renameColumnOp = (table: string, column: string, newName: string): Operation =>
   ({ op: "rename_column", table, column, new_name: newName });
 export const alterColumnTypeOp = (table: string, column: string, type: string): Operation =>
-  ({ op: "alter_column_type", table, column, type });
+  ({ op: "alter_column_type", table, column, type: normalizeType(type) });
 export const setColumnCommentOp = (table: string, column: string, comment: string): Operation =>
   ({ op: "set_column_comment", table, column, comment });
 export const dropColumnOp = (table: string, column: string, reason: string): Operation =>

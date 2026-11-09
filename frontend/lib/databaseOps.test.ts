@@ -33,10 +33,58 @@ describe("validateType", () => {
 });
 
 describe("parseDefault", () => {
-  it.each([
-    ["", undefined], ["now()", "now()"], ["gen_random_uuid()", "gen_random_uuid()"], ["current_date", "current_date"],
-    ["5", 5], ["-1.5", -1.5], ["true", true], ["false", false], ["null", null], ["abc", "abc"],
-  ])("%j", (i, e) => expect(o.parseDefault(i)).toEqual(e));
+  it("empty and functions (any type, case-insensitive)", () => {
+    expect(o.parseDefault("")).toBeUndefined();
+    expect(o.parseDefault("   ", "text")).toBeUndefined();
+    expect(o.parseDefault("NOW()", "text")).toBe("now()");
+    expect(o.parseDefault(" Gen_Random_UUID() ", "uuid")).toBe("gen_random_uuid()");
+    expect(o.parseDefault("CURRENT_DATE", "date")).toBe("current_date");
+    expect(o.parseDefault("now()")).toBe("now()");
+  });
+  it("untyped and text-like stay strings", () => {
+    for (const t of [undefined, "text", "varchar(40)", "uuid", "date", "timestamp", "timestamptz"]) {
+      for (const v of ["007", "true", "null", "5", "abc"]) expect(o.parseDefault(v, t)).toBe(v);
+    }
+  });
+  it("numeric types round-trip or stay raw", () => {
+    for (const t of ["integer", "bigint", "smallint", "real", "double precision", "numeric", "numeric(10,2)", "Numeric(10, 2)"]) {
+      expect(o.parseDefault("5", t)).toBe(5);
+      expect(o.parseDefault("-1", t)).toBe(-1);
+      expect(o.parseDefault("0.5", t)).toBe(0.5);
+      expect(o.parseDefault("007", t)).toBe("007");
+      expect(o.parseDefault("1e3", t)).toBe("1e3");
+      expect(o.parseDefault("+5", t)).toBe("+5");
+      expect(o.parseDefault("abc", t)).toBe("abc");
+    }
+    expect(o.parseDefault("12345678901234567890", "bigint")).toBe("12345678901234567890");
+    const huge = "1" + "0".repeat(399);
+    expect(o.parseDefault(huge, "numeric")).toBe(huge);
+  });
+  it("boolean", () => {
+    expect(o.parseDefault("true", "boolean")).toBe(true);
+    expect(o.parseDefault("FALSE", "boolean")).toBe(false);
+    expect(o.parseDefault("yes", "boolean")).toBe("yes");
+  });
+  it("jsonb", () => {
+    expect(o.parseDefault("{\"a\":1}", "jsonb")).toEqual({ a: 1 });
+    expect(o.parseDefault("[1,2]", "jsonb")).toEqual([1, 2]);
+    expect(o.parseDefault("5", "jsonb")).toBe(5);
+    expect(o.parseDefault("null", "jsonb")).toBeNull();
+    expect(o.parseDefault("true", "jsonb")).toBe(true);
+    expect(o.parseDefault("\"x\"", "jsonb")).toBe("x");
+    expect(o.parseDefault("{bad", "jsonb")).toBe("{bad");
+  });
+});
+
+describe("type normalization in builders", () => {
+  it("emits normalized types", () => {
+    expect(o.addColumnOp("t", { name: "a", type: " Numeric(10, 2) " })).toEqual({ op: "add_column", table: "t", column: { name: "a", type: "numeric(10,2)" } });
+    expect(o.createTableOp("t", [{ name: "a", type: "Double  Precision" }])).toEqual({ op: "create_table", name: "t", columns: [{ name: "a", type: "double precision" }] });
+    expect(o.alterColumnTypeOp("t", "a", "VARCHAR(40)")).toEqual({ op: "alter_column_type", table: "t", column: "a", type: "varchar(40)" });
+  });
+  it("types the default", () => {
+    expect(o.addColumnOp("t", { name: "a", type: "text", default: "007" })).toEqual({ op: "add_column", table: "t", column: { name: "a", type: "text", default: "007" } });
+  });
 });
 
 describe("builders", () => {
