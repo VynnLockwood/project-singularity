@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import datetime
 
-from .dump_model import table_order
+from .conn import ro_connection
+from .dump_model import ExportError, allowed_schemas, read_model, table_order
 
 
 def _ident(name: str) -> str:
@@ -97,3 +98,98 @@ def render_identity_fix(model: dict, schema: str) -> str:
             out.append(f"SELECT setval(pg_get_serial_sequence('{seq}', '{name}'), "
                        f"COALESCE({mx}, 1), {mx} IS NOT NULL);")
     return "\n".join(out) + "\n" if out else ""
+
+
+EXPORT_TIMEOUT_MS = 600_000
+
+
+class _Chunks:
+    """Iterator over the file's bytes; closing it (exhausted, error or early) closes the connection."""
+
+    def __init__(self, export: "Export"):
+        self._export = export
+        self._gen = export._generate()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> bytes:
+        try:
+            return next(self._gen)
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        self._gen.close()
+        self._export.close()
+
+
+class Export:
+    def __init__(self, schema: str, data: bool, conn, model: dict, counts: dict[str, int]):
+        self.schema = schema
+        self.data = data
+        self.conn = conn
+        self.model = model
+        self.counts = counts
+
+    def filename(self, today: datetime.date) -> str:
+        return f"singularity-{self.schema}-{today.strftime('%Y%m%d')}.sql"
+
+    def chunks(self) -> _Chunks:
+        return _Chunks(self)
+
+    def close(self) -> None:
+        if not self.conn.closed:
+            self.conn.close()
+
+    def _generate(self):
+        model, schema = self.model, self.schema
+        yield render_header(schema, self.data, self.counts, datetime.date.today()).encode()
+        yield ("\n" + render_structure(model, schema)).encode()
+        if self.data:
+            by_name = {t["name"]: t for t in model["tables"]}
+            for name in table_order(model):
+                cols = ", ".join(_ident(c["name"]) for c in by_name[name]["columns"])
+                qt = _qualified(schema, name)
+                yield f"\nCOPY {qt} ({cols}) FROM stdin;\n".encode()
+                with self.conn.cursor() as cur:
+                    with cur.copy(f"COPY {qt} ({cols}) TO STDOUT") as copy:
+                        for chunk in copy:
+                            yield bytes(chunk)
+                yield b"\\.\n"
+        fk = render_foreign_keys(model, schema)
+        if fk:
+            yield ("\n" + fk).encode()
+        idx = render_indexes(model)
+        if idx:
+            yield ("\n" + idx).encode()
+        if self.data:
+            fix = render_identity_fix(model, schema)
+            if fix:
+                yield ("\n" + fix).encode()
+
+
+def open_export(schema: str, *, data: bool, cap: int) -> Export:
+    if schema not in allowed_schemas():
+        raise ExportError(f"Unknown schema {schema!r}.", 400)
+    conn = ro_connection(autocommit=True)
+    try:
+        conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        conn.execute(f"SET LOCAL statement_timeout = {int(EXPORT_TIMEOUT_MS)}")
+        model = read_model(conn, schema)
+        counts: dict[str, int] = {}
+        if data:
+            total = 0
+            for name in table_order(model):
+                n = conn.execute(f"SELECT count(*) AS n FROM {_qualified(schema, name)}").fetchone()["n"]
+                counts[name] = n
+                total += n
+                if total > cap:
+                    raise ExportError(
+                        f"Export is over the {cap}-row limit; the limit was crossed at table "
+                        f"{_ident(name)}. Export without data or raise the limit.", 413)
+        return Export(schema, data, conn, model, counts)
+    except BaseException:
+        conn.close()
+        raise
