@@ -17,6 +17,8 @@ describe("AppShell against the real API response shapes", () => {
     render(<AppShell me={me} onLogout={() => {}} />);
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/queue"), expect.anything()));
     expect(screen.getByText("Duplicates")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Database" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Schema" })).toBeNull();
   });
 
   it("getQueue returns the changes array, or [] when the field is missing", async () => {

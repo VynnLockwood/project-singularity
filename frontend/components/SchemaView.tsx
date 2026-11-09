@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { exportUrl, getGraph, type SchemaGraph } from "@/lib/api";
+import { getGraph, type SchemaGraph } from "@/lib/api";
 import { layoutUniverse, type Universe } from "@/lib/universe";
 import { UniverseScene, webglAvailable } from "./UniverseScene";
 import { CARD_W, HEAD_H, ROW_H, layoutSchema } from "@/lib/layout";
@@ -10,7 +10,7 @@ import { CARD_W, HEAD_H, ROW_H, layoutSchema } from "@/lib/layout";
 export function SchemaDiagram({ graph }: { graph: SchemaGraph }) {
   const layout = useMemo(() => layoutSchema(graph), [graph]);
   if (graph.tables.length === 0) {
-    return <p className="muted">No tables yet. Ask the assistant to design one in the Chat tab.</p>;
+    return <p className="muted">No tables yet.</p>;
   }
   return (
     <div className="schema-scroll">
@@ -65,17 +65,23 @@ export function TablePanel({ graph, name }: { graph: SchemaGraph; name: string }
 
 type Mode = "3d" | "2d";
 
-export function SchemaView({ refreshKey, canExportData = false }: { refreshKey: number; canExportData?: boolean }) {
+export function SchemaView({ schema, refreshKey }: { schema: string; refreshKey: number }) {
   const [graph, setGraph] = useState<SchemaGraph | null>(null);
   const [universe, setUniverse] = useState<Universe | null>(null);
   const [error, setError] = useState("");
   const [mode, setMode] = useState<Mode>(() => (webglAvailable() ? "3d" : "2d"));
   const [selected, setSelected] = useState<string | null>(null);
-  const [withData, setWithData] = useState(false);
 
   useEffect(() => {
-    getGraph().then(setGraph).catch(() => setError("Could not load the schema."));
-  }, [refreshKey]);
+    let current = true;
+    setGraph(null);
+    setUniverse(null);
+    setError("");
+    getGraph(schema)
+      .then((g) => { if (current) setGraph(g); })
+      .catch(() => { if (current) setError("Could not load the schema."); });
+    return () => { current = false; };
+  }, [schema, refreshKey]);
 
   useEffect(() => {
     if (!graph) return;
@@ -97,20 +103,6 @@ export function SchemaView({ refreshKey, canExportData = false }: { refreshKey: 
         <button className="link" aria-pressed={mode === "3d"} onClick={() => setMode("3d")}>3D</button>
         <button className="link" aria-pressed={mode === "2d"} onClick={() => setMode("2d")}>2D</button>
         {mode === "3d" && <span className="muted small">drag to orbit, scroll to zoom, click a table</span>}
-        <span role="group" aria-label="Export SQL">
-          <label className="small" title={canExportData ? undefined : "Editors can export data"}>
-            <input
-              type="checkbox"
-              aria-label="Include data"
-              title={canExportData ? undefined : "Editors can export data"}
-              checked={canExportData && withData}
-              disabled={!canExportData}
-              onChange={(e) => setWithData(e.target.checked)}
-            />{" "}
-            Include data
-          </label>{" "}
-          <a className="link" aria-label="Download SQL" href={exportUrl("master", canExportData && withData)} download>Download</a>
-        </span>
       </div>
       {mode === "2d" || graph.tables.length === 0 ? (
         <SchemaDiagram graph={graph} />
