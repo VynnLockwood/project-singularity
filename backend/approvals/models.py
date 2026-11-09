@@ -17,6 +17,7 @@ class Change(models.Model):
     prompt = models.TextField(blank=True)
     conversation_id = models.PositiveIntegerField(null=True, blank=True)
     kind = models.CharField(max_length=8)  # schema | data
+    schema = models.CharField(max_length=63, default="master")  # the managed schema this change targets
     status = models.CharField(max_length=12, choices=Status.choices, db_index=True)
 
     original_operations = models.JSONField(default=list)

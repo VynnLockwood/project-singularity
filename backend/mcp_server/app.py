@@ -92,30 +92,39 @@ async def get_rules() -> dict:
     return await run("get_rules")
 
 
-@mcp.tool(name="list_tables", description="Tables in the master data database, with comments and row estimates.")
-async def list_tables() -> dict:
-    return await run("list_tables")
+DB_NOTE = "A 'database' is a Postgres schema; `schema` defaults to master. Call list_schemas to see them."
 
 
-@mcp.tool(name="describe_table", description="Columns, types, constraints and indexes of one table.")
-async def describe_table(table: str) -> dict:
-    return await run("describe_table", table=table)
+@mcp.tool(name="list_schemas", description="The databases (Postgres schemas) you can read and change, with table counts and comments. master is the default.")
+async def list_schemas() -> dict:
+    return await run("list_schemas")
 
 
-@mcp.tool(name="query", description="Run one read-only SELECT against master data. Row-limited; cannot change anything.")
-async def query(sql: str, limit: int | None = None) -> dict:
-    return await run("query", sql=sql, limit=limit)
+@mcp.tool(name="list_tables", description="Tables in one database (schema, default master), with comments and row estimates. " + DB_NOTE)
+async def list_tables(schema: str = "master") -> dict:
+    return await run("list_tables", schema=schema)
+
+
+@mcp.tool(name="describe_table", description="Columns, types, constraints and indexes of one table. " + DB_NOTE)
+async def describe_table(table: str, schema: str = "master") -> dict:
+    return await run("describe_table", table=table, schema=schema)
+
+
+@mcp.tool(name="query", description="Run one read-only SELECT against one database (schema, default master). Row-limited; cannot change anything. " + DB_NOTE)
+async def query(sql: str, limit: int | None = None, schema: str = "master") -> dict:
+    return await run("query", sql=sql, limit=limit, schema=schema)
 
 
 @mcp.tool(
     name="search_schema",
     description=(
         "Find where a kind of data belongs: semantic search over tables and columns (Thai or English). "
-        "Use before proposing a new column, to avoid duplicates. If 'confident' is false, nothing fits well."
+        "Use before proposing a new column, to avoid duplicates. If 'confident' is false, nothing fits well. "
+        "Searches one database (schema, default master); pass schema='*' to search all of them."
     ),
 )
-async def search_schema(query: str, limit: int | None = None) -> dict:
-    return await run("search_schema", query=query, limit=limit)
+async def search_schema(query: str, limit: int | None = None, schema: str = "master") -> dict:
+    return await run("search_schema", query=query, limit=limit, schema=schema)
 
 
 @mcp.tool(
@@ -129,14 +138,16 @@ async def search_schema(query: str, limit: int | None = None) -> dict:
         "add_check{table,name,expression}, set_table_comment{table,comment}, "
         "drop_column{table,column,reason}, drop_table{table,reason}, drop_index{name,reason}, drop_constraint{table,name,reason}, "
         "insert_rows{table,rows[]}, update_rows{table,where{},set{}}, deactivate_rows{table,where{}}. "
+        "Schema operations: create_schema{name,comment?}, rename_schema{schema,new_name}, drop_schema{schema,reason}. "
+        "Schema ops go alone, in their own change; a 'database' is a Postgres schema. Other operations act on the `schema` argument (default master). "
         "(bulk_insert exists but is produced by script intake only; never write it yourself, the gate refuses it.) "
         "Types: text, integer, bigint, smallint, boolean, date, timestamptz, timestamp, uuid, jsonb, real, "
         "double precision, numeric, numeric(p,s), varchar(n). Audit columns are added automatically. "
         "Returns the checked change with a diff; nothing is applied until it is approved."
     ),
 )
-async def propose_change(operations: list[dict], prompt: str = "") -> dict:
-    return await run("propose_change", operations=operations, prompt=prompt)
+async def propose_change(operations: list[dict], prompt: str = "", schema: str = "master") -> dict:
+    return await run("propose_change", operations=operations, prompt=prompt, schema=schema)
 
 
 @mcp.tool(
@@ -197,11 +208,11 @@ async def list_pending() -> dict:
         "validate it against the gate and submit it as one approvable Change. No raw SQL is executed: the script is "
         "parsed into gated operations. For bigger files, tell the user to upload the file in the web app, then use "
         "validate_script with the script_id. Optional mapping: {tables: {src_table: {pk: ', srcname: table}}, "
-        "columns: {...}}; leave out to let the system suggest one."
+        "columns: {...}}; leave out to let the system suggest one. The script loads into one database (schema, default master)."
     ),
 )
-async def submit_script(name: str, content: str, mapping: dict | None = None) -> dict:
-    return await run("submit_script", name=name, content=content, mapping=mapping)
+async def submit_script(name: str, content: str, mapping: dict | None = None, schema: str = "master") -> dict:
+    return await run("submit_script", name=name, content=content, mapping=mapping, schema=schema)
 
 
 @mcp.tool(
@@ -212,8 +223,8 @@ async def submit_script(name: str, content: str, mapping: dict | None = None) ->
         "Returns the same report as at upload, so re-validation is idempotent."
     ),
 )
-async def validate_script(script_id: int, mapping: dict | None = None) -> dict:
-    return await run("validate_script", script_id=script_id, mapping=mapping)
+async def validate_script(script_id: int, mapping: dict | None = None, schema: str = "master") -> dict:
+    return await run("validate_script", script_id=script_id, mapping=mapping, schema=schema)
 
 
 @mcp.tool(

@@ -29,9 +29,43 @@ class CheckResult:
         }
 
 
+def _validate_database_ops(ops: list[dict], managed: dict[str, int], max_schemas: int) -> list[str]:
+    """Validate schema-level ops against the managed schemas (name -> table count)."""
+    errors: list[str] = []
+    for o in ops:
+        kind = o["op"]
+        if kind == "create_schema":
+            if o["name"] in managed:
+                errors.append(f"schema {o['name']!r} already exists")
+            elif len(managed) >= max_schemas:
+                errors.append(
+                    f"cannot create schema {o['name']!r}: {len(managed)} managed schemas already exist "
+                    f"(limit limits.maxSchemas is {max_schemas})")
+        elif kind == "rename_schema":
+            if o["schema"] == "master":
+                errors.append("the master schema cannot be renamed")
+            elif o["schema"] not in managed:
+                errors.append(f"schema {o['schema']!r} does not exist or is not managed")
+            if o["new_name"] == o["schema"]:
+                errors.append("new_name is the same as the current name")
+            elif o["new_name"] in managed:
+                errors.append(f"schema {o['new_name']!r} already exists")
+        elif kind == "drop_schema":
+            if o["schema"] == "master":
+                errors.append("the master schema cannot be dropped")
+            elif o["schema"] not in managed:
+                errors.append(f"schema {o['schema']!r} does not exist or is not managed")
+            elif managed[o["schema"]] > 0:
+                errors.append(
+                    f"schema {o['schema']!r} still has {managed[o['schema']]} table(s); "
+                    "only empty schemas can be dropped")
+    return errors
+
+
 def run(raw_ops, schema_state: dict, rule_list: list[dict], *, actor: str | None = None,
         max_ops: int = 50, skip_rules: bool = False, allow_bulk: bool = False,
-        max_script_rows: int | None = None) -> CheckResult:
+        max_script_rows: int | None = None, schema: str = "master",
+        managed_schemas: dict[str, int] | None = None, max_schemas: int = 20) -> CheckResult:
     """Check `raw_ops` against the current schema state and rules.
 
     skip_rules is used only for reverts, which must be able to restore an old
@@ -67,12 +101,18 @@ def run(raw_ops, schema_state: dict, rule_list: list[dict], *, actor: str | None
         ops_out, violations, auto = rules.evaluate(ops, rule_list)
 
     conv = Conventions.from_rules(rule_list)
-    errors, _ = state_mod.validate(ops_out, schema_state, conv)
+    if any(o["op"] in operations.DATABASE_OPS for o in ops_out):
+        if managed_schemas is None:
+            errors = ["managed schema state unavailable: cannot check schema operations"]
+        else:
+            errors = _validate_database_ops(ops_out, managed_schemas, max_schemas)
+    else:
+        errors, _ = state_mod.validate(ops_out, schema_state, conv)
     errors = pre_errors + errors
     res = CheckResult(ok=False, operations=ops_out, errors=errors, violations=violations, auto_added=auto)
     if not errors:
         try:
-            res.sql = sqlgen.render(ops_out, schema_state, actor, conv)
+            res.sql = sqlgen.render(ops_out, schema_state, actor, conv, schema)
             res.diff = [sqlgen.describe(o) for o in ops_out]
         except sqlgen.UnsafeOp as exc:
             res.errors.append(str(exc))

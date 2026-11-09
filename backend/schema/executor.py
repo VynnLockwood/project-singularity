@@ -34,11 +34,12 @@ def _where_sql(where: dict):
     return sqlgen._where(where)
 
 
-def _before_rows(conn, table: str, where: dict, cols: list[str], max_rows: int, pk: str) -> list[dict]:
+def _before_rows(conn, table: str, where: dict, cols: list[str], max_rows: int, pk: str,
+                 schema: str) -> list[dict]:
     """Rows about to change, each with its primary key under the key "pk"."""
     q = sql.SQL("SELECT {} FROM {} WHERE {} LIMIT {} FOR UPDATE").format(
         sql.SQL(", ").join([sql.SQL("{} AS pk").format(sql.Identifier(pk)), *(sql.Identifier(c) for c in cols)]),
-        sqlgen.tbl(table),
+        sqlgen.tbl(table, schema),
         _where_sql(where),
         sql.Literal(max_rows + 1),
     )
@@ -61,27 +62,27 @@ def _group_updates(table: str, rows: list[dict], cols: list[str], pk: str) -> li
     ]
 
 
-def _col_type(conn, table: str, column: str) -> str | None:
+def _col_type(conn, table: str, column: str, schema: str) -> str | None:
     row = conn.execute(
         "SELECT format_type(a.atttypid, a.atttypmod) AS t FROM pg_attribute a "
-        "WHERE a.attrelid = format('master.%%I', %s::text)::regclass AND a.attname = %s AND NOT a.attisdropped",
-        (table, column),
+        "WHERE a.attrelid = format('%%I.%%I', %s::text, %s::text)::regclass AND a.attname = %s AND NOT a.attisdropped",
+        (schema, table, column),
     ).fetchone()
     return row["t"] if row else None
 
 
-def _col_comment(conn, table: str, column: str) -> str:
+def _col_comment(conn, table: str, column: str, schema: str) -> str:
     row = conn.execute(
         "SELECT col_description(a.attrelid, a.attnum) AS c FROM pg_attribute a "
-        "WHERE a.attrelid = format('master.%%I', %s::text)::regclass AND a.attname = %s",
-        (table, column),
+        "WHERE a.attrelid = format('%%I.%%I', %s::text, %s::text)::regclass AND a.attname = %s",
+        (schema, table, column),
     ).fetchone()
     return (row["c"] if row else None) or ""
 
 
-def _table_comment(conn, table: str) -> str:
+def _table_comment(conn, table: str, schema: str) -> str:
     row = conn.execute(
-        "SELECT obj_description(format('master.%%I', %s::text)::regclass) AS c", (table,)
+        "SELECT obj_description(format('%%I.%%I', %s::text, %s::text)::regclass) AS c", (schema, table)
     ).fetchone()
     return (row["c"] if row else None) or ""
 
@@ -102,7 +103,7 @@ def _cast(col: sql.Composable, pg_type: str) -> sql.Composable:
     return sql.SQL("NULLIF({}, '')::{}").format(col, sql.SQL(pg_type))
 
 
-def _bulk_insert(conn, op: dict, before: dict, actor: str | None, row_source) -> list[dict] | None:
+def _bulk_insert(conn, op: dict, before: dict, actor: str | None, row_source, schema: str) -> list[dict] | None:
     """COPY the rows into a temp table of text columns, then INSERT ... SELECT into the target.
 
     Temp-table columns are exactly op["columns"], in that order, and row_source(op) must yield
@@ -139,7 +140,7 @@ def _bulk_insert(conn, op: dict, before: dict, actor: str | None, row_source) ->
     values: list[sql.Composable] = []
     joins: list[sql.Composable] = []
     for c in direct:
-        ty = _col_type(conn, t, c)
+        ty = _col_type(conn, t, c, schema)
         if ty is None:
             raise ApplyError(f"column {t}.{c} does not exist")
         targets.append(I(c))
@@ -147,7 +148,7 @@ def _bulk_insert(conn, op: dict, before: dict, actor: str | None, row_source) ->
     for i, r in enumerate(refs):
         pt, pkey = r["parent_table"], r["parent_key"]
         ppk = pk_of(before, pt)
-        kty = _col_type(conn, pt, pkey)
+        kty = _col_type(conn, pt, pkey, schema)
         if ppk is None or kty is None:
             raise ApplyError(f"cannot resolve {pt}.{pkey}")
         key = _cast(sql.SQL("s.{}").format(I(r["source_column"])), kty)
@@ -156,21 +157,21 @@ def _bulk_insert(conn, op: dict, before: dict, actor: str | None, row_source) ->
         orphans = conn.execute(
             sql.SQL("SELECT count(*) AS n, min(s.{src}) AS example FROM {tmp} s LEFT JOIN {pt} {a} ON {on} "
                     "WHERE s.{src} IS NOT NULL AND s.{src} <> '' AND {a}.{ppk} IS NULL").format(
-                src=I(r["source_column"]), tmp=TMP, pt=sqlgen.tbl(pt), a=alias, on=on, ppk=I(ppk))
+                src=I(r["source_column"]), tmp=TMP, pt=sqlgen.tbl(pt, schema), a=alias, on=on, ppk=I(ppk))
         ).fetchone()
         if orphans["n"]:
             raise ApplyError(
                 f"bulk_insert into {t}: {orphans['n']} row(s) refer to a missing {pt}.{pkey} (for example {orphans['example']!r})")
         targets.append(I(r["column"]))
         values.append(sql.SQL("{}.{}").format(alias, I(ppk)))
-        joins.append(sql.SQL("LEFT JOIN {} {} ON {}").format(sqlgen.tbl(pt), alias, on))
+        joins.append(sql.SQL("LEFT JOIN {} {} ON {}").format(sqlgen.tbl(pt, schema), alias, on))
     by = role_of(before, t, "created_by")
     if actor and by and by not in names:
         targets.append(I(by))
         values.append(sql.Literal(actor))
 
     stmt = sql.SQL("INSERT INTO {} ({}) SELECT {} FROM {} s {} ORDER BY s.{}{}").format(
-        sqlgen.tbl(t), sql.SQL(", ").join(targets), sql.SQL(", ").join(values), TMP, sql.SQL(" ").join(joins), ROWNO,
+        sqlgen.tbl(t, schema), sql.SQL(", ").join(targets), sql.SQL(", ").join(values), TMP, sql.SQL(" ").join(joins), ROWNO,
         sql.SQL(" RETURNING {}").format(I(pk)) if pk else sql.SQL(""))
     cur = conn.execute(stmt)
     ids = [r[pk] for r in cur.fetchall()] if pk else []
@@ -180,39 +181,40 @@ def _bulk_insert(conn, op: dict, before: dict, actor: str | None, row_source) ->
 
     if pk:
         # explicit ids (identity BY DEFAULT / serial) leave the sequence behind: move it up to max(pk)
-        seq = conn.execute("SELECT pg_get_serial_sequence(format('master.%%I', %s::text), %s) AS s", (t, pk)).fetchone()["s"]
+        seq = conn.execute("SELECT pg_get_serial_sequence(format('%%I.%%I', %s::text, %s::text), %s) AS s", (schema, t, pk)).fetchone()["s"]
         if seq:
             conn.execute(
                 sql.SQL("SELECT setval(%s::regclass, m) FROM (SELECT max({}) AS m FROM {}) x "
                         "WHERE m IS NOT NULL AND m > coalesce(pg_sequence_last_value(%s::regclass), 0)").format(
-                    I(pk), sqlgen.tbl(t)), (seq, seq))
+                    I(pk), sqlgen.tbl(t, schema)), (seq, seq))
     if ids and role_of(before, t, "is_active"):
         return [{"op": "deactivate_rows", "table": t, "where": {pk: ids}}]
     return None
 
 
-def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_source=None):
+def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_source=None, *,
+            schema: str):
     """Execute one operation; return its reverse op(s) (a list) or None if irreversible."""
     k = op["op"]
     t = op.get("table")
     if k == "bulk_insert":
-        return _bulk_insert(conn, op, before, actor, row_source)
+        return _bulk_insert(conn, op, before, actor, row_source, schema=schema)
 
     # --- capture what we need before changing anything
     prev_type = prev_comment = rows_before = None
     if k == "alter_column_type":
-        prev_type = _col_type(conn, t, op["column"])
+        prev_type = _col_type(conn, t, op["column"], schema)
     elif k == "set_column_comment":
-        prev_comment = _col_comment(conn, t, op["column"])
+        prev_comment = _col_comment(conn, t, op["column"], schema)
     elif k == "set_table_comment":
-        prev_comment = _table_comment(conn, t)
+        prev_comment = _table_comment(conn, t, schema)
     elif k == "update_rows" and pk_of(before, t):
-        rows_before = _before_rows(conn, t, op["where"], list(op["set"]), max_rows, pk_of(before, t))
+        rows_before = _before_rows(conn, t, op["where"], list(op["set"]), max_rows, pk_of(before, t), schema)
     elif k == "deactivate_rows" and pk_of(before, t):
         active_col = role_of(before, t, "is_active")
         if active_col is None:
             raise ApplyError(f"table {t!r} has no column with the is_active role")
-        rows_before = _before_rows(conn, t, op["where"], [active_col], max_rows, pk_of(before, t))
+        rows_before = _before_rows(conn, t, op["where"], [active_col], max_rows, pk_of(before, t), schema)
 
     # --- run
     inserted_ids: list = []
@@ -228,6 +230,12 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_
 
     # --- reverse
     why = "revert"
+    if k == "create_schema":
+        return [{"op": "drop_schema", "schema": op["name"], "reason": "undo create"}]
+    if k == "rename_schema":
+        return [{"op": "rename_schema", "schema": op["new_name"], "new_name": op["schema"]}]
+    if k == "drop_schema":
+        return None
     if k == "create_table":
         return [{"op": "drop_table", "table": op["name"], "reason": why}]
     if k == "add_column":
@@ -272,7 +280,7 @@ LOCK_TIMEOUT = "5s"
 STATEMENT_TIMEOUT = "120s"
 
 
-def _sequence_states(conn, tables: list[str]) -> list[dict]:
+def _sequence_states(conn, tables: list[str], schema: str) -> list[dict]:
     """Name, last value and start value of every sequence owned by (serial or identity) one of `tables`."""
     out = []
     for t in tables:
@@ -282,8 +290,8 @@ def _sequence_states(conn, tables: list[str]) -> list[dict]:
             "JOIN pg_class c ON c.oid = d.objid AND c.relkind = 'S' "
             "JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_sequence s ON s.seqrelid = c.oid "
             "WHERE d.classid = 'pg_class'::regclass AND d.refclassid = 'pg_class'::regclass "
-            "AND d.refobjid = format('master.%%I', %s::text)::regclass AND d.deptype IN ('a', 'i')",
-            (t, )).fetchall()
+            "AND d.refobjid = format('%%I.%%I', %s::text, %s::text)::regclass AND d.deptype IN ('a', 'i')",
+            (schema, t)).fetchall()
     return out
 
 
@@ -299,7 +307,7 @@ def _restore_sequences(conn, states: list[dict]) -> None:
             conn.execute("SELECT setval(%s::regclass, %s, true)", (s["name"], s["last_value"]))
 
 
-def _insert_targets(ops: list[dict], state: dict) -> list[str]:
+def _insert_targets(ops: list[dict], state: dict, schema: str) -> list[str]:
     """Existing tables that insert_rows / bulk_insert write to (the ones whose sequences a run advances)."""
     seen: list[str] = []
     for op in ops:
@@ -311,7 +319,7 @@ def _insert_targets(ops: list[dict], state: dict) -> list[str]:
 
 def execute(ops: list[dict], state: dict, actor: str | None, *, max_rows: int = 1000,
             rules: list[dict], row_source: Callable[[dict], Iterator[tuple]] | None = None,
-            dry_run: bool = False) -> ExecResult:
+            dry_run: bool = False, schema: str = "master") -> ExecResult:
     """Run `ops` in one transaction as the read/write role. Raises ApplyError on any failure.
 
     row_source(op) feeds bulk_insert ops (see _bulk_insert).
@@ -330,14 +338,14 @@ def execute(ops: list[dict], state: dict, actor: str | None, *, max_rows: int = 
             conn.execute(sql.SQL("SET LOCAL statement_timeout = {}").format(sql.Literal(STATEMENT_TIMEOUT)))
             seqs: list[dict] = []
             if dry_run:
-                targets = _insert_targets(ops, state)
+                targets = _insert_targets(ops, state, schema)
                 for t in targets:
-                    conn.execute(sql.SQL("LOCK TABLE {} IN SHARE ROW EXCLUSIVE MODE").format(sqlgen.tbl(t)))
-                seqs = _sequence_states(conn, targets)
+                    conn.execute(sql.SQL("LOCK TABLE {} IN SHARE ROW EXCLUSIVE MODE").format(sqlgen.tbl(t, schema)))
+                seqs = _sequence_states(conn, targets, schema)
                 conn.execute("SAVEPOINT dry_run_ops")
             try:
-                for op, before, stmts in sqlgen.plan(ops, state, actor, Conventions.from_rules(rules)):
-                    reverse.append(_run_op(conn, op, before, stmts, max_rows, actor, row_source))
+                for op, before, stmts in sqlgen.plan(ops, state, actor, Conventions.from_rules(rules), schema):
+                    reverse.append(_run_op(conn, op, before, stmts, max_rows, actor, row_source, schema=schema))
                     count += len(stmts) or 1
             except BaseException:
                 if dry_run:

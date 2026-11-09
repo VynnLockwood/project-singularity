@@ -1,6 +1,6 @@
 """Validate an uploaded script: parse, map, gate, orphan check and a rolled-back dry run (spec 2.6).
 
-validate(script, mapping) never changes `master`: the dry run runs the generated operations through
+validate(script, mapping) never changes any managed schema: the dry run runs the generated operations through
 schema.executor with dry_run=True (one transaction, always rolled back, sequences restored).
 
 Pipeline (each step stops the pipeline when it finds errors, except that the gate and the orphan
@@ -25,7 +25,7 @@ scripts that are "submitted" or "expired" are refused. script.status becomes "va
 a failing re-validation never downgrades a validated script. The mapping used is stored on script.mapping.
 
 Orphans: a child row whose ref key (non-NULL, non-empty) is not among the parent's keys. Parent keys
-come from the parent's rows in the script plus, when the parent table already exists in master, its
+come from the parent's rows in the script plus, when the parent table already exists in the target schema, its
 current rows. Integer / numeric keys are compared as numbers (like the executor's cast); others as text.
 """
 from __future__ import annotations
@@ -137,13 +137,13 @@ def _key_type(ops: list[dict], state: dict, table: str, column: str) -> str | No
     return (state.get(table, {}).get("columns", {}).get(column) or {}).get("type")
 
 
-def _parent_keys(parent: str, key: str, ops, bulks, parsed, state, norm) -> set:
+def _parent_keys(parent: str, key: str, ops, bulks, parsed, state, norm, schema: str = "master") -> set:
     keys: set = set()
     if key in state.get(parent, {}).get("columns", {}):
         with ro_connection() as conn:
-            # a ref may name its parent as the SQL does ("master.district"), so keep only the table
+            # a ref may name its parent as the SQL does ("crm.district"); it is read from the script's own schema
             q = sql.SQL("SELECT {}::text AS k FROM {} WHERE {} IS NOT NULL").format(
-                sql.Identifier(key), sqlgen.tbl(parent.rsplit(".", 1)[-1]), sql.Identifier(key))
+                sql.Identifier(key), sqlgen.tbl(parent.rsplit(".", 1)[-1], schema), sql.Identifier(key))
             for r in conn.execute(q):
                 keys.add(norm(r["k"]))
     for b in bulks:
@@ -157,7 +157,7 @@ def _parent_keys(parent: str, key: str, ops, bulks, parsed, state, norm) -> set:
     return keys
 
 
-def _orphans(report: dict, ops: list[dict], parsed, state: dict) -> None:
+def _orphans(report: dict, ops: list[dict], parsed, state: dict, schema: str = "master") -> None:
     bulks = [o for o in ops if o.get("op") == "bulk_insert"]
     cache: dict[tuple[str, str], set] = {}
     for b in bulks:
@@ -171,7 +171,7 @@ def _orphans(report: dict, ops: list[dict], parsed, state: dict) -> None:
             norm = _normalizer(_key_type(ops, state, r["parent_table"], r["parent_key"]))
             ck = (r["parent_table"], r["parent_key"])
             if ck not in cache:
-                cache[ck] = _parent_keys(*ck, ops, bulks, parsed, state, norm)
+                cache[ck] = _parent_keys(*ck, ops, bulks, parsed, state, norm, schema)
             checks.append((stream.columns.index(col), col, cache[ck], norm, f"{ck[0]}.{ck[1]}"))
         if not checks:
             continue
@@ -188,16 +188,19 @@ def _orphans(report: dict, ops: list[dict], parsed, state: dict) -> None:
 
 # ---------------------------------------------------------------- main
 
-def validate(script: Script, mapping: dict | None) -> dict:
+def validate(script: Script, mapping: dict | None, schema: str = "master") -> dict:
+    introspect.require_managed(schema)
     report = _new_report(script)
+    report["schema"] = schema
+    kept = (script.mapping, (script.report or {}).get("validated_schema", "master"))
     if script.status in (Script.Status.SUBMITTED, Script.Status.EXPIRED):
         _add_error(report, "storage", 0, "",
                    f"script #{script.pk} is {script.status}; only uploaded or validated scripts can be validated")
         report["ok"] = False
-        _save(script, report)
+        _save(script, report, kept)
         return report
     try:
-        _run(report, script, mapping)
+        _run(report, script, mapping, schema)
     except Exception as exc:  # last resort: never crash, report a failed run instead
         _add_error(report, "rows", 0, "", f"unexpected error: {_clip(exc)}")
         report["dry_run"] = {"ok": False, "skipped": report["dry_run"]["skipped"],
@@ -205,12 +208,17 @@ def validate(script: Script, mapping: dict | None) -> dict:
     report["ok"] = (not report["errors"] and not report["errors_truncated"] and not report["gate"]["errors"]
                     and not report["gate"]["blocked"] and all(t["orphans"] == 0 for t in report["tables"])
                     and report["dry_run"]["ok"])
-    _save(script, report)
+    _save(script, report, kept)
     return report
 
 
-def _save(script: Script, report: dict) -> None:
+def _save(script: Script, report: dict, kept: tuple) -> None:
     fields = ["report", "mapping"]
+    if report["ok"]:
+        report["validated_schema"] = report["schema"]
+    elif script.status == Script.Status.VALIDATED:
+        # a failed run never replaces what passed: keep the validated mapping and schema for submit
+        script.mapping, report["validated_schema"] = kept
     script.report = report
     # validated -> uploaded on failure was reverted by review: never downgrade a validated script
     if script.status == Script.Status.UPLOADED or (script.status == Script.Status.VALIDATED and report["ok"]):
@@ -219,7 +227,7 @@ def _save(script: Script, report: dict) -> None:
     script.save(update_fields=fields)
 
 
-def _run(report: dict, script: Script, mapping: dict | None) -> None:
+def _run(report: dict, script: Script, mapping: dict | None, schema: str = "master") -> None:
     if mapping is not None:
         script.mapping = mapping
         report["mapping_used"] = "given"
@@ -237,8 +245,8 @@ def _run(report: dict, script: Script, mapping: dict | None) -> None:
             _add_error(report, "parse", e.line, e.statement, e.message)
         return
 
-    state = introspect.snapshot()
-    external = introspect.external_state(state)  # tables the script does not create (external refs)
+    state = introspect.snapshot(schema)
+    external = introspect.external_state(state, schema)  # tables the script does not create (external refs)
     if mapping is None:
         mapping = suggest_mapping(parsed)
         script.mapping = mapping
@@ -260,7 +268,7 @@ def _run(report: dict, script: Script, mapping: dict | None) -> None:
         return
     rules = rule_service.active_rules()
     res = check.run(ops, state, rules, actor=script.owner.email, max_ops=limits["maxOpsPerProposal"],
-                    allow_bulk=True)
+                    allow_bulk=True, schema=schema)
     gate = report["gate"]
     for e in res.errors:
         _gate_add(gate, "errors", _clip(e))
@@ -268,8 +276,8 @@ def _run(report: dict, script: Script, mapping: dict | None) -> None:
         _gate_add(gate, "blocked" if v["severity"] == "block" else "warnings", v)
 
     try:
-        # external parents are in `external`, keyed "master.<table>": merge so their live rows count
-        _orphans(report, ops, parsed, {**state, **external})
+        # external parents are in `external`, keyed "<schema>.<table>": merge so their live rows count
+        _orphans(report, ops, parsed, {**state, **external}, schema)
     except RowStreamError as exc:  # apply_mapping already read every stream, so this is unexpected
         _add_error(report, "rows", exc.issue.line, exc.issue.statement, exc.issue.message)
         return
@@ -280,7 +288,8 @@ def _run(report: dict, script: Script, mapping: dict | None) -> None:
     dry["skipped"] = False
     try:
         executor.execute(res.operations, state, script.owner.email, max_rows=limits["maxRowsPerDataOp"],
-                         rules=rules, row_source=make_row_source(script, parsed=parsed), dry_run=True)
+                         rules=rules, row_source=make_row_source(script, parsed=parsed), dry_run=True,
+                         schema=schema)
     except executor.ApplyError as exc:
         dry["error"] = _clip(exc)
         return

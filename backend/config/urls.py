@@ -27,6 +27,7 @@ urlpatterns = [
     path("api/rules/<int:rule_id>", rules.rule_detail),
     path("api/rules/<int:rule_id>/versions", rules.rule_versions),
     path("api/rules/<int:rule_id>/rollback", rules.rule_rollback),
+    path("api/schema/schemas", schema_views.schemas),
     path("api/schema/tables", schema_views.tables),
     path("api/schema/graph", schema_views.graph),
     path("api/schema/export", schema_views.export),

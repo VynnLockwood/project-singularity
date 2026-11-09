@@ -17,6 +17,7 @@ from settings_app import tunables
 # Minimum role for each tool. Tools above a user's role are hidden from their client.
 TOOL_ROLES = {
     "get_rules": "viewer",
+    "list_schemas": "viewer",
     "list_tables": "viewer",
     "describe_table": "viewer",
     "query": "viewer",
@@ -88,23 +89,34 @@ def propose_config_change(user, operations: list, prompt: str = "", *, source: s
     return propose_change(user, operations, prompt, source=source, conversation_id=conversation_id)
 
 
-def list_tables(user) -> dict:
-    return {"tables": introspect.list_tables()}
+def list_schemas(user) -> dict:
+    """The databases (Postgres schemas) that can be read and changed, `master` first."""
+    return {"schemas": introspect.managed_schemas()}
 
 
-def describe_table(user, table: str) -> dict:
-    d = introspect.describe_table(table)
+def list_tables(user, schema: str = "master") -> dict:
+    try:
+        return {"tables": introspect.list_tables(schema)}
+    except introspect.UnknownSchema as exc:
+        raise ToolFailure(f"{exc} Call list_schemas to see the databases.") from exc
+
+
+def describe_table(user, table: str, schema: str = "master") -> dict:
+    try:
+        d = introspect.describe_table(table, schema)
+    except introspect.UnknownSchema as exc:
+        raise ToolFailure(f"{exc} Call list_schemas to see the databases.") from exc
     if d is None:
-        raise ToolFailure(f"table {table!r} does not exist. Call list_tables to see what exists.")
+        raise ToolFailure(f"table {table!r} does not exist in {schema!r}. Call list_tables to see what exists.")
     return d
 
 
-def run_query(user, sql: str, limit: int | None = None) -> dict:
+def run_query(user, sql: str, limit: int | None = None, schema: str = "master") -> dict:
     limits = get_config()["limits"]
     cap = limits["maxQueryRows"]
     try:
-        return query.run_select(sql, limit=min(limit or cap, cap), timeout_ms=limits["queryTimeoutMs"])
-    except query.QueryError as exc:
+        return query.run_select(sql, limit=min(limit or cap, cap), timeout_ms=limits["queryTimeoutMs"], schema=schema)
+    except (query.QueryError, introspect.UnknownSchema) as exc:
         raise ToolFailure(str(exc)) from exc
 
 
@@ -137,21 +149,21 @@ def _result(user, change: Change) -> dict:
     return {**service.serialize(change), "next": _next_step(user, change)}
 
 
-def search_schema(user, query: str, limit: int | None = None) -> dict:
+def search_schema(user, query: str, limit: int | None = None, schema: str = "master") -> dict:
     from search import service as search_service
     from search.embedder import SearchError
 
     try:
-        return search_service.search(query, limit)
-    except SearchError as exc:
+        return search_service.search(query, limit, None if schema == "*" else schema)  # "*" = every schema
+    except (SearchError, introspect.UnknownSchema) as exc:
         raise ToolFailure(str(exc)) from exc
 
 
 def propose_change(user, operations: list, prompt: str = "", *, source: str = "mcp",
-                   conversation_id: int | None = None) -> dict:
+                   conversation_id: int | None = None, schema: str = "master") -> dict:
     try:
         change = service.propose(user, operations, source=source, prompt=prompt[:10_000],
-                                 conversation_id=conversation_id)
+                                 conversation_id=conversation_id, schema=schema)
     except service.ChangeError as exc:
         raise ToolFailure(exc.message) from exc
     return _result(user, change)
@@ -188,9 +200,13 @@ def list_pending(user) -> dict:
 
 
 
-def submit_script(user, name: str, content: str, mapping: dict | None = None) -> dict:
+def submit_script(user, name: str, content: str, mapping: dict | None = None, schema: str = "master") -> dict:
     """Upload + validate inline (<= maxInlineScriptBytes). Larger scripts: upload via API/UI, pass script_id."""
     from config.siconfig import get_config
+    try:
+        introspect.require_managed(schema)  # before uploading anything
+    except introspect.UnknownSchema as exc:
+        raise ToolFailure(f"{exc} Call list_schemas to see the databases.") from exc
     data = content.encode("utf-8")
     if len(data) > get_config()["limits"]["maxInlineScriptBytes"]:
         raise ToolFailure(
@@ -198,8 +214,8 @@ def submit_script(user, name: str, content: str, mapping: dict | None = None) ->
             "Upload the file via the web UI or REST API, then call validate_script/get_script with its script_id.")
     try:
         script = script_service.upload(user, name, data)
-        report = script_service.validate(user, script.pk, mapping)
-    except storage.ScriptError as exc:
+        report = script_service.validate(user, script.pk, mapping, schema)
+    except (storage.ScriptError, introspect.UnknownSchema) as exc:
         raise ToolFailure(str(exc)) from exc
     out = {"script_id": script.pk, "report": _trim_report(report)}
     if report.get("ok"):
@@ -212,10 +228,10 @@ def submit_script(user, name: str, content: str, mapping: dict | None = None) ->
     return out
 
 
-def validate_script(user, script_id: int, mapping: dict | None = None) -> dict:
+def validate_script(user, script_id: int, mapping: dict | None = None, schema: str = "master") -> dict:
     try:
-        report = script_service.validate(user, script_id, mapping)
-    except storage.ScriptError as exc:
+        report = script_service.validate(user, script_id, mapping, schema)
+    except (storage.ScriptError, introspect.UnknownSchema) as exc:
         raise ToolFailure(str(exc)) from exc
     return {"script_id": script_id, "report": _trim_report(report)}
 
@@ -239,6 +255,7 @@ def _trim_report(report: dict) -> dict:
 
 IMPL = {
     "get_rules": get_rules,
+    "list_schemas": list_schemas,
     "list_tables": list_tables,
     "describe_table": describe_table,
     "query": run_query,

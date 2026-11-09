@@ -1,4 +1,4 @@
-"""Paged, sortable, filterable reads of one `master` table for the grid editor (read-only role)."""
+"""Paged, sortable, filterable reads of one table in a managed schema for the grid editor (read-only role)."""
 from __future__ import annotations
 
 import psycopg
@@ -19,8 +19,8 @@ class RowsError(Exception):
         self.status = status
 
 
-def _describe(table: str) -> dict:
-    d = introspect.describe_table(table)
+def _describe(table: str, schema: str = "master") -> dict:
+    d = introspect.describe_table(table, schema)
     if d is None:
         raise RowsError("table not found", 404)
     return d
@@ -42,8 +42,9 @@ def _run(query: sql.Composable, params=()) -> list[dict]:
 
 
 def read_rows(table: str, *, offset: int = 0, limit: int = 50, sort: str | None = None,
-              direction: str = "asc", filters: dict | None = None, include_inactive: bool = False) -> dict:
-    d = _describe(table)
+              direction: str = "asc", filters: dict | None = None, include_inactive: bool = False,
+              schema: str = "master") -> dict:
+    d = _describe(table, schema)
     cols = {c["name"]: c for c in d["columns"]}
     limit = max(1, min(int(limit), MAX_PAGE))
     offset = max(0, int(offset))
@@ -75,12 +76,12 @@ def read_rows(table: str, *, offset: int = 0, limit: int = 50, sort: str | None 
     if pk and order_col != pk:
         order += sql.SQL(", {}").format(sql.Identifier(pk))
 
-    t = sql.Identifier("master", table)
+    t = sql.Identifier(schema, table)
     total = _run(sql.SQL("SELECT count(*) AS n FROM {}{}").format(t, clause), params)[0]["n"]
     rows = _run(sql.SQL("SELECT * FROM {}{} ORDER BY {} LIMIT {} OFFSET {}").format(
         t, clause, order, sql.Literal(limit), sql.Literal(offset)), params)
 
-    refs = {x["from"]["column"]: x["to"] for x in introspect.graph()["relations"] if x["from"]["table"] == table}
+    refs = {x["from"]["column"]: x["to"] for x in introspect.graph(schema)["relations"] if x["from"]["table"] == table}
     return {
         "table": table, "total": total, "offset": offset, "limit": limit, "primaryKey": pk,
         "columns": [{
@@ -103,9 +104,9 @@ def label_column(columns: dict, skip: set[str] | frozenset[str] = frozenset()) -
     return texts[0] if texts else None
 
 
-def options(table: str, *, q: str = "", limit: int = 100) -> dict:
+def options(table: str, *, q: str = "", limit: int = 100, schema: str = "master") -> dict:
     """id + label pairs for a reference dropdown."""
-    d = _describe(table)
+    d = _describe(table, schema)
     cols = {c["name"]: c for c in d["columns"]}
     conv = roles.conventions()
     role_cols = roles.roles_of(d, conv)
@@ -114,7 +115,7 @@ def options(table: str, *, q: str = "", limit: int = 100) -> dict:
         raise RowsError("this table has no primary key column to reference")
     label = label_column(cols, set(role_cols.values()) | roles.hidden_columns(conv))
     limit = max(1, min(int(limit), MAX_PAGE))
-    t = sql.Identifier("master", table)
+    t = sql.Identifier(schema, table)
     label_expr = sql.Identifier(label) if label else sql.SQL("{}::text").format(sql.Identifier(pk))
     where, params = sql.SQL(""), []
     conds = []

@@ -292,8 +292,8 @@ def test_dry_run_fails_when_a_writer_holds_the_table(geo, monkeypatch):
 def test_dry_run_only_looks_at_sequences_of_targeted_tables(geo):
     from schema.conn import rw_connection
     with rw_connection() as c:
-        names = [s["name"] for s in executor._sequence_states(c, ["district"])]
+        names = [s["name"] for s in executor._sequence_states(c, ["district"], "master")]
         assert len(names) == 1 and names[0].startswith("master.district")
-        assert executor._sequence_states(c, []) == []
+        assert executor._sequence_states(c, [], "master") == []
     assert executor._insert_targets([bulk(), {"op": "update_rows", "table": "province", "where": {"code": "x"}, "set": {}}],
-                                    introspect.snapshot()) == ["district"]
+                                    introspect.snapshot(), "master") == ["district"]
