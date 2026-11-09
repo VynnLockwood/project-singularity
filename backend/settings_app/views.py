@@ -75,10 +75,10 @@ def settings(request):
     from . import tunables
 
     if request.method == "GET":
-        return JsonResponse({"settings": tunables.describe()})
+        return JsonResponse({"settings": tunables.describe(), "keySet": tunables.key_set()})
     if not request.user.can_approve:
         return error("forbidden", 403)
     try:
-        return JsonResponse({"settings": tunables.apply(request.user, request.json)})
+        return JsonResponse({"settings": tunables.apply(request.user, request.json), "keySet": tunables.key_set()})
     except tunables.TunableError as exc:
         return error("invalid settings", 400, errors=exc.errors)

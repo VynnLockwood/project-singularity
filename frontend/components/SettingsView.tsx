@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   ApiError, getSettings, listRules, listUsers, rollbackRule, ruleVersions, saveSettings, setUserRole, updateRule,
-  type Me, type Rule, type RuleVersion, type Tunable,
+  type Me, type Rule, type RuleVersion, type SettingsPayload, type Tunable,
 } from "@/lib/api";
 import { INTENSITY_EVENT, LEVELS, readIntensity, writeIntensity, type Intensity } from "@/lib/cosmos";
 
@@ -11,7 +11,7 @@ type Section = "quality" | "rules" | "team";
 const fail = (e: unknown) => (e instanceof ApiError ? e.message : "Something went wrong.");
 
 export function QualitySettings({ canEdit }: { canEdit: boolean }) {
-  const [items, setItems] = useState<Tunable[]>([]);
+  const [data, setData] = useState<SettingsPayload>({ settings: [], keySet: {} });
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [msg, setMsg] = useState("");
   const [error, setError] = useState("");
@@ -23,23 +23,50 @@ export function QualitySettings({ canEdit }: { canEdit: boolean }) {
     if (typeof matchMedia !== "undefined") setReduce(matchMedia("(prefers-reduced-motion: reduce)").matches);
   }, []);
 
-  const load = useCallback(() => getSettings().then((s) => { setItems(s); setDraft({}); }).catch((e) => setError(fail(e))), []);
+  const load = useCallback(() => getSettings().then((p) => { setData(p); setDraft({}); }).catch((e) => setError(fail(e))), []);
   useEffect(() => { load(); }, [load]);
 
+  const items = data.settings;
+  const chat = items.filter((t) => t.key.startsWith("chat."));
+  const keys = Object.entries(data.keySet);
   const dirty = Object.keys(draft);
   const save = async () => {
     setError(""); setMsg("");
     const changes: Record<string, number | string> = {};
     for (const k of dirty) {
       const t = items.find((i) => i.key === k)!;
-      changes[k] = t.kind === "model" ? draft[k] : Number(draft[k]);
+      changes[k] = t.options ? draft[k] : Number(draft[k]);
     }
-    try { setItems(await saveSettings(changes)); setDraft({}); setMsg("Saved. Other servers pick it up within a few seconds."); } catch (e) { setError(fail(e)); }
+    try { setData(await saveSettings(changes)); setDraft({}); setMsg("Saved. Other servers pick it up within a few seconds."); } catch (e) { setError(fail(e)); }
   };
   const reset = async (k: string) => {
     setError(""); setMsg("");
-    try { setItems(await saveSettings({ [k]: null })); setDraft((d) => { const n = { ...d }; delete n[k]; return n; }); } catch (e) { setError(fail(e)); }
+    try { setData(await saveSettings({ [k]: null })); setDraft((d) => { const n = { ...d }; delete n[k]; return n; }); } catch (e) { setError(fail(e)); }
   };
+
+  const rows = (list: Tunable[]) => list.map((t) => {
+    const shown = draft[t.key] ?? String(t.value);
+    return (
+      <li key={t.key}>
+        <div>
+          <strong>{t.label}</strong>{t.overridden && <span className="badge" data-status="open">changed</span>}
+          <p className="muted small">{t.help}</p>
+        </div>
+        <div className="setting-input">
+          {t.options ? (
+            <select aria-label={t.label} disabled={!canEdit} value={shown} onChange={(e) => setDraft({ ...draft, [t.key]: e.target.value })}>
+              {t.options.map((o) => <option key={o}>{o}</option>)}
+            </select>
+          ) : (
+            <input aria-label={t.label} type="number" disabled={!canEdit} value={shown} min={t.min ?? undefined} max={t.max ?? undefined}
+              step={t.kind === "float" ? 0.01 : 1} onChange={(e) => setDraft({ ...draft, [t.key]: e.target.value })} />
+          )}
+          <span className="muted small">default {String(t.default)}</span>
+          {canEdit && t.overridden && <button className="link" onClick={() => reset(t.key)} aria-label={`Reset ${t.label}`}>Reset</button>}
+        </div>
+      </li>
+    );
+  });
 
   return (
     <div>
@@ -47,30 +74,24 @@ export function QualitySettings({ canEdit }: { canEdit: boolean }) {
       {error && <p className="problems" role="alert">{error}</p>}
       {msg && <p className="muted small">{msg}</p>}
       <ul className="settings-list" aria-label="Quality settings">
-        {items.map((t) => {
-          const shown = draft[t.key] ?? String(t.value);
-          return (
-            <li key={t.key}>
-              <div>
-                <strong>{t.label}</strong>{t.overridden && <span className="badge" data-status="open">changed</span>}
-                <p className="muted small">{t.help}</p>
-              </div>
-              <div className="setting-input">
-                {t.kind === "model" ? (
-                  <select aria-label={t.label} disabled={!canEdit} value={shown} onChange={(e) => setDraft({ ...draft, [t.key]: e.target.value })}>
-                    {(t.options ?? []).map((o) => <option key={o}>{o}</option>)}
-                  </select>
-                ) : (
-                  <input aria-label={t.label} type="number" disabled={!canEdit} value={shown} min={t.min ?? undefined} max={t.max ?? undefined}
-                    step={t.kind === "float" ? 0.01 : 1} onChange={(e) => setDraft({ ...draft, [t.key]: e.target.value })} />
-                )}
-                <span className="muted small">default {String(t.default)}</span>
-                {canEdit && t.overridden && <button className="link" onClick={() => reset(t.key)} aria-label={`Reset ${t.label}`}>Reset</button>}
-              </div>
-            </li>
-          );
-        })}
+        {rows(items.filter((t) => !t.key.startsWith("chat.")))}
       </ul>
+      {(chat.length > 0 || keys.length > 0) && (
+        <ul className="settings-list" aria-label="Chat">
+          {rows(chat)}
+          <li>
+            <div>
+              <strong>Chat provider keys</strong>
+              <p className="muted small">Read from the server environment. Only whether a key exists is shown here — never its value, and there is nothing to type in.</p>
+            </div>
+            <div className="setting-input">
+              {keys.map(([provider, isSet]) => (
+                <span key={provider} className="muted small" aria-label={`${provider} API key`}>{provider}: {isSet ? "set" : "missing"}</span>
+              ))}
+            </div>
+          </li>
+        </ul>
+      )}
       {canEdit && <button className="button" disabled={dirty.length === 0} onClick={save}>Save changes</button>}
       {!canEdit && <p className="muted small">Only approvers can change these.</p>}
       <ul className="settings-list" aria-label="Appearance">

@@ -269,7 +269,7 @@ export interface Tunable {
   key: string;
   label: string;
   help: string;
-  kind: "int" | "float" | "model";
+  kind: "int" | "float" | "model" | "choice";
   min: number | null;
   max: number | null;
   default: number | string;
@@ -277,10 +277,15 @@ export interface Tunable {
   overridden: boolean;
   options?: string[];
 }
-export const getSettings = () => call<{ settings: Tunable[] }>("GET", "/settings").then((r) => r.settings);
+/** `keySet` says which chat providers have an API key in the server environment — booleans only, never the value. */
+export interface SettingsPayload {
+  settings: Tunable[];
+  keySet: Record<string, boolean>;
+}
+export const getSettings = () => call<SettingsPayload>("GET", "/settings");
 /** value null resets a setting to the singularity.yaml default */
 export const saveSettings = (changes: Record<string, number | string | null>) =>
-  call<{ settings: Tunable[] }>("PATCH", "/settings", changes).then((r) => r.settings);
+  call<SettingsPayload>("PATCH", "/settings", changes);
 
 export interface Rule {
   id: number;
