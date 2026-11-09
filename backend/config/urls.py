@@ -29,6 +29,7 @@ urlpatterns = [
     path("api/rules/<int:rule_id>/rollback", rules.rule_rollback),
     path("api/schema/tables", schema_views.tables),
     path("api/schema/graph", schema_views.graph),
+    path("api/schema/export", schema_views.export),
     path("api/schema/tables/<str:name>", schema_views.table_detail),
     path("api/schema/tables/<str:name>/rows", schema_views.table_rows),
     path("api/schema/tables/<str:name>/options", schema_views.table_options),

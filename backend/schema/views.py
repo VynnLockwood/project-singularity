@@ -1,11 +1,12 @@
 import json
 
-from django.http import JsonResponse
+from django.http import HttpResponse, JsonResponse
 
 from accounts.api import endpoint, error
 from config.siconfig import get_config
 
 from . import introspect, query, rows as rows_mod
+from .export import to_sql
 
 
 @endpoint("GET")
@@ -16,6 +17,14 @@ def tables(request):
 @endpoint("GET")
 def graph(request):
     return JsonResponse(introspect.graph())
+
+
+@endpoint("GET")
+def export(request):
+    """Download the designed schema as Postgres DDL (`?format=sql` today; the only format)."""
+    resp = HttpResponse(to_sql(introspect.graph()), content_type="text/sql")
+    resp["Content-Disposition"] = 'attachment; filename="singularity-schema.sql"'
+    return resp
 
 
 @endpoint("GET")
