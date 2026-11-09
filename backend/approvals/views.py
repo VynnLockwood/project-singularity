@@ -18,6 +18,8 @@ def changes(request):
         qs = Change.objects.select_related("requester", "decided_by")
         if status := request.GET.get("status"):
             qs = qs.filter(status=status)
+        if schema := request.GET.get("schema"):
+            qs = qs.filter(schema=schema)
         if kind := request.GET.get("kind"):
             qs = qs.filter(kind=kind)
         if request.GET.get("mine") == "1":
@@ -34,6 +36,7 @@ def changes(request):
         change = service.propose(
             request.user, body.get("operations"), source=source,
             prompt=str(body.get("prompt", ""))[:10_000], conversation_id=body.get("conversation_id"),
+            schema=body.get("schema") or "master",
         )
     except service.ChangeError as exc:
         return _err(exc)

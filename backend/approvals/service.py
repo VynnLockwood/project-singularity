@@ -12,6 +12,9 @@ Who may decide:
 """
 from __future__ import annotations
 
+import hashlib
+import json
+
 from django.db import transaction
 from django.utils import timezone
 
@@ -19,7 +22,7 @@ from audit.models import record
 from config.siconfig import get_config
 from gate import check, operations
 from schema import executor, introspect
-from schema.backup import BackupError, backup_master
+from schema.backup import BackupError, backup_schema
 from settings_app import services as rule_service
 
 from . import config_ops
@@ -48,6 +51,41 @@ def _affected(ops) -> list[str]:
         return []
 
 
+def _is_database(ops) -> bool:
+    return (isinstance(ops, list) and bool(ops) and all(isinstance(o, dict) for o in ops)
+            and any(o.get("op") in operations.DATABASE_OPS for o in ops))
+
+
+def _managed_counts() -> dict[str, int]:
+    return {m["name"]: m["tables"] for m in introspect.managed_schemas()}
+
+
+def _schemas_fingerprint() -> str:
+    """Hash of the managed schema names and table counts: any create/rename/drop moves it."""
+    return hashlib.sha256(json.dumps(_managed_counts(), sort_keys=True).encode()).hexdigest()
+
+
+def _current_fingerprint(change: Change) -> str:
+    """Fingerprint the change would get right now ('' when it affects nothing). May raise UnknownSchema."""
+    if _is_database(change.operations or change.original_operations):
+        return _schemas_fingerprint()
+    if change.affected_tables:
+        return introspect.fingerprint(change.affected_tables, change.schema)
+    return ""
+
+
+def _limit_args() -> dict:
+    return {"managed_schemas": _managed_counts(), "max_schemas": get_config()["limits"]["maxSchemas"]}
+
+
+def _mark_stale(change: Change, user, error: str) -> Change:
+    change.status = Change.Status.STALE
+    change.error = error
+    change.save()
+    record(user, "change.stale", target=f"#{change.pk}", details={"error": change.error})
+    return change
+
+
 def can_decide(user, change: Change) -> bool:
     if change.source == "script" or change.kind in ("schema", "config"):
         # structure, rules, settings, roles and every script load: approvers only
@@ -61,7 +99,7 @@ def _apply_check(change: Change, res, *, ops_for_tables) -> None:
     change.generated_sql = res.sql
     change.diff = res.diff
     change.affected_tables = _affected(ops_for_tables)
-    change.fingerprint = introspect.fingerprint(change.affected_tables) if change.affected_tables else ""
+    change.fingerprint = _current_fingerprint(change)
     change.rules_hash = rule_service.rules_hash()
     change.status = Change.Status.REJECTED if res.blocked else Change.Status.PENDING
     if res.blocked:
@@ -101,7 +139,7 @@ def propose_config(user, raw_ops, *, source: str, prompt: str = "", conversation
 
 
 def propose(user, raw_ops, *, source: str, prompt: str = "", conversation_id: int | None = None,
-            reverts: Change | None = None) -> Change:
+            reverts: Change | None = None, schema: str = "master") -> Change:
     if config_ops.has_config(raw_ops):
         if not config_ops.is_config(raw_ops):
             raise ChangeError("invalid", "configuration operations (settings, rules, roles) cannot be mixed with schema or data operations; propose them separately")
@@ -109,18 +147,25 @@ def propose(user, raw_ops, *, source: str, prompt: str = "", conversation_id: in
     if not user.can_edit:
         raise ChangeError("forbidden", "your role cannot propose changes")
     limits = get_config()["limits"]
+    if _is_database(raw_ops):
+        schema = "master"  # database ops have no target schema of their own
+    else:
+        try:
+            introspect.require_managed(schema)
+        except introspect.UnknownSchema:
+            raise ChangeError("invalid", f"schema {schema!r} does not exist or is not managed by Singularity") from None
     is_revert = reverts is not None
     max_ops = max(limits["maxOpsPerProposal"], len(raw_ops)) if is_revert and isinstance(raw_ops, list) \
         else limits["maxOpsPerProposal"]
 
     res = check.run(
-        raw_ops, introspect.snapshot(), rule_service.active_rules(),
+        raw_ops, introspect.snapshot(schema), rule_service.active_rules(),
         actor=user.email, max_ops=max_ops, skip_rules=is_revert,
-        allow_bulk=source == "script",
+        allow_bulk=source == "script", schema=schema, **_limit_args(),
     )
     change = Change(
         requester=user, source=source, prompt=prompt, conversation_id=conversation_id,
-        kind=_kind(raw_ops), original_operations=raw_ops if isinstance(raw_ops, list) else [], reverts=reverts,
+        kind=_kind(raw_ops), schema=schema, original_operations=raw_ops if isinstance(raw_ops, list) else [], reverts=reverts,
     )
     _apply_check(change, res, ops_for_tables=res.operations)
     change.save()
@@ -164,32 +209,37 @@ def approve(user, change_id: int) -> Change:
             return _apply_config(change, user)
 
         is_revert = change.source == "revert"
-        moved = (
-            (change.affected_tables and introspect.fingerprint(change.affected_tables) != change.fingerprint)
-            or (not is_revert and rule_service.rules_hash() != change.rules_hash)
-        )
-        state = introspect.snapshot()
+        try:
+            moved = (
+                (bool(change.fingerprint) and _current_fingerprint(change) != change.fingerprint)
+                or (not is_revert and rule_service.rules_hash() != change.rules_hash)
+            )
+            state = introspect.snapshot(change.schema)
+        except introspect.UnknownSchema:
+            return _mark_stale(change, user, f"schema {change.schema!r} no longer exists (it was renamed or dropped); propose the change again")
         recheck = check.run(
             change.operations, state, rule_service.active_rules(), actor=change.requester.email,
             max_ops=max(len(change.operations), 1), skip_rules=True,
-            allow_bulk=change.source == "script",
+            allow_bulk=change.source == "script", schema=change.schema, **_limit_args(),
         )
         if moved or recheck.errors:
-            change.status = Change.Status.STALE
-            change.error = "; ".join(recheck.errors) or "the schema or the rules changed since this was checked"
-            change.save()
-            record(user, "change.stale", target=f"#{change.pk}", details={"error": change.error})
-            return change
+            return _mark_stale(change, user, "; ".join(recheck.errors) or "the schema or the rules changed since this was checked")
 
         change.decided_by, change.decided_at = user, timezone.now()
         record(user, "change.approved", target=f"#{change.pk}")
 
         if change.kind == "schema":
-            try:
-                path = backup_master(f"change-{change.pk}", cfg["backups"]["retentionDays"])
-            except BackupError as exc:
-                return _fail(change, user, f"backup failed, nothing was changed: {exc}")
-            record(user, "backup.created", target=path.name)
+            # Creating a schema touches nothing existing; rename/drop get a cheap master safety dump.
+            if _is_database(change.operations):
+                to_back_up = "master" if any(o["op"] in ("rename_schema", "drop_schema") for o in change.operations) else None
+            else:
+                to_back_up = change.schema
+            if to_back_up:
+                try:
+                    path = backup_schema(to_back_up, f"change-{change.pk}", cfg["backups"]["retentionDays"])
+                except BackupError as exc:
+                    return _fail(change, user, f"backup failed, nothing was changed: {exc}")
+                record(user, "backup.created", target=path.name)
 
         # a revert or a script load may touch as many rows as the script inserted, so they use the script cap
         max_rows = cfg["limits"]["maxRowsPerDataOp"]
@@ -199,7 +249,7 @@ def approve(user, change_id: int) -> Change:
             result = executor.execute(
                 change.operations, state, change.requester.email, max_rows=max_rows,
                 rules=rule_service.active_rules(),
-                row_source=_script_row_source(change),
+                row_source=_script_row_source(change), schema=change.schema,
             )
         except executor.ApplyError as exc:
             return _fail(change, user, str(exc))
@@ -274,11 +324,16 @@ def recheck(user, change_id: int) -> Change:
             record(user, "change.rechecked", target=f"#{change.pk}", details={"status": change.status})
             return change
         is_revert = change.source == "revert"
-        res = check.run(
-            change.original_operations, introspect.snapshot(), rule_service.active_rules(),
-            actor=change.requester.email, max_ops=max(len(change.original_operations), 1), skip_rules=is_revert,
-        )
-        _apply_check(change, res, ops_for_tables=res.operations)
+        try:
+            res = check.run(
+                change.original_operations, introspect.snapshot(change.schema), rule_service.active_rules(),
+                actor=change.requester.email, max_ops=max(len(change.original_operations), 1), skip_rules=is_revert,
+                schema=change.schema, **_limit_args(),
+            )
+            _apply_check(change, res, ops_for_tables=res.operations)
+        except introspect.UnknownSchema:
+            _mark_stale(change, user, f"schema {change.schema!r} no longer exists (it was renamed or dropped); propose the change again")
+            return change
         change.error = ""
         if change.status == Change.Status.PENDING:
             change.decision_note = ""
@@ -304,7 +359,8 @@ def revert(user, change_id: int) -> Change:
     if orig.kind == "config":
         rev = propose_config(user, orig.reverse_operations, source="revert", prompt=f"Revert change #{orig.pk}", reverts=orig)
     else:
-        rev = propose(user, orig.reverse_operations, source="revert", prompt=f"Revert change #{orig.pk}", reverts=orig)
+        rev = propose(user, orig.reverse_operations, source="revert", prompt=f"Revert change #{orig.pk}",
+                      reverts=orig, schema=orig.schema)
     if rev.status != Change.Status.PENDING:
         return rev
     rev = approve(user, rev.pk)  # an approver may approve their own change
@@ -328,6 +384,7 @@ def serialize(change: Change, *, detail: bool = True) -> dict:
         "id": change.pk,
         "status": change.status,
         "kind": change.kind,
+        "schema": change.schema,
         "source": change.source,
         "requester": change.requester.email,
         "prompt": change.prompt,
