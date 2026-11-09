@@ -1,3 +1,4 @@
+import datetime
 import json
 
 from django.http import HttpResponse, JsonResponse
@@ -6,7 +7,9 @@ from accounts.api import endpoint, error
 from config.siconfig import get_config
 
 from . import introspect, query, rows as rows_mod
-from .export import to_sql
+from .conn import ro_connection
+from .dump_model import read_model
+from .export import render_foreign_keys, render_header, render_indexes, render_structure
 
 
 @endpoint("GET")
@@ -22,7 +25,16 @@ def graph(request):
 @endpoint("GET")
 def export(request):
     """Download the designed schema as Postgres DDL (`?format=sql` today; the only format)."""
-    resp = HttpResponse(to_sql(introspect.graph()), content_type="text/sql")
+    # Temporary: structure only. Task 4 replaces this with the full export (data, format, schema).
+    with ro_connection() as conn:
+        model = read_model(conn, "master")
+    body = "\n".join([
+        render_header("master", False, {}, datetime.date.today()),
+        render_structure(model, "master"),
+        render_foreign_keys(model, "master"),
+        render_indexes(model),
+    ])
+    resp = HttpResponse(body, content_type="text/sql")
     resp["Content-Disposition"] = 'attachment; filename="singularity-schema.sql"'
     return resp
 

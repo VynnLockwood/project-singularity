@@ -1,10 +1,15 @@
-"""Render the designed schema graph as Postgres DDL.
+"""Render a `dump_model.read_model` dict as Postgres DDL.
 
 Built in-app rather than shelling out to pg_dump, which would dump Singularity's
-own database (internal tables, roles) instead of the designed schema.
+own database (internal tables, roles) instead of the designed schema. Every
+renderer is pure (no DB). Identifiers are always double-quoted with embedded
+quotes doubled; the only free text that enters SQL is a comment, via `_lit`.
 """
+from __future__ import annotations
 
-from typing import Any
+import datetime
+
+from .dump_model import table_order
 
 
 def _ident(name: str) -> str:
@@ -12,36 +17,83 @@ def _ident(name: str) -> str:
     return '"' + str(name).replace('"', '""') + '"'
 
 
-def to_sql(graph: dict[str, Any]) -> str:
-    """CREATE TABLE per table, then one FK ALTER per relation. Every identifier double-quoted."""
-    out: list[str] = []
+def _lit(text: str) -> str:
+    """A standard SQL string literal: single quotes doubled."""
+    return "'" + str(text).replace("'", "''") + "'"
 
-    for table in graph.get("tables") or []:
-        cols: list[str] = []
-        pk: list[str] = []
-        for col in table.get("columns") or []:
-            parts = [_ident(col["name"]), col["type"]]
-            if not col.get("nullable", True):
-                parts.append("NOT NULL")
-            cols.append(" ".join(parts))
-            if col.get("primaryKey"):
-                pk.append(_ident(col["name"]))
-        if pk:
-            cols.append(f"PRIMARY KEY ({', '.join(pk)})")
-        if not cols:
-            continue
-        out.append(
-            f"CREATE TABLE {_ident(table['name'])} (\n  "
-            + ",\n  ".join(cols)
-            + "\n);"
-        )
 
-    for rel in graph.get("relations") or []:
-        src, dst = rel["from"], rel["to"]
-        out.append(
-            f"ALTER TABLE {_ident(src['table'])} "
-            f"ADD FOREIGN KEY ({_ident(src['column'])}) "
-            f"REFERENCES {_ident(dst['table'])} ({_ident(dst['column'])});"
-        )
+def _qualified(schema: str, table: str) -> str:
+    return f"{_ident(schema)}.{_ident(table)}"
 
+
+def _ordered(model: dict) -> list[dict]:
+    by_name = {t["name"]: t for t in model["tables"]}
+    return [by_name[n] for n in table_order(model)]
+
+
+def render_header(schema: str, include_data: bool, counts: dict[str, int], today: datetime.date) -> str:
+    lines = [
+        "-- Singularity export",
+        f"-- schema: {schema}",
+        f"-- date: {today.isoformat()}",
+        f"-- data: {'included' if include_data else 'not included'}",
+    ]
+    lines += [f"-- {name}: {n} rows" for name, n in counts.items()]
+    return "\n".join(line.replace("\n", " ") for line in lines) + "\n"
+
+
+def _column_line(c: dict) -> str:
+    parts = [_ident(c["name"]), c["type"]]
+    if c.get("identity"):
+        parts.append(f"GENERATED {c['identity'].upper()} AS IDENTITY")
+    if c.get("default") is not None:
+        parts.append(f"DEFAULT {c['default']}")
+    if not c.get("nullable", True):
+        parts.append("NOT NULL")
+    return " ".join(parts)
+
+
+def render_structure(model: dict, schema: str) -> str:
+    out = [f"CREATE SCHEMA IF NOT EXISTS {_ident(schema)};", f"SET search_path TO {_ident(schema)};", ""]
+    tables = _ordered(model)
+    for t in tables:
+        lines = [_column_line(c) for c in t["columns"]]
+        lines += [f"CONSTRAINT {_ident(k['name'])} {k['definition']}"
+                  for k in t["constraints"] if k["kind"] in ("p", "u", "c")]
+        out.append(f"CREATE TABLE {_qualified(schema, t['name'])} (\n  " + ",\n  ".join(lines) + "\n);")
+        out.append("")
+    for t in tables:
+        qt = _qualified(schema, t["name"])
+        if t.get("comment") is not None:
+            out.append(f"COMMENT ON TABLE {qt} IS {_lit(t['comment'])};")
+        for c in t["columns"]:
+            if c.get("comment") is not None:
+                out.append(f"COMMENT ON COLUMN {qt}.{_ident(c['name'])} IS {_lit(c['comment'])};")
+    return "\n".join(out) + "\n"
+
+
+def render_foreign_keys(model: dict, schema: str) -> str:
+    out = [f"ALTER TABLE {_qualified(schema, t['name'])} ADD CONSTRAINT {_ident(k['name'])} {k['definition']};"
+           for t in _ordered(model) for k in t["constraints"] if k["kind"] == "f"]
+    return "\n".join(out) + "\n" if out else ""
+
+
+def render_indexes(model: dict) -> str:
+    out = [f"{i['definition']};" for t in _ordered(model) for i in t["indexes"]]
+    return "\n".join(out) + "\n" if out else ""
+
+
+def render_identity_fix(model: dict, schema: str) -> str:
+    out = []
+    for t in _ordered(model):
+        qt = _qualified(schema, t["name"])
+        for c in t["columns"]:
+            if not c.get("identity"):
+                continue
+            col = _ident(c["name"])
+            seq = (qt + "").replace("'", "''")
+            name = c["name"].replace("'", "''")
+            mx = f"(SELECT max({col}) FROM {qt})"
+            out.append(f"SELECT setval(pg_get_serial_sequence('{seq}', '{name}'), "
+                       f"COALESCE({mx}, 1), {mx} IS NOT NULL);")
     return "\n".join(out) + "\n" if out else ""
