@@ -60,15 +60,21 @@ def _managed_counts() -> dict[str, int]:
     return {m["name"]: m["tables"] for m in introspect.managed_schemas()}
 
 
-def _schemas_fingerprint() -> str:
-    """Hash of the managed schema names and table counts: any create/rename/drop moves it."""
-    return hashlib.sha256(json.dumps(_managed_counts(), sort_keys=True).encode()).hexdigest()
+def _schemas_fingerprint(ops) -> str:
+    """Hash of the managed schema names; drop_schema also hashes table counts (emptiness matters)."""
+    counts = _managed_counts()
+    if any(o.get("op") == "drop_schema" for o in ops):
+        parts = counts
+    else:
+        parts = sorted(counts)
+    return hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()
 
 
 def _current_fingerprint(change: Change) -> str:
     """Fingerprint the change would get right now ('' when it affects nothing). May raise UnknownSchema."""
-    if _is_database(change.operations or change.original_operations):
-        return _schemas_fingerprint()
+    ops = change.operations or change.original_operations
+    if _is_database(ops):
+        return _schemas_fingerprint(ops)
     if change.affected_tables:
         return introspect.fingerprint(change.affected_tables, change.schema)
     return ""

@@ -176,3 +176,33 @@ def test_migration_gives_existing_rows_master(approver):
     finally:
         ex = MigrationExecutor(connection)
         ex.migrate(ex.loader.graph.leaf_nodes())
+
+
+def test_create_schema_not_stale_from_table_activity(approver):
+    c = service.propose(approver, [{"op": "create_schema", "name": "crm"}], source="web")
+    run(approver, CUSTOMER)                          # table in master
+    assert service.approve(approver, c.pk).status == "applied"
+
+
+def test_drop_schema_goes_stale_when_table_appears(approver):
+    make_crm(approver)
+    c = service.propose(approver, [{"op": "drop_schema", "schema": "crm", "reason": "unused"}], source="web")
+    assert c.status == "pending"
+    run(approver, CUSTOMER, schema="crm")
+    assert service.approve(approver, c.pk).status == "stale"
+
+
+def test_revert_create_schema(approver):
+    c = make_crm(approver)
+    rev = service.revert(approver, c.pk)
+    assert rev.status == "applied"
+    assert "crm" not in [m["name"] for m in introspect.managed_schemas()]
+
+
+def test_revert_rename_schema(approver):
+    make_crm(approver)
+    c = run(approver, [{"op": "rename_schema", "schema": "crm", "new_name": "sales"}])
+    rev = service.revert(approver, c.pk)
+    assert rev.status == "applied"
+    names = [m["name"] for m in introspect.managed_schemas()]
+    assert "crm" in names and "sales" not in names
