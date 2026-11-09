@@ -16,11 +16,22 @@ interface Props {
   build: (reason: string) => Operation[];
   destructive?: boolean;
   onClose: () => void;
+  /** Back from an unsent or refused dialog to the form that opened it (defaults to onClose). */
+  onBack?: () => void;
   onProposed: (change: Change) => void;
 }
 
+function refusalText(c: Change): string {
+  const lines = [
+    ...(c.check.errors ?? []),
+    ...(c.check.violations ?? []).filter((v) => v.severity === "block").map((v) => (v.suggestion ? `${v.message} ${v.suggestion}` : v.message)),
+  ];
+  if (lines.length === 0) lines.push(c.error || "The change was refused.");
+  return lines.join("\n");
+}
+
 /** Review the operations a UI action would send, then propose them. Refusals keep the dialog (and the reason) open. */
-export function ProposeDialog({ me, schema, title, build, destructive, onClose, onProposed }: Props) {
+export function ProposeDialog({ me, schema, title, build, destructive, onClose, onBack, onProposed }: Props) {
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -33,8 +44,8 @@ export function ProposeDialog({ me, schema, title, build, destructive, onClose, 
 
   const busyRef = useRef(false);
   busyRef.current = busy;
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
+  const closeRef = useRef(onBack ?? onClose);
+  closeRef.current = onBack ?? onClose;
   const mounted = useRef(true);
 
   useEffect(() => {
@@ -75,7 +86,13 @@ export function ProposeDialog({ me, schema, title, build, destructive, onClose, 
       return;
     }
     busyRef.current = false;
-    if (mounted.current) {
+    if (created.status === "rejected") {
+      // Gate refusal: stay on the form (and the reason) so the input can be fixed and retried.
+      if (mounted.current) {
+        setError(refusalText(created));
+        setBusy(false);
+      }
+    } else if (mounted.current) {
       setChange(created);
       setBusy(false);
     }
@@ -131,12 +148,12 @@ export function ProposeDialog({ me, schema, title, build, destructive, onClose, 
               </p>
             )}
             {error && (
-              <p className="problems" role="alert">
+              <p className="problems" role="alert" style={{ whiteSpace: "pre-line" }}>
                 {error}
               </p>
             )}
             <div className="modal-foot">
-              <button type="button" className="link" onClick={onClose} disabled={busy}>
+              <button type="button" className="link" onClick={onBack ?? onClose} disabled={busy}>
                 Close
               </button>
               <button type="submit" className="button" disabled={busy || !reasonOk || ops.length === 0}>

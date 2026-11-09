@@ -123,6 +123,23 @@ describe("NewTableForm", () => {
     expect(screen.getByRole("button", { name: "Propose" })).not.toBeDisabled();
   });
 
+  it("a rejected create keeps the typed columns and shows the violation; Close goes back to the form", async () => {
+    const refused: Change = { ...change, status: "rejected", diff: [], check: { violations: [{ severity: "block", message: "table needs a comment" }] } };
+    vi.mocked(proposeChange).mockResolvedValue(refused);
+    const { props } = setup();
+    set("Table name", "order");
+    set("Field 1 name", "id");
+    fireEvent.click(review());
+    fireEvent.click(screen.getByRole("button", { name: "Propose" }));
+    expect(await screen.findByText("table needs a comment")).toBeInTheDocument();
+    expect(props.onProposed).toHaveBeenCalledWith(refused, "order");
+    expect(screen.queryByRole("status")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(props.onClose).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Table name")).toHaveValue("order");
+    expect(screen.getByLabelText("Field 1 name")).toHaveValue("id");
+  });
+
   it("keeps the status card when tables later include the created name", async () => {
     vi.mocked(proposeChange).mockResolvedValue(change);
     const { props, r } = setup();

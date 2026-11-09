@@ -81,11 +81,12 @@ describe("ProposeDialog", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/could not reach the server/i);
   });
 
-  it("a returned change with blockers is shown as-is", async () => {
+  it("a returned rejected change is shown as an error on the form, not as a card", async () => {
     vi.mocked(proposeChange).mockResolvedValue(change({ status: "rejected", check: { errors: ["nope"] } }));
     setup();
     fireEvent.click(screen.getByRole("button", { name: "Propose" }));
-    expect(await screen.findByLabelText("Change #7")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("nope");
+    expect(screen.queryByLabelText("Change #7")).toBeNull();
   });
 
   it("Close and Escape call onClose", async () => {
@@ -155,5 +156,30 @@ describe("ProposeDialog", () => {
   it("empty operations disable Propose", () => {
     setup({ build: () => [] });
     expect(screen.getByRole("button", { name: "Propose" })).toBeDisabled();
+  });
+
+  it("a rejected create stays on the form with the reason and violations, calls onProposed", async () => {
+    const refused = change({ status: "rejected", diff: [], check: { violations: [{ severity: "block", message: "nope", suggestion: "try later" }] } });
+    vi.mocked(proposeChange).mockResolvedValue(refused);
+    const p = setup({ destructive: true });
+    fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "cleanup" } });
+    fireEvent.click(screen.getByRole("button", { name: "Propose" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("nope try later");
+    expect(p.onProposed).toHaveBeenCalledWith(refused);
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByLabelText("Reason")).toHaveValue("cleanup");
+  });
+
+  it("Close uses onBack when given, onClose otherwise; after success Close is onClose", async () => {
+    const onBack = vi.fn();
+    const p = setup({ onBack });
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onBack).toHaveBeenCalled();
+    expect(p.onClose).not.toHaveBeenCalled();
+    vi.mocked(proposeChange).mockResolvedValue(change());
+    fireEvent.click(screen.getByRole("button", { name: "Propose" }));
+    await screen.findByRole("status");
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(p.onClose).toHaveBeenCalled();
   });
 });

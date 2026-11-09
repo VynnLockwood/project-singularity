@@ -352,4 +352,63 @@ describe("DatabaseView", () => {
       expect(screen.queryByRole("button", { name: "Rename table" })).toBeNull();
     });
   });
+
+  const created2 = () => vi.fn()
+    .mockResolvedValueOnce([{ name: "master", tables: 3, comment: null }, { name: "crm", tables: 0, comment: null }])
+    .mockResolvedValue([{ name: "master", tables: 3, comment: null }, { name: "crm", tables: 0, comment: null }, { name: "sales", tables: 0, comment: null }]);
+  const createSales = async () => {
+    fireEvent.click(await screen.findByRole("button", { name: /new database/i }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "sales" } });
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    fireEvent.click(screen.getByRole("button", { name: "Propose" }));
+    await screen.findByRole("status");
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  };
+
+  it("a later-applied create does not steal the view while a table is selected", async () => {
+    const { rerender } = await setup({ getSchemas: created2() });
+    await screen.findByRole("button", { name: "customer" });
+    await createSales();
+    fireEvent.click(screen.getByRole("button", { name: "customer" }));
+    rerender(1);
+    await screen.findByRole("button", { name: "sales (0)" });
+    expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("master / customer");
+  });
+
+  it("opening another panel forgets the remembered create", async () => {
+    const { rerender } = await setup({ getSchemas: created2() });
+    await screen.findByRole("button", { name: "customer" });
+    await createSales();
+    fireEvent.click(screen.getByRole("button", { name: /new table/i }));
+    rerender(1);
+    await screen.findByRole("button", { name: "sales (0)" });
+    expect(screen.getByRole("button", { name: "master (3)" })).toHaveAttribute("aria-current", "true");
+    expect(screen.getByLabelText("Table name")).toBeInTheDocument();
+  });
+
+  it("an open Rename form is closed when the view switches schema", async () => {
+    const getSchemas = vi.fn()
+      .mockResolvedValueOnce([{ name: "master", tables: 3, comment: null }, { name: "crm", tables: 0, comment: null }])
+      .mockResolvedValue([{ name: "master", tables: 3, comment: null }]);
+    const { rerender } = await setup({ getSchemas });
+    fireEvent.click(await screen.findByRole("button", { name: "crm (0)" }));
+    fireEvent.click(screen.getByRole("button", { name: /^rename$/i }));
+    expect(screen.getByLabelText("New name")).toBeInTheDocument();
+    rerender(1);
+    await waitFor(() => expect(screen.getByRole("button", { name: "master (3)" })).toHaveAttribute("aria-current", "true"));
+    expect(screen.queryByLabelText("New name")).toBeNull();
+  });
+
+  it("a refused database rename returns to the rename form with the name kept", async () => {
+    const refused = { ...aChange, status: "rejected", diff: [], check: { errors: ["no renames today"] } };
+    await setup({ proposeChange: vi.fn().mockResolvedValue(refused) });
+    fireEvent.click(await screen.findByRole("button", { name: "crm (0)" }));
+    fireEvent.click(screen.getByRole("button", { name: /^rename$/i }));
+    fireEvent.change(screen.getByLabelText("New name"), { target: { value: "clients" } });
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    fireEvent.click(screen.getByRole("button", { name: "Propose" }));
+    expect(await screen.findByText("no renames today")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.getByLabelText("New name")).toHaveValue("clients");
+  });
 });

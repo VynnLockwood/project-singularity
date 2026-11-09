@@ -206,7 +206,7 @@ export function RelationsTab({ me, schema, table, graph, refreshKey, onProposed 
       {canWrite && review && (
         <ProposeDialog
           me={me} schema={schema} title={review.title} destructive={review.destructive}
-          build={review.build} onClose={close} onProposed={onProposed}
+          build={review.build} onClose={close} onBack={() => setReview(null)} onProposed={onProposed}
         />
       )}
     </div>

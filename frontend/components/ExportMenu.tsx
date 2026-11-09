@@ -63,7 +63,7 @@ export function ExportMenu({ schema, canExportData }: { schema: string; canExpor
         Include data
       </label>{" "}
       <button className="button" onClick={run} disabled={busy}>Download SQL</button>
-      {error && <p className="problems" role="alert">{error}</p>}
+      {error && <div className="problems" role="alert">{error}</div>}
     </span>
   );
 }

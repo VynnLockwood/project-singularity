@@ -39,6 +39,10 @@ export function DatabaseView({ me, live, refreshKey, onProposed, onAskAssistant 
   const seq = useRef(0);
   const schemaRef = useRef(schema);
   schemaRef.current = schema;
+  const panelRef = useRef<typeof panel>(null);
+  panelRef.current = panel;
+  const tableRef = useRef(table);
+  tableRef.current = table;
   const created = useRef<{ name: string; id: number } | null>(null);
 
   // A remembered create that was rejected/failed/went stale must not auto-select later.
@@ -56,7 +60,7 @@ export function DatabaseView({ me, live, refreshKey, onProposed, onAskAssistant 
     setTable(null);
     setTab((t) => (t === "erd" ? t : "overview"));
     setFilter("");
-    setPanel((p) => (p === "trename" || p === "trename-review" || p === "tdrop" || p === "newtable" ? null : p));
+    setPanel((p) => (p === "new" || p === "rename-review" || p === "drop" ? p : null));
     setSchema(name);
   };
 
@@ -71,8 +75,12 @@ export function DatabaseView({ me, live, refreshKey, onProposed, onAskAssistant 
         if (created.current && has(created.current.name)) {
           const n = created.current.name;
           created.current = null;
-          setPanel((p) => (p === "new" ? null : p));
-          if (n !== schemaRef.current) resetTo(n);
+          // Only take over the view when the user is not in the middle of something else.
+          const idle = (panelRef.current === "new" || panelRef.current === null) && tableRef.current === null;
+          if (idle) {
+            setPanel((p) => (p === "new" ? null : p));
+            if (n !== schemaRef.current) resetTo(n);
+          }
         } else if (!has(schemaRef.current)) {
           resetTo("master");
         }
@@ -104,6 +112,7 @@ export function DatabaseView({ me, live, refreshKey, onProposed, onAskAssistant 
   };
 
   const pickTable = (name: string | null) => {
+    if (name) created.current = null;
     setPanel((p) => (p === "trename" || p === "trename-review" || p === "tdrop" ? null : p));
     setTable(name);
     setTab(name ? "fields" : "overview");
@@ -153,7 +162,7 @@ export function DatabaseView({ me, live, refreshKey, onProposed, onAskAssistant 
         </div>
         <h3>Tables</h3>
         {canWrite && graph && panel !== "newtable" && (
-          <button className="button" onClick={() => setPanel("newtable")}>New table</button>
+          <button className="button" onClick={() => { created.current = null; setPanel("newtable"); }}>New table</button>
         )}
         {canWrite && graph && panel === "newtable" && (
           <NewTableForm
@@ -186,19 +195,19 @@ export function DatabaseView({ me, live, refreshKey, onProposed, onAskAssistant 
           <div>
             {canManage && (
               <>
-                <button className="link" onClick={() => { setNewName(""); setTarget(schema); setPanel("rename"); }}>Rename</button>{" "}
+                <button className="link" onClick={() => { created.current = null; setNewName(""); setTarget(schema); setPanel("rename"); }}>Rename</button>{" "}
                 <button
                   className="link"
                   disabled={hasTables}
                   title={hasTables ? "Only empty databases can be deleted" : undefined}
-                  onClick={() => { setTarget(schema); setPanel("drop"); }}
+                  onClick={() => { created.current = null; setTarget(schema); setPanel("drop"); }}
                 >Delete</button>{" "}
               </>
             )}
             {canWrite && table && (
               <>
-                <button className="link" onClick={() => { setNewName(""); setPanel("trename"); }}>Rename table</button>{" "}
-                <button className="link" onClick={() => setPanel("tdrop")}>Drop table</button>{" "}
+                <button className="link" onClick={() => { created.current = null; setNewName(""); setPanel("trename"); }}>Rename table</button>{" "}
+                <button className="link" onClick={() => { created.current = null; setPanel("tdrop"); }}>Drop table</button>{" "}
               </>
             )}
             <ExportMenu schema={schema} canExportData={me.role !== "viewer"} />
@@ -222,6 +231,7 @@ export function DatabaseView({ me, live, refreshKey, onProposed, onAskAssistant 
             title={`Rename database ${target} to ${newName}`}
             build={() => [renameSchemaOp(target, newName)]}
             onClose={closePanel}
+            onBack={() => setPanel("rename")}
             onProposed={onProposed}
           />
         )}
@@ -249,7 +259,7 @@ export function DatabaseView({ me, live, refreshKey, onProposed, onAskAssistant 
         )}
         {canWrite && table && panel === "trename-review" && (
           <ProposeDialog me={me} schema={schema} title={`Rename table ${table} to ${newName}`}
-            build={() => [renameTableOp(table, newName)]} onClose={closePanel} onProposed={onProposed} />
+            build={() => [renameTableOp(table, newName)]} onClose={closePanel} onBack={() => setPanel("trename")} onProposed={onProposed} />
         )}
         {canWrite && table && panel === "tdrop" && (
           <ProposeDialog me={me} schema={schema} destructive title={`Drop table ${table}`}

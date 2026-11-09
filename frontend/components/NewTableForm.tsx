@@ -60,6 +60,7 @@ export function NewTableForm({ me, schema, tables, onClose, onProposed }: {
         title={`Create table ${submitted.name}`}
         build={() => [createTableOp(submitted.name, submitted.columns, submitted.comment || undefined)]}
         onClose={onClose}
+        onBack={() => setSubmitted(null)}
         onProposed={(c) => onProposed(c, submitted.name)}
       />
     );

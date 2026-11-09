@@ -84,7 +84,7 @@ export function FieldsTab({ me, schema, table, refreshKey, onProposed }: {
 
   const dialog = () => {
     if (!action || !review) return null;
-    const common = { me, schema, onClose: close, onProposed };
+    const common = { me, schema, onClose: close, onBack: () => setReview(false), onProposed };
     switch (action.kind) {
       case "add":
         return <ProposeDialog {...common} title={`Add field ${table}.${text}`} build={() => [addColumnOp(table, spec())]} />;
@@ -153,10 +153,14 @@ export function FieldsTab({ me, schema, table, refreshKey, onProposed }: {
             <>
               <label>Field name<input value={text} onChange={(e) => setText(e.target.value)} aria-invalid={fieldError ? "true" : undefined} autoFocus /></label>
               <label>Field type
-                <select value={fType} onChange={(e) => setFType(e.target.value)}>
+                <select value={COLUMN_TYPES.includes(fType) ? fType : ""} onChange={(e) => setFType(e.target.value)}>
+                  <option value="" disabled>Custom</option>
                   {COLUMN_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
                 </select>
               </label>
+              {(!COLUMN_TYPES.includes(fType) || validateType(fType) !== null) && (
+                <label>Exact type<input value={fType} onChange={(e) => setFType(e.target.value)} aria-invalid={typeBlocked ? "true" : undefined} /></label>
+              )}
               <label>Nullable
                 <select value={fNullable} onChange={(e) => setFNullable(e.target.value)}>
                   <option value="">Default</option><option value="yes">Yes</option><option value="no">No</option>

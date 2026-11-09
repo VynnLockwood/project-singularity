@@ -100,14 +100,36 @@ describe("FieldsTab", () => {
     expect(screen.getByRole("button", { name: "Review" })).toBeDisabled();
   });
 
-  it("blocks Add field with a template type that is not filled in", async () => {
-    await setup();
+  it("Add field with a template type needs the size filled in, then sends it", async () => {
+    const { mocks } = await setup();
     await screen.findByText("email");
     fireEvent.click(screen.getByRole("button", { name: "Add field" }));
     fireEvent.change(screen.getByLabelText("Field name"), { target: { value: "amount" } });
     fireEvent.change(screen.getByLabelText("Field type"), { target: { value: "varchar(n)" } });
     expect(screen.getByRole("alert")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Review" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Exact type"), { target: { value: "varchar(40)" } });
+    expect(screen.queryByRole("alert")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    const call = await propose(mocks);
+    expect(call[0]).toEqual([{ op: "add_column", table: "customer", column: { name: "amount", type: "varchar(40)" } }]);
+  });
+
+  it("a refused Add field keeps the typed input and Close returns to the form", async () => {
+    const refused = { id: 3, status: "rejected", kind: "schema", source: "web", requester: "e", prompt: "", createdAt: "", decidedBy: null, error: "", decisionNote: "", tables: [], diff: [], check: { violations: [{ severity: "block", message: "name too vague" }] } };
+    const { mocks, onProposed } = await setup();
+    mocks.proposeChange.mockResolvedValue(refused);
+    await screen.findByText("email");
+    fireEvent.click(screen.getByRole("button", { name: "Add field" }));
+    fireEvent.change(screen.getByLabelText("Field name"), { target: { value: "amount" } });
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    fireEvent.click(screen.getByRole("button", { name: "Propose" }));
+    expect(await screen.findByText("name too vague")).toBeInTheDocument();
+    expect(onProposed).toHaveBeenCalledWith(refused);
+    expect(screen.queryByRole("status")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByLabelText("Field name")).toHaveValue("amount");
   });
 
   it("Drop requires a reason and sends drop_column", async () => {

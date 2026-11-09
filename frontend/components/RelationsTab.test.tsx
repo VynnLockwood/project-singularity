@@ -201,4 +201,21 @@ describe("RelationsTab", () => {
     expect(screen.queryByText("order_note_key")).toBeNull();
     expect(getTable).toHaveBeenNthCalledWith(2, "line", "master");
   });
+
+  it("a refused Add index keeps the form selection; Close returns to it", async () => {
+    const refused = { ...aChange, status: "rejected", diff: [], check: { errors: ["index not allowed"] } };
+    const { mocks, onProposed } = await setup({ proposeChange: vi.fn().mockResolvedValue(refused) });
+    await screen.findByText("order_note_idx");
+    fireEvent.click(screen.getByRole("button", { name: "Add index" }));
+    fireEvent.click(screen.getByLabelText("note"));
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    fireEvent.click(screen.getByRole("button", { name: "Propose" }));
+    expect(await screen.findByText("index not allowed")).toBeInTheDocument();
+    expect(mocks.proposeChange).toHaveBeenCalledTimes(1);
+    expect(onProposed).toHaveBeenCalledWith(refused);
+    expect(screen.queryByRole("status")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByLabelText("note")).toBeChecked();
+  });
 });
