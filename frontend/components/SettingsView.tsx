@@ -88,17 +88,19 @@ export function QualitySettings({ canEdit }: { canEdit: boolean }) {
               keySet={data.keySet} canEdit={canEdit} onSaved={(p) => { setData(p); setDraft({}); }} />
           )}
           {rows(chat.filter((t) => !CHAT_MANAGED.includes(t.key)))}
-          <li>
-            <div>
-              <strong>Chat provider keys</strong>
-              <p className="muted small">Read from the server environment. Only whether a key exists is shown here — never its value, and there is nothing to type in.</p>
-            </div>
-            <div className="setting-input">
-              {!(chatProvider && chatModels && chatDefault) && keys.map(([provider, isSet]) => (
-                <span key={provider} className="muted small" aria-label={`${provider} API key`}>{provider}: {isSet ? "set" : "missing"}</span>
-              ))}
-            </div>
-          </li>
+          {!(chatProvider && chatModels && chatDefault) && (
+            <li>
+              <div>
+                <strong>Chat provider keys</strong>
+                <p className="muted small">Read from the server environment. Only whether a key exists is shown here — never its value, and there is nothing to type in.</p>
+              </div>
+              <div className="setting-input">
+                {keys.map(([provider, isSet]) => (
+                  <span key={provider} className="muted small" aria-label={`${provider} API key`}>{provider}: {isSet ? "set" : "missing"}</span>
+                ))}
+              </div>
+            </li>
+          )}
         </ul>
       )}
       {canEdit && <button className="button" disabled={dirty.length === 0} onClick={save}>Save changes</button>}

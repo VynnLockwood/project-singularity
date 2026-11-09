@@ -49,7 +49,7 @@ describe("DuplicatesView", () => {
     expect(await screen.findByText(/Scanned 40 records/)).toBeInTheDocument();
   });
 
-  it("renders no audit columns, even from a stale server", async () => {
+  it("hides the columns the server lists as hidden", async () => {
     await setup();
     const stale = { ...detail, primaryKey: "id", hiddenColumns: ["created_at"],
       members: [{ id: 1, name: "A", created_at: "2026-01-01" }, { id: 2, name: "B", created_at: "2026-01-02" }] };
