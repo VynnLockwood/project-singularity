@@ -69,6 +69,13 @@ def test_rename():
     ):
         r = run([ops])
         assert not r.ok and text in " ".join(r.errors)
+    r = run([{"op": "rename_schema", "schema": "staging", "new_name": "staging"}])
+    assert not r.ok and "same as the current name" in r.errors[0]
+
+
+def test_managed_state_unavailable_is_an_error():
+    r = check.run([{"op": "create_schema", "name": "sales"}], {}, RULES)
+    assert not r.ok and "managed schema state unavailable" in r.errors[0]
 
 
 def test_drop():
@@ -94,3 +101,36 @@ def test_tunable():
     assert DEFAULTS["limits"]["maxSchemas"] == 20
     spec = tunables.TUNABLES["limits.maxSchemas"]
     assert spec[2:] == ("int", 1, 200)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("op", [
+    {"op": "create_schema", "name": "sales"},
+    {"op": "rename_schema", "schema": "staging", "new_name": "s2"},
+    {"op": "drop_schema", "schema": "staging", "reason": "unused"},
+])
+def test_schema_ops_are_schema_kind_and_approver_only(op):
+    from accounts.models import Role, User
+    from approvals import service
+    from approvals.models import Change
+    assert service._kind([op]) == "schema"
+    editor = User.objects.create(username="e@x.com", email="e@x.com", role=Role.EDITOR)
+    approver = User.objects.create(username="a@x.com", email="a@x.com", role=Role.APPROVER)
+    change = Change(requester=editor, source="web", kind=service._kind([op]), operations=[op])
+    assert not service.can_decide(editor, change)
+    assert service.can_decide(approver, change)
+
+
+@pytest.mark.django_db
+@pytest.mark.usefixtures("master")
+def test_max_schemas_tunable_validates_range():
+    from accounts.models import Role, User
+    from config.siconfig import get_config
+    get_config.cache_clear()
+    a = User.objects.create(username="t@x.com", email="t@x.com", role=Role.APPROVER)
+    for bad in (0, 201):
+        with pytest.raises(tunables.TunableError):
+            tunables.apply(a, {"limits.maxSchemas": bad})
+    for good in (1, 200):
+        tunables.apply(a, {"limits.maxSchemas": good})
+        assert get_config()["limits"]["maxSchemas"] == good

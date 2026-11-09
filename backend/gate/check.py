@@ -54,10 +54,10 @@ def _validate_database_ops(ops: list[dict], managed: dict[str, int], max_schemas
                 errors.append("the master schema cannot be renamed")
             elif o["schema"] not in managed:
                 errors.append(f"schema {o['schema']!r} does not exist or is not managed")
-            if o["new_name"] in managed:
-                errors.append(f"schema {o['new_name']!r} already exists")
-            elif o["new_name"] == o["schema"]:
+            if o["new_name"] == o["schema"]:
                 errors.append("new_name is the same as the current name")
+            elif o["new_name"] in managed:
+                errors.append(f"schema {o['new_name']!r} already exists")
         elif kind == "drop_schema":
             if o["schema"] == "master":
                 errors.append("the master schema cannot be dropped")
@@ -110,7 +110,10 @@ def run(raw_ops, schema_state: dict, rule_list: list[dict], *, actor: str | None
 
     conv = Conventions.from_rules(rule_list)
     if any(o["op"] in operations.DATABASE_OPS for o in ops_out):
-        errors = _validate_database_ops(ops_out, managed_schemas or {}, max_schemas)
+        if managed_schemas is None:
+            errors = ["managed schema state unavailable: cannot check schema operations"]
+        else:
+            errors = _validate_database_ops(ops_out, managed_schemas, max_schemas)
     else:
         errors, _ = state_mod.validate(ops_out, schema_state, conv)
     errors = pre_errors + errors

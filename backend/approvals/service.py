@@ -36,8 +36,8 @@ class ChangeError(Exception):
 
 
 def _kind(raw) -> str:
-    if isinstance(raw, list) and any(isinstance(o, dict) and o.get("op") in operations.SCHEMA_OPS for o in raw):
-        return "schema"
+    if isinstance(raw, list) and all(isinstance(o, dict) and "op" in o for o in raw):
+        return operations.kind_of(raw)
     return "data"
 
 
