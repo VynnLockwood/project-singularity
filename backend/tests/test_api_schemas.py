@@ -411,3 +411,21 @@ def test_rename_schema_moves_duplicate_groups_and_triggers_reindex(two, monkeypa
     assert g.pk == old.pk and g.schema == "sales" and g.key == dup.group_key("t", g.member_ids, "sales") != old.key
     assert called
     assert dup.scan("t", two, schema="sales")["groups"] == 1 and DuplicateGroup.objects.count() == 1  # same group, not a new one
+
+
+@pytest.mark.parametrize("qs", ["", "?schema=crm"])
+def test_table_detail_lists_hidden_columns(two, qs):
+    d = client(Role.VIEWER).get(f"/api/schema/tables/t{qs}").json()
+    hidden = d["hiddenColumns"]
+    assert hidden == sorted(hidden)
+    cols = {c["name"] for c in d["columns"]}
+    assert {"created_at", "updated_at", "created_by", "is_active"} <= set(hidden)
+    assert "t_id" in hidden and set(hidden) <= cols
+    assert not {"name", "code"} & set(hidden)
+
+
+def test_table_detail_without_audit_columns_has_no_hidden(two, master_db):
+    with pgsetup.connect("singularity_master_rw", master_db) as rw:
+        rw.execute('CREATE TABLE master.bare (name text, code text)')
+    d = client(Role.VIEWER).get("/api/schema/tables/bare").json()
+    assert d["hiddenColumns"] == []

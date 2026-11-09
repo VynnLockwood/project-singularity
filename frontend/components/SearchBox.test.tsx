@@ -4,21 +4,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const hit = (table: string, column: string | null, confidence: number) =>
   ({ kind: column ? "column" : "table", table, column, confidence, description: `${table} ${column ?? ""} doc` }) as const;
 
-async function setup(result: unknown, canPropose = true) {
+async function setup(result: unknown, canPropose = true, schema?: string) {
   vi.resetModules();
   const onAsk = vi.fn();
+  let searchSchema!: ReturnType<typeof vi.fn>;
   vi.doMock("@/lib/api", async (orig) => {
     const real = await orig<typeof import("@/lib/api")>();
-    return {
-      ...real,
-      searchSchema: result instanceof Error ? vi.fn().mockRejectedValue(new real.ApiError(503, result.message)) : vi.fn().mockResolvedValue(result),
-    };
+    searchSchema = result instanceof Error ? vi.fn().mockRejectedValue(new real.ApiError(503, result.message)) : vi.fn().mockResolvedValue(result);
+    return { ...real, searchSchema };
   });
   const { SearchBox } = await import("./SearchBox");
-  render(<SearchBox canPropose={canPropose} onAskAssistant={onAsk} />);
+  render(<SearchBox canPropose={canPropose} onAskAssistant={onAsk} schema={schema} />);
   fireEvent.change(screen.getByLabelText("Search the schema"), { target: { value: "เบอร์โทรลูกค้า" } });
   fireEvent.click(screen.getByRole("button", { name: "Search" }));
-  return onAsk;
+  return Object.assign(onAsk, { searchSchema });
 }
 
 describe("SearchBox", () => {
@@ -29,6 +28,13 @@ describe("SearchBox", () => {
     await waitFor(() => expect(screen.getByText("customer.phoneNumber")).toBeInTheDocument());
     expect(screen.getByText(/91%/)).toBeInTheDocument();
     expect(screen.queryByText(/propose a new column/)).toBeNull();
+  });
+
+  it("searches the given database and shows the schema of hits that carry one", async () => {
+    const call = await setup({ results: [{ ...hit("customer", "phone", 0.9), schema: "crm" }, hit("orders", null, 0.5)], confident: true, suggestion: null }, true, "crm");
+    await waitFor(() => expect(screen.getByText("customer.phone")).toBeInTheDocument());
+    expect(call.searchSchema).toHaveBeenCalledWith("เบอร์โทรลูกค้า", "crm");
+    expect(screen.getByText(/· crm/)).toBeInTheDocument();
   });
 
   it("offers to ask the assistant, pre-filled with the search, when nothing fits", async () => {

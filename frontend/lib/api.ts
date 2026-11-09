@@ -64,6 +64,16 @@ async function call<T>(method: "GET" | "POST" | "PATCH" | "DELETE", path: string
   return data as T;
 }
 
+/** Master is the default schema: its URLs carry no `schema=` param, any other schema adds one. */
+const DEFAULT_SCHEMA = "master";
+const schemaParam = (schema: string) => (schema === DEFAULT_SCHEMA ? "" : `schema=${encodeURIComponent(schema)}`);
+/** Appends the schema param to a path, picking `?` or `&` as needed. */
+function withSchema(path: string, schema: string): string {
+  const sp = schemaParam(schema);
+  if (!sp) return path;
+  return `${path}${path.includes("?") ? "&" : "?"}${sp}`;
+}
+
 // ---- changes ------------------------------------------------------------------
 
 export type ChangeStatus = "pending" | "rejected" | "applied" | "failed" | "stale";
@@ -86,6 +96,8 @@ export interface Change {
   error: string;
   decisionNote: string;
   tables: string[];
+  /** schema the change targets; absent means master */
+  schema?: string;
   diff: string[];
   sql?: string[];
   check: { violations?: Violation[]; errors?: string[] };
@@ -146,13 +158,42 @@ export interface SchemaGraph {
   tables: GraphTable[];
   relations: Relation[];
 }
-export const getGraph = () => call<SchemaGraph>("GET", "/schema/graph");
+export const getGraph = (schema: string = DEFAULT_SCHEMA) => call<SchemaGraph>("GET", withSchema("/schema/graph", schema));
+
+export interface SchemaInfo {
+  name: string;
+  tables: number;
+  comment: string | null;
+}
+export const getSchemas = () => call<{ schemas: SchemaInfo[] }>("GET", "/schema/schemas").then((r) => r.schemas);
+
+export interface TableDetailColumn {
+  name: string;
+  type: string;
+  nullable: boolean;
+  default: string | null;
+  comment: string | null;
+  identity: boolean;
+}
+export interface TableDetail {
+  name: string;
+  comment: string | null;
+  columns: TableDetailColumn[];
+  constraints: { name: string; kind: string; definition: string }[];
+  indexes: { name: string; definition: string }[];
+  /** audit columns the server hides by default */
+  hiddenColumns: string[];
+}
+export const getTable = (name: string, schema: string = DEFAULT_SCHEMA) =>
+  call<TableDetail>("GET", withSchema(`/schema/tables/${encodeURIComponent(name)}`, schema));
 
 // ---- search -------------------------------------------------------------------
 
 export interface SearchHit {
   kind: "table" | "column";
   table: string;
+  /** schema the hit belongs to; absent means master */
+  schema?: string;
   column: string | null;
   confidence: number;
   description: string;
@@ -162,7 +203,8 @@ export interface SearchResult {
   confident: boolean;
   suggestion: string | null;
 }
-export const searchSchema = (q: string) => call<SearchResult>("GET", `/search?q=${encodeURIComponent(q)}`);
+export const searchSchema = (q: string, schema: string = DEFAULT_SCHEMA) =>
+  call<SearchResult>("GET", withSchema(`/search?q=${encodeURIComponent(q)}`, schema));
 export const reindexSearch = (rebuild = false) =>
   call<{ embedded: number; unchanged: number; removed: number }>("POST", "/search/reindex", { rebuild });
 
@@ -194,11 +236,12 @@ export interface RowsQuery {
   filters?: Record<string, string>;
   inactive?: boolean;
 }
-export const getRows = (table: string, q: RowsQuery) => {
+export const getRows = (table: string, q: RowsQuery, schema: string = DEFAULT_SCHEMA) => {
   const p = new URLSearchParams({ offset: String(q.offset), limit: String(q.limit) });
   if (q.sort) p.set("sort", q.sort);
   if (q.dir) p.set("dir", q.dir);
   if (q.inactive) p.set("inactive", "1");
+  if (schema !== DEFAULT_SCHEMA) p.set("schema", schema);
   const filters = Object.fromEntries(Object.entries(q.filters ?? {}).filter(([, v]) => v));
   if (Object.keys(filters).length) p.set("filters", JSON.stringify(filters));
   return call<RowsPage>("GET", `/schema/tables/${encodeURIComponent(table)}/rows?${p}`);
@@ -208,12 +251,12 @@ export interface RefOptions {
   truncated: boolean;
   options: { id: number | string; label: string }[];
 }
-export const getOptions = (table: string) =>
-  call<RefOptions>("GET", `/schema/tables/${encodeURIComponent(table)}/options?limit=200`);
+export const getOptions = (table: string, schema: string = DEFAULT_SCHEMA) =>
+  call<RefOptions>("GET", withSchema(`/schema/tables/${encodeURIComponent(table)}/options?limit=200`, schema));
 
 export type Operation = Record<string, unknown>;
-export const proposeChange = (operations: Operation[], prompt: string, source: "grid" | "web" = "grid") =>
-  call<Change>("POST", "/changes", { operations, source, prompt });
+export const proposeChange = (operations: Operation[], prompt: string, source: "grid" | "web" = "grid", schema: string = DEFAULT_SCHEMA) =>
+  call<Change>("POST", "/changes", schema === DEFAULT_SCHEMA ? { operations, source, prompt } : { operations, source, prompt, schema });
 
 // ---- duplicates ---------------------------------------------------------------
 

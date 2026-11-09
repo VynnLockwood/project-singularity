@@ -12,10 +12,9 @@ import { ConnectView } from "./ConnectView";
 import { SettingsView } from "./SettingsView";
 import { QueueView } from "./QueueView";
 import { ScriptsTab } from "./ScriptsTab";
-import { SearchBox } from "./SearchBox";
-import { SchemaView } from "./SchemaView";
+import { DatabaseView } from "./DatabaseView";
 
-type Tab = "chat" | "schema" | "data" | "duplicates" | "scripts" | "connect" | "settings" | "queue";
+type Tab = "chat" | "database" | "data" | "duplicates" | "scripts" | "connect" | "settings" | "queue";
 
 export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
   const [tab, setTab] = useState<Tab>("chat");
@@ -65,9 +64,9 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
       <header className="topbar">
         <span className="brand">Singularity</span>
         <nav aria-label="Main">
-          {(["chat", "schema", "data", "duplicates", ...(me.role === "viewer" ? [] : ["scripts"] as const), "connect", "settings", ...(me.role === "viewer" ? [] : ["queue"])] as Tab[]).map((t) => (
+          {(["chat", "database", "data", "duplicates", ...(me.role === "viewer" ? [] : ["scripts"] as const), "connect", "settings", ...(me.role === "viewer" ? [] : ["queue"])] as Tab[]).map((t) => (
             <button key={t} className="tab" data-active={tab === t} onClick={() => setTab(t)}>
-              {t === "chat" ? "Chat" : t === "schema" ? "Schema" : t === "data" ? "Data" : t === "duplicates" ? "Duplicates" : t === "scripts" ? "Scripts" : t === "connect" ? "Connect" : t === "settings" ? "Settings" : `Queue${mine.length ? ` (${mine.length})` : ""}`}
+              {t === "chat" ? "Chat" : t === "database" ? "Database" : t === "data" ? "Data" : t === "duplicates" ? "Duplicates" : t === "scripts" ? "Scripts" : t === "connect" ? "Connect" : t === "settings" ? "Settings" : `Queue${mine.length ? ` (${mine.length})` : ""}`}
             </button>
           ))}
         </nav>
@@ -80,11 +79,10 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
       {error && <p className="problems" role="alert">{error}</p>}
       <main className="content">
         {tab === "chat" && <ChatView me={me} live={live} onDecide={onDecide} busy={busy} draft={draft} onDraftUsed={() => setDraft("")} />}
-        {tab === "schema" && (
-          <>
-            <SearchBox canPropose={me.role !== "viewer"} canReindex={me.role === "approver"} onAskAssistant={(t) => { setDraft(t); setTab("chat"); }} />
-            <SchemaView refreshKey={schemaKey} canExportData={me.role !== "viewer"} />
-          </>
+        {tab === "database" && (
+          <DatabaseView me={me} live={live} refreshKey={schemaKey}
+            onProposed={(c) => setLive((l) => upsert(l, c))}
+            onAskAssistant={(t) => { setDraft(t); setTab("chat"); }} />
         )}
         {tab === "data" && (
           <DataView me={me} live={live} refreshKey={schemaKey} onBusy={setBusy}

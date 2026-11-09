@@ -6,7 +6,7 @@ from accounts.api import ROLE_CHECK, endpoint, error
 from audit.models import record
 from config.siconfig import get_config
 
-from . import introspect, query, rows as rows_mod
+from . import introspect, query, roles, rows as rows_mod
 from .dump_model import ExportError
 from .export import open_export
 from .http import schema_param, unknown_schema_is_400
@@ -64,6 +64,9 @@ def table_detail(request, name):
     d = introspect.describe_table(name, schema_param(request))
     if d is None:
         return error("not found", 404)
+    conv = roles.conventions()
+    names = roles.hidden_columns(conv) | set(roles.roles_of(d, conv).values())
+    d["hiddenColumns"] = sorted(c["name"] for c in d["columns"] if c["name"] in names)
     return JsonResponse(d)
 
 
