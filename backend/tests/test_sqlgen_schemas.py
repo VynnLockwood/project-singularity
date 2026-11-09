@@ -22,6 +22,10 @@ def all_ops():
     return [
         {"op": "add_column", "table": "t", "column": col("x", comment="hi")},
         {"op": "set_column_comment", "table": "t", "column": "name", "comment": "n"},
+        {"op": "rename_column", "table": "t", "column": "name", "new_name": "label"},
+        {"op": "alter_column_type", "table": "t", "column": "name", "type": "varchar(20)"},
+        {"op": "add_index", "table": "t", "columns": ["name"]},
+        {"op": "add_unique", "table": "t", "columns": ["name"]},
         {"op": "rename_table", "table": "t", "new_name": "t2"},
         {"op": "set_table_comment", "table": "t2", "comment": "c"},
         {"op": "add_foreign_key", "table": "t2", "column": "id", "ref_table": "u", "ref_column": "id"},
