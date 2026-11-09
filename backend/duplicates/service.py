@@ -50,6 +50,12 @@ def group_key(table: str, ids: list[int]) -> str:
     return hashlib.sha256(f"{table}:{','.join(map(str, sorted(ids)))}".encode()).hexdigest()
 
 
+def audit_columns(described: dict) -> set[str]:
+    """Columns that are bookkeeping, not data: every audit spelling plus this table's role columns (not the key)."""
+    role_cols = roles.roles_of(described)
+    return roles.hidden_columns() | {c for r, c in role_cols.items() if r != "primary_key"}
+
+
 def scan(table: str, user, *, fields: list[str] | None = None, threshold: float | None = None) -> dict:
     d = _describe(table)
     columns = {c["name"]: c for c in d["columns"]}
@@ -57,7 +63,7 @@ def scan(table: str, user, *, fields: list[str] | None = None, threshold: float 
     pk = role_cols.get("primary_key")
     if pk is None:
         raise DuplicateError("this table has no primary key column")
-    fields = fields or default_fields(columns, set(role_cols.values()) | roles.hidden_columns())
+    fields = fields or default_fields(columns, set(role_cols.values()) | audit_columns(d))
     if not fields:
         raise DuplicateError("this table has no text column to compare")
     for f in fields:
@@ -118,14 +124,17 @@ def summary(g: DuplicateGroup) -> dict:
 
 
 def detail(g: DuplicateGroup) -> dict:
+    d = _describe(g.table_name)
     pk = _table_pk(g.table_name)
+    present = {c["name"] for c in d["columns"]}
+    drop = audit_columns(d) & present
     q = sql.SQL("SELECT * FROM {t} WHERE {pk} = ANY(%s) ORDER BY {pk}").format(
         t=sql.Identifier("master", g.table_name), pk=sql.Identifier(pk))
     with ro_connection() as conn:
         conn.execute("SET TRANSACTION READ ONLY")
-        members = [{k: jsonable(v) for k, v in r.items()} for r in conn.execute(q, (g.member_ids,)).fetchall()]
+        members = [{k: jsonable(v) for k, v in r.items() if k not in drop} for r in conn.execute(q, (g.member_ids,)).fetchall()]
     refs = [r for r in introspect.graph()["relations"] if r["to"]["table"] == g.table_name]
-    return {**summary(g), "members": members, "primaryKey": pk,
+    return {**summary(g), "members": members, "primaryKey": pk, "hiddenColumns": sorted(drop),
             "referencedBy": [{"table": r["from"]["table"], "column": r["from"]["column"]} for r in refs]}
 
 

@@ -226,6 +226,8 @@ export interface DuplicateSummary {
 export interface DuplicateDetail extends DuplicateSummary {
   /** primary key column of the table; older servers send none, meaning "id" */
   primaryKey?: string;
+  /** audit columns the server left out of members (older servers send none) */
+  hiddenColumns?: string[];
   members: Record<string, unknown>[];
   referencedBy: { table: string; column: string }[];
 }
