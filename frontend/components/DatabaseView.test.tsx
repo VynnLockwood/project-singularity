@@ -150,6 +150,41 @@ describe("DatabaseView", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "sales (0)" })).toHaveAttribute("aria-current", "true"));
   });
 
+  it("closes the New database panel when the created database is auto-selected", async () => {
+    const getSchemas = vi.fn()
+      .mockResolvedValueOnce([{ name: "master", tables: 3, comment: null }])
+      .mockResolvedValue([{ name: "master", tables: 3, comment: null }, { name: "sales", tables: 0, comment: null }]);
+    const { rerender } = await setup({ getSchemas });
+    await screen.findByRole("button", { name: "customer" });
+    fireEvent.click(screen.getByRole("button", { name: /new database/i }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "sales" } });
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    fireEvent.click(screen.getByRole("button", { name: "Propose" }));
+    await screen.findByRole("status");
+    rerender(1);
+    await waitFor(() => expect(screen.getByRole("button", { name: "sales (0)" })).toHaveAttribute("aria-current", "true"));
+    expect(screen.getByRole("button", { name: /new database/i })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Name")).toBeNull();
+  });
+
+  it("a remembered created name does not auto-select after the user navigated elsewhere", async () => {
+    const getSchemas = vi.fn()
+      .mockResolvedValueOnce([{ name: "master", tables: 3, comment: null }, { name: "crm", tables: 0, comment: null }])
+      .mockResolvedValue([{ name: "master", tables: 3, comment: null }, { name: "crm", tables: 0, comment: null }, { name: "sales", tables: 0, comment: null }]);
+    const { rerender } = await setup({ getSchemas });
+    await screen.findByRole("button", { name: "customer" });
+    fireEvent.click(screen.getByRole("button", { name: /new database/i }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "sales" } });
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    fireEvent.click(screen.getByRole("button", { name: "Propose" }));
+    await screen.findByRole("status");
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByRole("button", { name: "crm (0)" }));
+    rerender(1);
+    await screen.findByRole("button", { name: "sales (0)" });
+    expect(screen.getByRole("button", { name: "crm (0)" })).toHaveAttribute("aria-current", "true");
+  });
+
   it("Delete is disabled with a title for a schema that has tables", async () => {
     await setup({ getSchemas: vi.fn().mockResolvedValue([{ name: "master", tables: 3, comment: null }, { name: "crm", tables: 2, comment: null }]) });
     fireEvent.click(await screen.findByRole("button", { name: "crm (2)" }));

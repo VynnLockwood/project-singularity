@@ -11,26 +11,27 @@ export function NewDatabaseForm({ me, existing, onClose, onProposed }: {
 }) {
   const [name, setName] = useState("");
   const [comment, setComment] = useState("");
-  const [review, setReview] = useState(false);
+  const [submitted, setSubmitted] = useState<string | null>(null);
 
   const error = name === "" ? null : validateSchemaName(name, existing);
   const valid = name !== "" && !error;
 
-  if (review && valid) {
+  // Latched at submit: a refresh that adds this name to `existing` must not unmount the dialog.
+  if (submitted !== null) {
     return (
       <ProposeDialog
         me={me}
         schema="master"
-        title={`Create database ${name}`}
-        build={() => [createSchemaOp(name, comment.trim() || undefined)]}
+        title={`Create database ${submitted}`}
+        build={() => [createSchemaOp(submitted, comment.trim() || undefined)]}
         onClose={onClose}
-        onProposed={(c) => onProposed(c, name)}
+        onProposed={(c) => onProposed(c, submitted)}
       />
     );
   }
 
   return (
-    <form className="db-inline-form" onSubmit={(e) => { e.preventDefault(); if (valid) setReview(true); }}>
+    <form className="db-inline-form" onSubmit={(e) => { e.preventDefault(); if (valid) setSubmitted(name); }}>
       <label>
         Name
         <input value={name} onChange={(e) => setName(e.target.value)} aria-invalid={error ? "true" : undefined} autoFocus />

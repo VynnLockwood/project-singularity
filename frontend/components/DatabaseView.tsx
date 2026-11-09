@@ -17,7 +17,7 @@ const TABS: { id: DbTab; label: string }[] = [
   { id: "overview", label: "Overview" },
 ];
 
-export function DatabaseView({ me, refreshKey, onProposed }: {
+export function DatabaseView({ me, live, refreshKey, onProposed }: {
   me: Me; live: Change[]; refreshKey: number;
   onProposed: (c: Change) => void; onAskAssistant: (text: string) => void;
 }) {
@@ -35,7 +35,15 @@ export function DatabaseView({ me, refreshKey, onProposed }: {
   const seq = useRef(0);
   const schemaRef = useRef(schema);
   schemaRef.current = schema;
-  const created = useRef<string | null>(null);
+  const created = useRef<{ name: string; id: number } | null>(null);
+
+  // A remembered create that was rejected/failed/went stale must not auto-select later.
+  useEffect(() => {
+    const cur = created.current;
+    if (cur && live.some((c) => c.id === cur.id && (c.status === "rejected" || c.status === "failed" || c.status === "stale"))) {
+      created.current = null;
+    }
+  }, [live]);
 
   // One reset for every schema change (user pick, created, or the selected one vanished).
   const resetTo = (name: string) => {
@@ -55,9 +63,10 @@ export function DatabaseView({ me, refreshKey, onProposed }: {
         setSchemas(list);
         setSchemasError("");
         const has = (n: string) => list.some((x) => x.name === n);
-        if (created.current && has(created.current)) {
-          const n = created.current;
+        if (created.current && has(created.current.name)) {
+          const n = created.current.name;
           created.current = null;
+          setPanel((p) => (p === "new" ? null : p));
           if (n !== schemaRef.current) resetTo(n);
         } else if (!has(schemaRef.current)) {
           resetTo("master");
@@ -85,6 +94,7 @@ export function DatabaseView({ me, refreshKey, onProposed }: {
   const pickSchema = (name: string) => {
     if (name === schema) return;
     setPanel(null);
+    created.current = null;
     resetTo(name);
   };
 
@@ -127,7 +137,8 @@ export function DatabaseView({ me, refreshKey, onProposed }: {
               existing={taken}
               onClose={closePanel}
               onProposed={(c, name) => {
-                if (name) created.current = name;
+                created.current = c.status === "rejected" || c.status === "failed" || c.status === "stale"
+                  ? null : { name, id: c.id };
                 onProposed(c);
               }}
             />

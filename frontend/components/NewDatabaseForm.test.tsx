@@ -56,6 +56,19 @@ describe("NewDatabaseForm", () => {
     expect(vi.mocked(proposeChange).mock.calls[0][0]).toEqual([{ op: "create_schema", name: "sales", comment: "Sales data" }]);
   });
 
+  it("keeps the status card when existing later includes the created name", async () => {
+    vi.mocked(proposeChange).mockResolvedValue(change);
+    const props = { me, existing: ["master"], onClose: vi.fn(), onProposed: vi.fn() };
+    const r = render(<NewDatabaseForm {...props} />);
+    type("sales");
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    fireEvent.click(screen.getByRole("button", { name: "Propose" }));
+    await screen.findByRole("status");
+    r.rerender(<NewDatabaseForm {...props} existing={["master", "sales"]} />);
+    expect(screen.getByRole("status")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("Cancel closes", () => {
     const p = setup();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
