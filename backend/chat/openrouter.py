@@ -3,14 +3,9 @@ import os
 
 import requests
 
+from .errors import ChatError
+
 BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-
-
-class ChatError(Exception):
-    def __init__(self, code: str, message: str):
-        super().__init__(message)
-        self.code = code
-        self.message = message
 
 
 def complete(messages: list[dict], tools: list[dict], model: str, *, timeout: float = 90) -> dict:

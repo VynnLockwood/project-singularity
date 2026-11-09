@@ -6,8 +6,8 @@ from approvals.models import Change
 from config.siconfig import get_config
 
 from . import orchestrator
+from .errors import ChatError
 from .models import Conversation, Message
-from .openrouter import ChatError
 
 CHAT_STATUS = {"not_configured": 503, "unavailable": 502, "provider_error": 502, "rate_limited": 429}
 
