@@ -8,6 +8,7 @@ import { ProposeDialog } from "./ProposeDialog";
 import { dropSchemaOp, dropTableOp, renameSchemaOp, renameTableOp, validateName, validateSchemaName } from "@/lib/databaseOps";
 import { NewTableForm } from "./NewTableForm";
 import { FieldsTab } from "./FieldsTab";
+import { RelationsTab } from "./RelationsTab";
 import { ExportMenu } from "./ExportMenu";
 
 export type DbTab = "fields" | "relations" | "erd" | "overview";
@@ -261,7 +262,9 @@ export function DatabaseView({ me, live, refreshKey, onProposed }: {
         {tab === "fields" && (table
           ? <FieldsTab key={`${schema}/${table}`} me={me} schema={schema} table={table} refreshKey={refreshKey} onProposed={onProposed} />
           : <p className="muted">Select a table to see its fields.</p>)}
-        {tab === "relations" && <p className="muted">Relations are coming soon.</p>}
+        {tab === "relations" && (table
+          ? <RelationsTab key={`${schema}/${table}`} me={me} schema={schema} table={table} graph={graph} refreshKey={refreshKey} onProposed={onProposed} />
+          : <p className="muted">Select a table to see its relations.</p>)}
         {tab === "overview" && <p className="muted">Overview is coming soon.</p>}
         {tab === "erd" && <SchemaView schema={schema} refreshKey={refreshKey} />}
       </section>
