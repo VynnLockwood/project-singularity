@@ -49,3 +49,13 @@ export function buildPath(route: Route): string {
     default: return join(route.view);
   }
 }
+
+/**
+ * True when a path asks for a file (`/engine/x.js`, `/favicon.ico`) rather than a place in the app.
+ * The catch-all page answers those with a real 404, so a missing optional file (the WebAssembly
+ * engine) is reported as missing instead of being served the app's HTML.
+ */
+export function isAssetPath(segments: string[] | undefined): boolean {
+  const last = segments?.[segments.length - 1];
+  return last !== undefined && /\.[a-z0-9]{2,5}$/i.test(last);
+}

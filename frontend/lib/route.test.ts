@@ -50,3 +50,18 @@ describe("buildPath", () => {
   it("drops a table that has no schema", () => expect(buildPath({ view: "data", table: "x" })).toBe("/data"));
   it("gives back the path of an unknown place", () => expect(buildPath({ view: "notfound", path: "/nope" })).toBe("/nope"));
 });
+
+describe("isAssetPath", () => {
+  it("spots a request for a file, so the app page is not served in its place", async () => {
+    const { isAssetPath } = await import("./route");
+    expect(isAssetPath(["engine", "singularity_engine.js"])).toBe(true);
+    expect(isAssetPath(["favicon.ico"])).toBe(true);
+    expect(isAssetPath(["engine", "singularity_engine_bg.wasm"])).toBe(true);
+  });
+  it("leaves app places alone, including names with a dot in the middle of the path", async () => {
+    const { isAssetPath } = await import("./route");
+    expect(isAssetPath(undefined)).toBe(false);
+    expect(isAssetPath(["data", "master", "province"])).toBe(false);
+    expect(isAssetPath(["nope"])).toBe(false);
+  });
+});

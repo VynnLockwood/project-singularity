@@ -58,3 +58,10 @@ select { padding-right: 6px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+/* plain tables (not the data grid): readable rows, quiet header */
+table:not(.grid) { border-collapse: collapse; width: 100%; }
+table:not(.grid) th, table:not(.grid) td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: middle; }
+table:not(.grid) th { font-weight: 500; font-size: var(--size-small); color: var(--text-faint); background: var(--surface-2); }
+table:not(.grid) tr:last-child td { border-bottom: 0; }
+table:not(.grid) td:first-child { font-family: var(--font-code); font-size: var(--size-code); color: var(--text-bright); }

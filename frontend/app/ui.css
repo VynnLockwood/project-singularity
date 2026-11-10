@@ -87,7 +87,6 @@
 .ui-palette-list:empty { display: none; }
 .ui-palette-list li { display: flex; align-items: center; gap: var(--space-3); padding: 8px var(--space-3); border-radius: var(--radius-control); color: var(--text-dim); cursor: pointer; }
 .ui-palette-list li[data-first-of-group]:not(:first-child) { margin-top: var(--space-2); }
-.ui-palette-list li[data-first-of-group]::before { content: attr(data-first-of-group); order: 3; font-size: 11px; color: var(--text-faint); }
 .ui-palette-list li[aria-selected="true"] { background: var(--surface-3); color: var(--text-bright); box-shadow: inset 2px 0 0 var(--disk); }
 .ui-palette-list li[aria-selected="true"] .ui-icon { color: var(--disk); }
 .ui-palette-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
