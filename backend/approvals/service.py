@@ -26,7 +26,7 @@ from schema import executor, introspect
 from schema.backup import BackupError, backup_schema
 from settings_app import services as rule_service
 
-from . import config_ops
+from . import config_ops, rawsql
 from .models import Change
 
 
@@ -116,8 +116,8 @@ def _mark_stale(change: Change, user, error: str) -> Change:
 
 
 def can_decide(user, change: Change) -> bool:
-    if change.source == "script" or change.kind in ("schema", "config"):
-        # structure, rules, settings, roles and every script load: approvers only
+    if change.source == "script" or change.kind in ("schema", "config", "sql"):
+        # structure, rules, settings, roles, raw SQL and every script load: approvers only
         return user.can_approve
     return user.can_approve or (user.can_edit and user.pk == change.requester_id)
 
@@ -219,6 +219,47 @@ def propose(user, raw_ops, *, source: str, prompt: str = "", conversation_id: in
            details={"source": source, "kind": change.kind, "status": change.status})
     if change.status == Change.Status.REJECTED:
         record(user, "change.rejected_by_gate", target=f"#{change.pk}", details=change.check_result)
+    return change
+
+
+RAW_SQL_WARNING = "Rules were not checked: this is raw SQL."
+MIN_REASON = 10
+
+
+def propose_sql(user, sql: str, reason: str, *, schema: str = "master", source: str = "mcp",
+                conversation_id: int | None = None) -> Change:
+    """Queue raw SQL for an approver. Nothing runs for real here: parse, refuse, warn and a rolled-back dry run."""
+    if not user.can_edit:
+        raise ChangeError("forbidden", "your role cannot propose changes")
+    cfg = get_config()
+    if not cfg["sql"]["enabled"]:
+        raise ChangeError("invalid", "raw SQL is switched off (setting sql.enabled); use propose_change operations")
+    if not isinstance(reason, str) or len(reason.strip()) < MIN_REASON:
+        raise ChangeError("invalid", f"say why in 'reason' (at least {MIN_REASON} characters): the approver reads it")
+    if not isinstance(sql, str):
+        raise ChangeError("invalid", "sql must be text")
+    try:
+        introspect.require_managed(schema)
+    except introspect.UnknownSchema:
+        raise ChangeError("invalid", f"schema {schema!r} does not exist or is not managed by Singularity; call list_schemas") from None
+    limits = cfg["limits"]
+    try:
+        statements = rawsql.parse_statements(sql, max_bytes=limits["maxSqlBytes"], max_statements=limits["maxSqlStatements"])
+        diff = rawsql.dry_run(statements, schema)
+        violations = [{"rule": "rawSql", "severity": "warn", "message": RAW_SQL_WARNING, "op_index": None, "suggestion": None},
+                      *rawsql.warnings_for(statements, schema)]
+    except rawsql.RawSqlError as exc:
+        raise ChangeError("invalid", exc.message) from exc
+    op = {"op": "raw_sql", "sql": sql, "reason": reason.strip()}
+    change = Change(
+        requester=user, source=source, prompt=reason.strip(), conversation_id=conversation_id, kind="sql", schema=schema,
+        original_operations=[op], operations=[op], generated_sql=[s.text for s in statements], diff=diff,
+        check_result={"errors": [], "violations": violations, "autoAdded": []}, affected_tables=[],
+        fingerprint=introspect.schema_fingerprint(schema), rules_hash="", status=Change.Status.PENDING,
+        reverse_operations=None,
+    )
+    change.save()
+    record(user, "change.proposed", target=f"#{change.pk}", details={"source": source, "kind": "sql", "status": change.status})
     return change
 
 
