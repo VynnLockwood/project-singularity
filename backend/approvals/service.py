@@ -395,6 +395,26 @@ def revert(user, change_id: int) -> Change:
     return rev
 
 
+def list_changes(user, *, status: str | None = None, kind: str | None = None, schema: str | None = None,
+                 mine: bool = False, limit: int = 50) -> tuple[list[Change], bool]:
+    """Change history, newest first, and whether more exist beyond `limit`.
+
+    `schema` is not checked against the managed list on purpose: history outlives a database that was
+    renamed or dropped. An unknown filter value simply matches nothing.
+    """
+    qs = Change.objects.select_related("requester", "decided_by")
+    if status:
+        qs = qs.filter(status=status)
+    if schema is not None:
+        qs = qs.filter(schema=schema)
+    if kind:
+        qs = qs.filter(kind=kind)
+    if mine:
+        qs = qs.filter(requester=user)
+    rows = list(qs[: limit + 1])
+    return rows[:limit], len(rows) > limit
+
+
 def pending_for(user):
     """Changes this user could decide right now (the review queue)."""
     qs = Change.objects.filter(status=Change.Status.PENDING)

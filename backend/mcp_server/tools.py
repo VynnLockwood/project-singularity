@@ -33,9 +33,24 @@ TOOL_ROLES = {
     "submit_script": "editor",
     "validate_script": "editor",
     "get_script": "editor",
+    "list_changes": "viewer",
+    "get_audit_log": "approver",   # audit details can hold other people's prompts and emails
 }
 
 RANK = {"viewer": 0, "editor": 1, "approver": 2}
+
+# What each newer tool is for, in the words an AI client reads. One text, used by both the MCP
+# server (mcp_server/app.py) and the web chat (chat/toolspecs.py), so the two cannot drift apart.
+DESCRIPTIONS = {
+    "list_changes": (
+        "History of proposed changes, newest first: pending, applied, rejected, failed or stale. Filter by status, "
+        "kind (schema, data, config), schema, or mine=true for your own. Summaries only; call get_change for the diff."
+    ),
+    "get_audit_log": (
+        "Who did what and when (approvers only): sign-ins, proposals, decisions, exports, settings changes. "
+        "Filter by action or by actor email."
+    ),
+}
 
 
 class ToolFailure(Exception):
@@ -45,6 +60,13 @@ class ToolFailure(Exception):
 def allowed(user, tool: str) -> bool:
     need = TOOL_ROLES.get(tool)
     return need is not None and user is not None and user.rank >= RANK[need]
+
+
+def clamp(value, default: int, maximum: int) -> int:
+    """A list size an AI asked for, made safe: nonsense and anything below 1 give `default`, too much gives `maximum`."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return default
+    return min(value, maximum)
 
 
 def get_rules(user) -> dict:
@@ -192,6 +214,26 @@ def reject_change(user, change_id: int, note: str = "") -> dict:
     return _result(user, change)
 
 
+def list_changes(user, status: str | None = None, kind: str | None = None, schema: str | None = None,
+                 mine: bool = False, limit: int | None = None) -> dict:
+    """History of proposed changes, newest first. Summaries only; get_change has the diff."""
+    if schema is not None and not isinstance(schema, str):
+        return {"changes": [], "truncated": False}
+    items, more = service.list_changes(user, status=status if isinstance(status, str) else None,
+                                       kind=kind if isinstance(kind, str) else None, schema=schema,
+                                       mine=bool(mine), limit=clamp(limit, 20, 100))
+    return {"changes": [service.serialize(c, detail=False) for c in items], "truncated": more}
+
+
+def get_audit_log(user, action: str | None = None, actor: str | None = None, limit: int | None = None) -> dict:
+    """Who did what and when (approvers only)."""
+    from audit.models import as_dict, entries
+
+    items, more = entries(action=action if isinstance(action, str) else None,
+                          actor=actor if isinstance(actor, str) else None, limit=clamp(limit, 50, 200))
+    return {"entries": [as_dict(a) for a in items], "truncated": more}
+
+
 def list_pending(user) -> dict:
     items = service.pending_for(user).select_related("requester", "decided_by")[:50]
     return {"pending": [service.serialize(c, detail=False) for c in items]}
@@ -271,4 +313,6 @@ IMPL = {
     "submit_script": submit_script,
     "validate_script": validate_script,
     "get_script": get_script,
+    "list_changes": list_changes,
+    "get_audit_log": get_audit_log,
 }

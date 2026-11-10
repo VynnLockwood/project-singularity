@@ -5,6 +5,8 @@ its own proposals.
 """
 from mcp_server import tools as mcp_tools
 
+D = mcp_tools.DESCRIPTIONS
+
 _OPS = (
     "Each operation is an object with an 'op': "
     "create_table{name,columns[{name,type,nullable?,unique?,default?,comment?,references?{table,column?}}],comment?}, "
@@ -68,6 +70,12 @@ SPECS = {
     "get_script": (
         "Status, stored report and change link of an uploaded/submitted script.",
         {"script_id": {"type": "integer"}}, ["script_id"]),
+    "list_changes": (D["list_changes"],
+                     {"status": {"type": "string"}, "kind": {"type": "string"}, "schema": {"type": "string"},
+                      "mine": {"type": "boolean"}, "limit": {"type": "integer"}}, []),
+    "get_audit_log": (D["get_audit_log"],
+                      {"action": {"type": "string"}, "actor": {"type": "string", "description": "an email"},
+                       "limit": {"type": "integer"}}, []),
 }
 
 

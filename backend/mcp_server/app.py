@@ -235,6 +235,17 @@ async def get_script(script_id: int) -> dict:
     return await run("get_script", script_id=script_id)
 
 
+@mcp.tool(name="list_changes", description=tools.DESCRIPTIONS["list_changes"])
+async def list_changes(status: str | None = None, kind: str | None = None, schema: str | None = None,
+                       mine: bool = False, limit: int | None = None) -> dict:
+    return await run("list_changes", status=status, kind=kind, schema=schema, mine=mine, limit=limit)
+
+
+@mcp.tool(name="get_audit_log", description=tools.DESCRIPTIONS["get_audit_log"])
+async def get_audit_log(action: str | None = None, actor: str | None = None, limit: int | None = None) -> dict:
+    return await run("get_audit_log", action=action, actor=actor, limit=limit)
+
+
 LINK_PREFIX = "/mcp/t/"
 
 
