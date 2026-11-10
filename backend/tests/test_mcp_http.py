@@ -85,12 +85,21 @@ def test_health_endpoint_needs_no_token(server):
     assert json.load(urllib.request.urlopen(server["base"] + "/healthz"))["ok"] is True
 
 
+def tools_up_to(role):
+    """Every tool whose minimum role is at or below `role`, as the server should list them."""
+    from mcp_server import tools
+    return sorted(t for t, need in tools.TOOL_ROLES.items() if tools.RANK[need] <= tools.RANK[role])
+
+
 def test_each_role_sees_only_its_tools(server):
-    read = ["describe_table", "get_rules", "get_settings", "list_schemas", "list_tables", "query", "search_schema"]
-    edit = read + ["get_change", "propose_change", "propose_config_change", "submit_script", "validate_script", "get_script"]
-    assert names(server, Role.VIEWER) == read
-    assert names(server, Role.EDITOR) == sorted(edit)
-    assert names(server, Role.APPROVER) == sorted(edit + ["approve_change", "list_pending", "list_users", "reject_change"])
+    viewer, editor, approver = (names(server, r) for r in (Role.VIEWER, Role.EDITOR, Role.APPROVER))
+    assert viewer == tools_up_to("viewer") and editor == tools_up_to("editor") and approver == tools_up_to("approver")
+    # the lines that matter, spelled out: reading for all, proposing from editor up, deciding for approvers only
+    assert {"query", "list_tables", "get_rules"} <= set(viewer)
+    assert "propose_change" not in viewer and "propose_change" in editor
+    assert not {"approve_change", "reject_change", "list_pending", "list_users"} & set(editor)
+    assert {"approve_change", "reject_change", "list_pending", "list_users"} <= set(approver)
+    assert set(viewer) < set(editor) < set(approver)
 
 
 def test_viewer_cannot_call_a_hidden_tool(server):
@@ -106,7 +115,8 @@ def test_role_change_applies_immediately_to_the_same_token(server):
     assert "list_pending" in names(server, Role.APPROVER)
     u.role = Role.VIEWER
     u.save()
-    assert names(server, Role.APPROVER) == ["describe_table", "get_rules", "get_settings", "list_schemas", "list_tables", "query", "search_schema"]
+    assert names(server, Role.APPROVER) == tools_up_to("viewer")
+    assert "list_pending" not in names(server, Role.APPROVER)
 
 
 def test_revoked_token_stops_working(server):
@@ -223,3 +233,27 @@ def test_a_settings_change_proposed_over_mcp_waits_for_an_approver(server):
     assert done["status"] == "applied"
     get_config.cache_clear()
     assert get_config()["search"]["topK"] == before + 2
+
+
+def test_new_tools_work_over_http(server):
+    """The reach tools answer through a real MCP client, with structured results."""
+    url, tk = server["url"], server["tokens"]
+    made = payload(with_client(url, tk[Role.APPROVER], lambda c: c.call_tool("propose_change", {"operations": [
+        {"op": "create_table", "name": "region", "columns": [{"name": "name_en", "type": "text"}]}]})))
+    assert payload(with_client(url, tk[Role.APPROVER], lambda c: c.call_tool("approve_change", {"change_id": made["id"]})))["status"] == "applied"
+
+    history = payload(with_client(url, tk[Role.VIEWER], lambda c: c.call_tool("list_changes", {"status": "applied"})))
+    assert [c["id"] for c in history["changes"]] == [made["id"]] and history["truncated"] is False
+    rows = payload(with_client(url, tk[Role.VIEWER], lambda c: c.call_tool("read_rows", {"table": "region", "limit": 5})))
+    assert rows["total"] == 0 and rows["primaryKey"] == "region_id"
+    dump = payload(with_client(url, tk[Role.VIEWER], lambda c: c.call_tool("export_schema", {})))
+    assert "CREATE TABLE" in dump["sql"] and dump["truncated"] is False
+
+    hidden = with_client(url, tk[Role.EDITOR], lambda c: c.call_tool("get_audit_log", {}))
+    assert hidden.is_error and "not available for your role" in hidden.content[0].text
+    log = payload(with_client(url, tk[Role.APPROVER], lambda c: c.call_tool("get_audit_log", {"limit": 5})))
+    assert log["entries"] and set(log["entries"][0]) == {"id", "at", "actor", "action", "target", "details"}
+    bad = with_client(url, tk[Role.VIEWER], lambda c: c.call_tool("read_rows", {"table": "nope"}))
+    assert bad.is_error and "list_tables" in bad.content[0].text
+    undone = payload(with_client(url, tk[Role.APPROVER], lambda c: c.call_tool("revert_change", {"change_id": made["id"]})))
+    assert undone["status"] == "applied" and undone["source"] == "revert"

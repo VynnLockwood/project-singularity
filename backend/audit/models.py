@@ -27,3 +27,19 @@ def record(actor, action: str, target: str = "", details: dict | None = None) ->
         target=target,
         details=details or {},
     )
+
+
+def entries(*, action: str | None = None, actor: str | None = None, limit: int = 100) -> tuple[list[AuditLog], bool]:
+    """Audit entries, newest first, and whether more exist beyond `limit`. `actor` is an email, any letter case."""
+    qs = AuditLog.objects.all()
+    if action:
+        qs = qs.filter(action=action)
+    if actor:
+        qs = qs.filter(actor_email__iexact=actor)
+    rows = list(qs[: limit + 1])
+    return rows[:limit], len(rows) > limit
+
+
+def as_dict(a: AuditLog) -> dict:
+    return {"id": a.pk, "at": a.created_at.isoformat(), "actor": a.actor_email, "action": a.action,
+            "target": a.target, "details": a.details}

@@ -1,9 +1,12 @@
 """Tool definitions the model sees in the web chat (OpenAI function format).
 
-Approval is not a tool here: the app shows an Approve / Reject popup, so the model cannot approve
-its own proposals.
+Approval is not a tool here: the person approves or rejects in the web app's review tray, so the model
+cannot approve its own proposals. For the same reason there is no revert_change: a revert proposes and
+approves its own reverse in one call.
 """
 from mcp_server import tools as mcp_tools
+
+D = mcp_tools.DESCRIPTIONS
 
 _OPS = (
     "Each operation is an object with an 'op': "
@@ -68,6 +71,33 @@ SPECS = {
     "get_script": (
         "Status, stored report and change link of an uploaded/submitted script.",
         {"script_id": {"type": "integer"}}, ["script_id"]),
+    "list_changes": (D["list_changes"],
+                     {"status": {"type": "string"}, "kind": {"type": "string"}, "schema": {"type": "string"},
+                      "mine": {"type": "boolean"}, "limit": {"type": "integer"}}, []),
+    "get_audit_log": (D["get_audit_log"],
+                      {"action": {"type": "string"}, "actor": {"type": "string", "description": "an email"},
+                       "limit": {"type": "integer"}}, []),
+    "recheck_change": (D["recheck_change"], {"change_id": {"type": "integer"}}, ["change_id"]),
+    "read_rows": (D["read_rows"],
+                  {"table": {"type": "string"}, **SCHEMA, "offset": {"type": "integer"}, "limit": {"type": "integer"},
+                   "sort": {"type": "string", "description": "a column name"},
+                   "direction": {"type": "string", "enum": ["asc", "desc"]},
+                   "filters": {"type": "object", "description": "{column: text contained}"},
+                   "include_inactive": {"type": "boolean"}}, ["table"]),
+    "find_duplicates": (D["find_duplicates"],
+                        {"table": {"type": "string"}, **SCHEMA,
+                         "fields": {"type": "array", "items": {"type": "string"}, "description": "columns to compare; omit for all text columns"},
+                         "threshold": {"type": "number", "description": "0 to 1; omit for the team setting"}}, ["table"]),
+    "list_duplicates": (D["list_duplicates"],
+                        {"table": {"type": "string"}, **SCHEMA, "status": {"type": ["string", "null"]},
+                         "limit": {"type": "integer"}}, []),
+    "get_duplicate": (D["get_duplicate"], {"group_id": {"type": "integer"}}, ["group_id"]),
+    "merge_duplicates": (D["merge_duplicates"],
+                         {"group_id": {"type": "integer"}, "survivor_id": {"type": "integer", "description": "the record to keep"}},
+                         ["group_id", "survivor_id"]),
+    "dismiss_duplicate": (D["dismiss_duplicate"], {"group_id": {"type": "integer"}}, ["group_id"]),
+    "export_schema": (D["export_schema"], {**SCHEMA, "include_data": {"type": "boolean"}}, []),
+    "reindex_search": (D["reindex_search"], {"rebuild": {"type": "boolean"}}, []),
 }
 
 

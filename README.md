@@ -25,6 +25,32 @@ Set `OPENROUTER_API_KEY` in `.env` (only the `api` container receives it) and ma
 
 The link form puts the token in the address because those connectors cannot send a header; it can appear in server logs, so revoke links you stop using (also in the Connect tab). Clients that can send headers should use `https://<your-host>/mcp` with `Authorization: Bearer sgl_...`. A client gets the same tools as your role, and every change still goes through the rules gate and approvals.
 
+### What an AI client can do
+
+Every tool states the role it needs; a client only sees the tools its user's role allows. The web chat assistant has the same tools, except the two that decide a change.
+
+| Tool | Needs | What it does |
+|---|---|---|
+| `get_rules` | viewer | The team's design rules. |
+| `list_schemas`, `list_tables`, `describe_table` | viewer | Databases, tables, columns. |
+| `search_schema` | viewer | Find where a kind of data belongs (Thai or English). |
+| `read_rows` | viewer | One table, a page at a time, with sort and filters. No SQL needed. |
+| `query` | viewer | One read-only `SELECT`. |
+| `export_schema` | viewer (data: editor) | A database as SQL, inline up to `limits.maxInlineExportBytes`. |
+| `list_changes`, `get_change` | viewer, editor | Change history and one change's diff. |
+| `list_duplicates`, `get_duplicate` | viewer | Duplicate groups and their records side by side. |
+| `get_settings` | viewer | Quality settings and every gate rule. |
+| `propose_change` | editor | Structure and data changes as gated operations. |
+| `propose_config_change` | editor | Settings, rules and roles. Always waits for an approver. |
+| `recheck_change` | editor | Run the gate again on a stale change. |
+| `find_duplicates`, `merge_duplicates`, `dismiss_duplicate` | editor | Scan a table, merge a group (a data change), or mark it as not duplicates. |
+| `submit_script`, `validate_script`, `get_script` | editor | Load a pg_dump-style SQL script as gated operations. |
+| `approve_change`, `reject_change`, `list_pending` | approver | Decide a change, after the user confirms. |
+| `revert_change` | approver | Undo an applied change that has a stored reverse. |
+| `get_audit_log` | approver | Who did what and when. |
+| `list_users` | approver | People and their roles. |
+| `reindex_search` | approver | Refresh the schema search index. |
+
 ## Data grid
 
 The Data tab edits one table at a time: server-side paging, sort and filter, reference columns as dropdowns (labelled by the target's name column), and a draft that collects your edits. **Save for approval** sends one proposal through the same rules gate as everything else: identical edits are grouped into one `update_rows`, new rows into one `insert_rows`, and removed rows are *deactivated* (`isActive = false`), never deleted. Editors approve their own data changes in the review tray. Viewers see the grid read-only.

@@ -33,9 +33,68 @@ TOOL_ROLES = {
     "submit_script": "editor",
     "validate_script": "editor",
     "get_script": "editor",
+    "list_changes": "viewer",
+    "read_rows": "viewer",
+    "export_schema": "viewer",     # with data: editor, checked in the tool like the REST endpoint
+    "find_duplicates": "editor",
+    "list_duplicates": "viewer",
+    "get_duplicate": "viewer",
+    "merge_duplicates": "editor",
+    "dismiss_duplicate": "editor",
+    "revert_change": "approver",
+    "reindex_search": "approver",
+    "recheck_change": "editor",
+    "get_audit_log": "approver",   # audit details can hold other people's prompts and emails
 }
 
 RANK = {"viewer": 0, "editor": 1, "approver": 2}
+
+# What each newer tool is for, in the words an AI client reads. One text, used by both the MCP
+# server (mcp_server/app.py) and the web chat (chat/toolspecs.py), so the two cannot drift apart.
+DESCRIPTIONS = {
+    "list_changes": (
+        "History of proposed changes, newest first: pending, applied, rejected, failed or stale. Filter by status, "
+        "kind (schema, data, config), schema, or mine=true for your own. Summaries only; call get_change for the diff."
+    ),
+    "get_audit_log": (
+        "Who did what and when (approvers only): sign-ins, proposals, decisions, exports, settings changes. "
+        "Filter by action or by actor email."
+    ),
+    "read_rows": (
+        "Read rows of one table, a page at a time, without writing SQL: offset, limit (max 200), sort, direction "
+        "(asc or desc), filters {column: text contained}, include_inactive. Returns the total and whether more "
+        "rows remain. For joins or aggregates use query."
+    ),
+    "export_schema": (
+        "A database (schema) as Postgres SQL: the structure, and the data too with include_data=true (editors). "
+        "Returned inline up to a size limit; when 'truncated' is true, tell the user to download the full file in "
+        "the web app."
+    ),
+    "find_duplicates": (
+        "Scan one table for records that look like the same thing (fuzzy match on its text columns, or on the "
+        "'fields' you name). Returns the scan summary and the open groups."
+    ),
+    "list_duplicates": (
+        "Duplicate groups already found, by table and status: open (the default), dismissed, merge_pending or merged. "
+        "Pass status=null for all."
+    ),
+    "get_duplicate": "The records of one duplicate group side by side, and the tables that reference them.",
+    "merge_duplicates": (
+        "Propose merging a group into one surviving record: references move to the survivor and the other records "
+        "are deactivated. This is a data change and goes through approval. Show the user the records first "
+        "(get_duplicate) and ask which one to keep."
+    ),
+    "dismiss_duplicate": "Mark a group as not duplicates, so a scan does not bring it back.",
+    "revert_change": (
+        "Undo an applied change by applying its stored reverse (approvers only). Changes that dropped something "
+        "cannot be undone this way; the error says so."
+    ),
+    "reindex_search": (
+        "Refresh the schema search index (approvers). It runs by itself after schema changes; use rebuild=true only "
+        "when search results look wrong."
+    ),
+    "recheck_change": "Run the gate again on a stale change, after the schema or the rules moved.",
+}
 
 
 class ToolFailure(Exception):
@@ -45,6 +104,13 @@ class ToolFailure(Exception):
 def allowed(user, tool: str) -> bool:
     need = TOOL_ROLES.get(tool)
     return need is not None and user is not None and user.rank >= RANK[need]
+
+
+def clamp(value, default: int, maximum: int) -> int:
+    """A list size an AI asked for, made safe: nonsense and anything below 1 give `default`, too much gives `maximum`."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return default
+    return min(value, maximum)
 
 
 def get_rules(user) -> dict:
@@ -120,8 +186,190 @@ def run_query(user, sql: str, limit: int | None = None, schema: str = "master") 
         raise ToolFailure(str(exc)) from exc
 
 
+def read_rows(user, table: str, schema: str = "master", offset: int = 0, limit: int | None = None,
+              sort: str | None = None, direction: str = "asc", filters: dict | None = None,
+              include_inactive: bool = False) -> dict:
+    """One page of one table. `truncated` says whether rows remain after this page."""
+    from schema import rows as rows_mod
+
+    if filters is not None and not isinstance(filters, dict):
+        raise ToolFailure("filters must be an object of {column: text to look for}, for example {\"name_en\": \"buri\"}.")
+    start = offset if isinstance(offset, int) and not isinstance(offset, bool) and offset > 0 else 0
+    try:
+        out = rows_mod.read_rows(table, offset=start, limit=clamp(limit, 50, rows_mod.MAX_PAGE), sort=sort or None,
+                                 direction=direction, filters=filters, include_inactive=bool(include_inactive),
+                                 schema=schema)
+    except introspect.UnknownSchema as exc:
+        raise ToolFailure(f"{exc} Call list_schemas to see the databases.") from exc
+    except rows_mod.RowsError as exc:
+        if exc.status == 404:
+            raise ToolFailure(f"table {table!r} does not exist in {schema!r}. Call list_tables to see what exists.") from exc
+        hint = " Call describe_table to see the columns." if "unknown column" in str(exc) else ""
+        raise ToolFailure(f"{exc}.{hint}") from exc
+    return {**out, "truncated": out["offset"] + len(out["rows"]) < out["total"]}
+
+
+def reindex_search(user, rebuild: bool = False) -> dict:
+    """Refresh the schema search index. It also runs by itself after every applied schema change."""
+    from audit.models import record
+    from search import indexer
+    from search.embedder import SearchError
+
+    try:
+        result = indexer.reindex(rebuild=bool(rebuild))
+    except SearchError as exc:
+        raise ToolFailure(f"{exc}. The index was left as it was; try again later.") from exc
+    record(user, "search.reindexed", details={**result, "via": "mcp"})
+    return result
+
+
+def cut_sql(text: bytes, cap: int) -> tuple[bytes, bool]:
+    """Fit exported SQL under `cap` bytes without ever returning half a statement.
+
+    Returns the text and whether it was cut. A cut lands after the last complete statement at or
+    before the cap: a line ending in `;` outside a COPY block and outside a quoted string (a table
+    comment may hold `;` and line breaks), or the `\\.` line that closes a COPY block. A COPY header
+    and its rows count as one statement, so data is never cut in the middle.
+    """
+    if len(text) <= cap:
+        return text, False
+    safe = pos = 0
+    in_copy = in_string = False
+    for line in text[:cap].splitlines(keepends=True):
+        pos += len(line)
+        if not line.endswith(b"\n"):
+            break                                   # the cap fell inside this line
+        body = line.rstrip(b"\r\n")
+        if in_copy:
+            if body == b"\\.":
+                in_copy, safe = False, pos
+            continue
+        opened_in_string = in_string
+        if body.count(b"'") % 2:                    # a doubled '' inside a string keeps the count even
+            in_string = not in_string
+        if in_string:
+            continue
+        if not opened_in_string and body.startswith(b"COPY ") and body.endswith(b"FROM stdin;"):
+            in_copy = True
+        elif body.endswith(b";"):
+            safe = pos
+    return text[:safe], True
+
+
+def export_schema(user, schema: str = "master", include_data: bool = False, *, max_bytes: int | None = None) -> dict:
+    """A database as Postgres SQL, inline up to limits.maxInlineExportBytes (or `max_bytes`, if that is smaller)."""
+    from audit.models import record
+    from schema.dump_model import ExportError
+    from schema.export import open_export
+
+    if include_data and not user.can_edit:
+        raise ToolFailure("exporting data needs the editor role. Call export_schema without include_data for the structure only.")
+    limits = get_config()["limits"]
+    cap = int(limits["maxInlineExportBytes"])
+    if max_bytes is not None:
+        cap = max(0, min(cap, int(max_bytes)))
+    try:
+        ex = open_export(schema if isinstance(schema, str) else "", data=bool(include_data), cap=limits["maxExportRows"])
+    except ExportError as exc:
+        hint = " Call list_schemas to see the databases." if str(exc).lower().startswith("unknown schema") else ""
+        raise ToolFailure(f"{exc}{hint}") from exc
+    try:
+        buf = bytearray()
+        for chunk in ex.chunks():
+            buf += chunk
+            if len(buf) > cap:      # one byte over is enough to know it must be cut
+                break
+        name, counts = ex.filename(), ex.counts
+    finally:
+        ex.close()
+    text, truncated = cut_sql(bytes(buf), cap)
+    record(user, "schema.export", schema, {"schema": schema, "data": bool(include_data), "counts": counts,
+                                           "via": "mcp", "truncated": truncated})
+    sql_text = text.decode("utf-8", errors="replace")
+    note = "Cut at the inline limit. Download the full file in the web app: Database, then Download SQL." if truncated else ""
+    return {"filename": name, "sql": sql_text, "bytes": len(text), "truncated": truncated, "note": note}
+
+
+def _dup(fn):
+    """Run a duplicates call, turning its errors into ones the AI can act on."""
+    from duplicates import service as dup
+
+    try:
+        return fn(dup)
+    except introspect.UnknownSchema as exc:
+        raise ToolFailure(f"{exc} Call list_schemas to see the databases.") from exc
+    except dup.DuplicateError as exc:
+        text = str(exc).rstrip(".")
+        if text.lower().startswith("unknown schema"):
+            hint = " Call list_schemas to see the databases."
+        elif exc.status == 404 and "group" in text:
+            hint = " Call list_duplicates to see the groups."
+        elif exc.status == 404:
+            hint = " Call list_tables to see what exists."
+        else:
+            hint = ""
+        raise ToolFailure(f"{text}.{hint}") from exc
+
+
+def find_duplicates(user, table: str, schema: str = "master", fields: list | None = None,
+                    threshold: float | None = None) -> dict:
+    """Scan one table for records that look like the same thing; returns the scan summary and the groups."""
+    from audit.models import record
+
+    if fields is not None and (not isinstance(fields, list) or not all(isinstance(f, str) for f in fields)):
+        raise ToolFailure("fields must be a list of column names, for example [\"name\"]. Leave it out to use every text column.")
+    result = _dup(lambda dup: dup.scan(str(table), user, fields=fields, threshold=threshold, schema=schema))
+    record(user, "duplicates.scanned", target=result["table"], details=result)
+    groups = _dup(lambda dup: dup.list_groups(schema=schema, table=result["table"], status="open"))
+    return {**result, "groups_found": groups[:20], "truncated": result["truncated"] or len(groups) > 20}
+
+
+def list_duplicates(user, table: str | None = None, schema: str = "master", status: str | None = "open",
+                    limit: int | None = None) -> dict:
+    cap = clamp(limit, 20, 100)
+    groups = _dup(lambda dup: dup.list_groups(schema=schema, table=table or None, status=status or None))
+    return {"groups": groups[:cap], "truncated": len(groups) > cap}
+
+
+def get_duplicate(user, group_id: int) -> dict:
+    from duplicates import service as dup
+
+    g = _dup(lambda d: d.get_group(group_id))
+    try:
+        return dup.detail(g)
+    except Exception as exc:  # the table was dropped or changed shape since the scan
+        raise ToolFailure(
+            f"the records of group #{g.pk} can no longer be read (table {g.table_name!r} changed or is gone). "
+            f"Call dismiss_duplicate with group_id={g.pk}, or find_duplicates to scan again.") from exc
+
+
+def merge_duplicates(user, group_id: int, survivor_id: int, *, source: str = "mcp",
+                     conversation_id: int | None = None) -> dict:
+    from duplicates import service as dup
+
+    if not isinstance(survivor_id, int) or isinstance(survivor_id, bool):
+        raise ToolFailure("survivor_id must be the id of the record to keep (one of the group's memberIds).")
+    g = _dup(lambda d: d.get_group(group_id))
+    if dup.state(g) == "dismissed":
+        raise ToolFailure(
+            f"group #{g.pk} was dismissed as not duplicates, so it cannot be merged. If that was a mistake, the "
+            "user can reopen it in the web app (Duplicates); find_duplicates will not bring a dismissed group back.")
+    try:
+        change = dup.propose_merge(g, survivor_id, user, source=source, conversation_id=conversation_id)
+    except dup.DuplicateError as exc:
+        if exc.status == 404:   # the table or its key is gone since the scan
+            raise ToolFailure(
+                f"the records of group #{g.pk} can no longer be read (table {g.table_name!r} changed or is gone). "
+                f"Call dismiss_duplicate with group_id={g.pk}, or find_duplicates to scan again.") from exc
+        raise ToolFailure(f"{str(exc).rstrip('.')}.") from exc
+    return {"group": dup.summary(g), "change": _result(user, change)}
+
+
+def dismiss_duplicate(user, group_id: int) -> dict:
+    return _dup(lambda d: d.dismiss(d.get_group(group_id), user))
+
+
 def _next_step(user, change: Change) -> str:
-    again = "propose_config_change" if change.kind == "config" else "propose_change"
     if change.status == "rejected" and change.decided_by_id is None:
         if change.kind == "config":
             return "This configuration change is not valid. Read 'check.errors', fix the operations and call propose_config_change again."
@@ -139,7 +387,7 @@ def _next_step(user, change: Change) -> str:
     if change.status == "applied":
         return "Done. The change was applied."
     if change.status == "stale":
-        return f"The schema or rules changed since this was checked. Call {again} again with the same operations."
+        return f"The schema or rules changed since this was checked. Call recheck_change with change_id={change.pk} to run the gate again."
     if change.status == "failed":
         return "The database refused the change and nothing was changed. See 'error'."
     return ""
@@ -190,6 +438,42 @@ def reject_change(user, change_id: int, note: str = "") -> dict:
     except service.ChangeError as exc:
         raise ToolFailure(exc.message) from exc
     return _result(user, change)
+
+
+def list_changes(user, status: str | None = None, kind: str | None = None, schema: str | None = None,
+                 mine: bool = False, limit: int | None = None) -> dict:
+    """History of proposed changes, newest first. Summaries only; get_change has the diff."""
+    if schema is not None and not isinstance(schema, str):
+        return {"changes": [], "truncated": False}
+    items, more = service.list_changes(user, status=status if isinstance(status, str) else None,
+                                       kind=kind if isinstance(kind, str) else None, schema=schema,
+                                       mine=bool(mine), limit=clamp(limit, 20, 100))
+    return {"changes": [service.serialize(c, detail=False) for c in items], "truncated": more}
+
+
+def get_audit_log(user, action: str | None = None, actor: str | None = None, limit: int | None = None) -> dict:
+    """Who did what and when (approvers only)."""
+    from audit.models import as_dict, entries
+
+    items, more = entries(action=action if isinstance(action, str) else None,
+                          actor=actor if isinstance(actor, str) else None, limit=clamp(limit, 50, 200))
+    return {"entries": [as_dict(a) for a in items], "truncated": more}
+
+
+def revert_change(user, change_id: int) -> dict:
+    """Undo an applied change by applying its stored reverse operations."""
+    try:
+        return _result(user, service.revert(user, change_id))
+    except service.ChangeError as exc:
+        raise ToolFailure(exc.message) from exc
+
+
+def recheck_change(user, change_id: int) -> dict:
+    """Run the gate again on a stale change."""
+    try:
+        return _result(user, service.recheck(user, change_id))
+    except service.ChangeError as exc:
+        raise ToolFailure(exc.message) from exc
 
 
 def list_pending(user) -> dict:
@@ -271,4 +555,16 @@ IMPL = {
     "submit_script": submit_script,
     "validate_script": validate_script,
     "get_script": get_script,
+    "list_changes": list_changes,
+    "get_audit_log": get_audit_log,
+    "read_rows": read_rows,
+    "export_schema": export_schema,
+    "find_duplicates": find_duplicates,
+    "list_duplicates": list_duplicates,
+    "get_duplicate": get_duplicate,
+    "merge_duplicates": merge_duplicates,
+    "dismiss_duplicate": dismiss_duplicate,
+    "revert_change": revert_change,
+    "reindex_search": reindex_search,
+    "recheck_change": recheck_change,
 }

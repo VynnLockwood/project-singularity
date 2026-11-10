@@ -24,6 +24,7 @@ DEFAULTS = {
         "maxOpsPerScript": 1000,
         "maxInlineScriptBytes": 20480,
         "maxExportRows": 1000000,
+        "maxInlineExportBytes": 200000,
         "maxSchemas": 20,
     },
     "embedding": {"model": "intfloat/multilingual-e5-small", "dimension": 384},

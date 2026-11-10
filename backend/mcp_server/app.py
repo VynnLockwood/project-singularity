@@ -30,17 +30,20 @@ from . import tools  # noqa: E402
 current_user: ContextVar = ContextVar("current_user", default=None)
 
 INSTRUCTIONS = """\
-Singularity manages a master-data PostgreSQL database. Start with get_rules and list_tables; use search_schema to find where a kind of data belongs.
-You never write SQL to change anything: call propose_change with structured operations (create_table,
-add_column, insert_rows, ...). The gate checks your proposal against the team's rules and returns a
-diff. Show the diff to the user and ask for confirmation before calling approve_change. Schema changes
-by editors wait for an approver. Dropping things needs a 'reason'. Use query for read-only SELECTs.
-Settings, gate rules and people's roles are changed the same way: read them with get_settings (and list_users),
-then call propose_config_change with structured operations (set_setting, reset_setting, update_rule,
-create_rule, set_user_role). These always wait in the approval queue for an approver; never claim they are applied.
-To load a whole pg_dump-style SQL script, call submit_script with the file contents inline (small scripts only;
-big ones are uploaded in the web app, then validate_script with the script_id). The script is parsed into the same
-gated operations — never send raw SQL to any other tool.
+Singularity manages master-data PostgreSQL databases (each "database" is a Postgres schema; master is the default).
+Start with get_rules and list_schemas. Find things with list_tables, describe_table, search_schema, read_rows
+(one table, paged) and query (one read-only SELECT).
+You never write SQL to change anything: call propose_change with structured operations. The gate checks the
+proposal against the team's rules and returns a diff. Show the diff to the user and ask for confirmation before
+calling approve_change. Schema changes by editors wait for an approver. Dropping things needs a 'reason'.
+Never say a change is applied until its status is 'applied'.
+History: list_changes and get_change; approvers also have get_audit_log, revert_change and list_pending.
+A stale change is re-checked with recheck_change.
+Data quality: find_duplicates, list_duplicates, get_duplicate, then merge_duplicates (a data change) or dismiss_duplicate.
+Settings, gate rules and roles: get_settings and list_users, then propose_config_change. These always wait for an approver.
+Whole SQL files: submit_script parses a pg_dump-style script into the same gated operations (small scripts inline;
+big ones are uploaded in the web app, then validate_script with the script_id). export_schema returns a database as SQL.
+If a tool the user needs is not available to them, say that a higher role (editor or approver) has it.
 """
 
 
@@ -233,6 +236,72 @@ async def validate_script(script_id: int, mapping: dict | None = None, schema: s
 )
 async def get_script(script_id: int) -> dict:
     return await run("get_script", script_id=script_id)
+
+
+@mcp.tool(name="list_changes", description=tools.DESCRIPTIONS["list_changes"])
+async def list_changes(status: str | None = None, kind: str | None = None, schema: str | None = None,
+                       mine: bool = False, limit: int | None = None) -> dict:
+    return await run("list_changes", status=status, kind=kind, schema=schema, mine=mine, limit=limit)
+
+
+@mcp.tool(name="get_audit_log", description=tools.DESCRIPTIONS["get_audit_log"])
+async def get_audit_log(action: str | None = None, actor: str | None = None, limit: int | None = None) -> dict:
+    return await run("get_audit_log", action=action, actor=actor, limit=limit)
+
+
+@mcp.tool(name="revert_change", description=tools.DESCRIPTIONS["revert_change"])
+async def revert_change(change_id: int) -> dict:
+    return await run("revert_change", change_id=change_id)
+
+
+@mcp.tool(name="recheck_change", description=tools.DESCRIPTIONS["recheck_change"])
+async def recheck_change(change_id: int) -> dict:
+    return await run("recheck_change", change_id=change_id)
+
+
+@mcp.tool(name="read_rows", description=tools.DESCRIPTIONS["read_rows"] + " " + DB_NOTE)
+async def read_rows(table: str, schema: str = "master", offset: int = 0, limit: int | None = None,
+                    sort: str | None = None, direction: str = "asc", filters: dict | None = None,
+                    include_inactive: bool = False) -> dict:
+    return await run("read_rows", table=table, schema=schema, offset=offset, limit=limit, sort=sort,
+                     direction=direction, filters=filters, include_inactive=include_inactive)
+
+
+@mcp.tool(name="find_duplicates", description=tools.DESCRIPTIONS["find_duplicates"] + " " + DB_NOTE)
+async def find_duplicates(table: str, schema: str = "master", fields: list[str] | None = None,
+                          threshold: float | None = None) -> dict:
+    return await run("find_duplicates", table=table, schema=schema, fields=fields, threshold=threshold)
+
+
+@mcp.tool(name="list_duplicates", description=tools.DESCRIPTIONS["list_duplicates"])
+async def list_duplicates(table: str | None = None, schema: str = "master", status: str | None = "open",
+                          limit: int | None = None) -> dict:
+    return await run("list_duplicates", table=table, schema=schema, status=status, limit=limit)
+
+
+@mcp.tool(name="get_duplicate", description=tools.DESCRIPTIONS["get_duplicate"])
+async def get_duplicate(group_id: int) -> dict:
+    return await run("get_duplicate", group_id=group_id)
+
+
+@mcp.tool(name="merge_duplicates", description=tools.DESCRIPTIONS["merge_duplicates"])
+async def merge_duplicates(group_id: int, survivor_id: int) -> dict:
+    return await run("merge_duplicates", group_id=group_id, survivor_id=survivor_id)
+
+
+@mcp.tool(name="dismiss_duplicate", description=tools.DESCRIPTIONS["dismiss_duplicate"])
+async def dismiss_duplicate(group_id: int) -> dict:
+    return await run("dismiss_duplicate", group_id=group_id)
+
+
+@mcp.tool(name="export_schema", description=tools.DESCRIPTIONS["export_schema"] + " " + DB_NOTE)
+async def export_schema(schema: str = "master", include_data: bool = False) -> dict:
+    return await run("export_schema", schema=schema, include_data=include_data)
+
+
+@mcp.tool(name="reindex_search", description=tools.DESCRIPTIONS["reindex_search"])
+async def reindex_search(rebuild: bool = False) -> dict:
+    return await run("reindex_search", rebuild=rebuild)
 
 
 LINK_PREFIX = "/mcp/t/"

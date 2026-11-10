@@ -4,6 +4,7 @@ from psycopg import sql
 
 from approvals import service as changes
 from approvals.models import Change
+from audit.models import record
 from config.siconfig import get_config
 from schema import introspect, roles, rows as rows_mod
 from schema.conn import ro_connection
@@ -166,12 +167,13 @@ def merge_operations(g: DuplicateGroup, survivor_id: int) -> list[dict]:
     return ops
 
 
-def propose_merge(g: DuplicateGroup, survivor_id: int, user) -> Change:
+def propose_merge(g: DuplicateGroup, survivor_id: int, user, *, source: str = "web",
+                  conversation_id: int | None = None) -> Change:
     if state(g) in ("merged", "merge_pending"):
         raise DuplicateError("this group already has a merge in progress", 409)
     ops = merge_operations(g, survivor_id)
     try:
-        change = changes.propose(user, ops, source="web",
+        change = changes.propose(user, ops, source=source, conversation_id=conversation_id,
                                  prompt=f"Merge duplicates in {g.table_name}: keep #{survivor_id}", schema=g.schema)
     except changes.ChangeError as exc:
         raise DuplicateError(exc.message, 403 if exc.code == "forbidden" else 400) from exc
@@ -179,3 +181,31 @@ def propose_merge(g: DuplicateGroup, survivor_id: int, user) -> Change:
     g.decided_by = user
     g.save(update_fields=["merge_change", "decided_by"])
     return change
+
+
+def get_group(group_id) -> DuplicateGroup:
+    g = None
+    if isinstance(group_id, int) and not isinstance(group_id, bool):
+        g = DuplicateGroup.objects.select_related("merge_change").filter(pk=group_id).first()
+    if g is None:
+        raise DuplicateError(f"duplicate group #{group_id} does not exist", 404)
+    return g
+
+
+def list_groups(*, schema: str | None = "master", table: str | None = None, status: str | None = None) -> list[dict]:
+    """Group summaries. `schema=None` means every managed schema; `status` is the shown state (see `state`)."""
+    qs = DuplicateGroup.objects.select_related("merge_change")
+    if schema:
+        qs = qs.filter(schema=introspect.require_managed(schema))
+    if table:
+        qs = qs.filter(table_name=table)
+    items = [summary(g) for g in qs]
+    return [g for g in items if g["status"] == status] if status else items
+
+
+def dismiss(g: DuplicateGroup, user) -> dict:
+    """Mark a group as not duplicates; a later scan will not bring it back."""
+    g.status, g.decided_by = DuplicateGroup.Status.DISMISSED, user
+    g.save(update_fields=["status", "decided_by"])
+    record(user, "duplicates.dismissed", target=f"#{g.pk}", details={"table": g.table_name})
+    return summary(g)
