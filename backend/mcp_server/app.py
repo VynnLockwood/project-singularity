@@ -30,17 +30,20 @@ from . import tools  # noqa: E402
 current_user: ContextVar = ContextVar("current_user", default=None)
 
 INSTRUCTIONS = """\
-Singularity manages a master-data PostgreSQL database. Start with get_rules and list_tables; use search_schema to find where a kind of data belongs.
-You never write SQL to change anything: call propose_change with structured operations (create_table,
-add_column, insert_rows, ...). The gate checks your proposal against the team's rules and returns a
-diff. Show the diff to the user and ask for confirmation before calling approve_change. Schema changes
-by editors wait for an approver. Dropping things needs a 'reason'. Use query for read-only SELECTs.
-Settings, gate rules and people's roles are changed the same way: read them with get_settings (and list_users),
-then call propose_config_change with structured operations (set_setting, reset_setting, update_rule,
-create_rule, set_user_role). These always wait in the approval queue for an approver; never claim they are applied.
-To load a whole pg_dump-style SQL script, call submit_script with the file contents inline (small scripts only;
-big ones are uploaded in the web app, then validate_script with the script_id). The script is parsed into the same
-gated operations — never send raw SQL to any other tool.
+Singularity manages master-data PostgreSQL databases (each "database" is a Postgres schema; master is the default).
+Start with get_rules and list_schemas. Find things with list_tables, describe_table, search_schema, read_rows
+(one table, paged) and query (one read-only SELECT).
+You never write SQL to change anything: call propose_change with structured operations. The gate checks the
+proposal against the team's rules and returns a diff. Show the diff to the user and ask for confirmation before
+calling approve_change. Schema changes by editors wait for an approver. Dropping things needs a 'reason'.
+Never say a change is applied until its status is 'applied'.
+History: list_changes and get_change; approvers also have get_audit_log, revert_change and list_pending.
+A stale change is re-checked with recheck_change.
+Data quality: find_duplicates, list_duplicates, get_duplicate, then merge_duplicates (a data change) or dismiss_duplicate.
+Settings, gate rules and roles: get_settings and list_users, then propose_config_change. These always wait for an approver.
+Whole SQL files: submit_script parses a pg_dump-style script into the same gated operations (small scripts inline;
+big ones are uploaded in the web app, then validate_script with the script_id). export_schema returns a database as SQL.
+If a tool the user needs is not available to them, say that a higher role (editor or approver) has it.
 """
 
 
@@ -294,6 +297,11 @@ async def dismiss_duplicate(group_id: int) -> dict:
 @mcp.tool(name="export_schema", description=tools.DESCRIPTIONS["export_schema"] + " " + DB_NOTE)
 async def export_schema(schema: str = "master", include_data: bool = False) -> dict:
     return await run("export_schema", schema=schema, include_data=include_data)
+
+
+@mcp.tool(name="reindex_search", description=tools.DESCRIPTIONS["reindex_search"])
+async def reindex_search(rebuild: bool = False) -> dict:
+    return await run("reindex_search", rebuild=rebuild)
 
 
 LINK_PREFIX = "/mcp/t/"

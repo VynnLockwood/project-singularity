@@ -42,6 +42,7 @@ TOOL_ROLES = {
     "merge_duplicates": "editor",
     "dismiss_duplicate": "editor",
     "revert_change": "approver",
+    "reindex_search": "approver",
     "recheck_change": "editor",
     "get_audit_log": "approver",   # audit details can hold other people's prompts and emails
 }
@@ -87,6 +88,10 @@ DESCRIPTIONS = {
     "revert_change": (
         "Undo an applied change by applying its stored reverse (approvers only). Changes that dropped something "
         "cannot be undone this way; the error says so."
+    ),
+    "reindex_search": (
+        "Refresh the schema search index (approvers). It runs by itself after schema changes; use rebuild=true only "
+        "when search results look wrong."
     ),
     "recheck_change": "Run the gate again on a stale change, after the schema or the rules moved.",
 }
@@ -202,6 +207,20 @@ def read_rows(user, table: str, schema: str = "master", offset: int = 0, limit: 
         hint = " Call describe_table to see the columns." if "unknown column" in str(exc) else ""
         raise ToolFailure(f"{exc}.{hint}") from exc
     return {**out, "truncated": out["offset"] + len(out["rows"]) < out["total"]}
+
+
+def reindex_search(user, rebuild: bool = False) -> dict:
+    """Refresh the schema search index. It also runs by itself after every applied schema change."""
+    from audit.models import record
+    from search import indexer
+    from search.embedder import SearchError
+
+    try:
+        result = indexer.reindex(rebuild=bool(rebuild))
+    except SearchError as exc:
+        raise ToolFailure(f"{exc}. The index was left as it was; try again later.") from exc
+    record(user, "search.reindexed", details={**result, "via": "mcp"})
+    return result
 
 
 def cut_sql(text: bytes, cap: int) -> tuple[bytes, bool]:
@@ -525,5 +544,6 @@ IMPL = {
     "merge_duplicates": merge_duplicates,
     "dismiss_duplicate": dismiss_duplicate,
     "revert_change": revert_change,
+    "reindex_search": reindex_search,
     "recheck_change": recheck_change,
 }

@@ -233,3 +233,27 @@ def test_a_settings_change_proposed_over_mcp_waits_for_an_approver(server):
     assert done["status"] == "applied"
     get_config.cache_clear()
     assert get_config()["search"]["topK"] == before + 2
+
+
+def test_new_tools_work_over_http(server):
+    """The reach tools answer through a real MCP client, with structured results."""
+    url, tk = server["url"], server["tokens"]
+    made = payload(with_client(url, tk[Role.APPROVER], lambda c: c.call_tool("propose_change", {"operations": [
+        {"op": "create_table", "name": "region", "columns": [{"name": "name_en", "type": "text"}]}]})))
+    assert payload(with_client(url, tk[Role.APPROVER], lambda c: c.call_tool("approve_change", {"change_id": made["id"]})))["status"] == "applied"
+
+    history = payload(with_client(url, tk[Role.VIEWER], lambda c: c.call_tool("list_changes", {"status": "applied"})))
+    assert [c["id"] for c in history["changes"]] == [made["id"]] and history["truncated"] is False
+    rows = payload(with_client(url, tk[Role.VIEWER], lambda c: c.call_tool("read_rows", {"table": "region", "limit": 5})))
+    assert rows["total"] == 0 and rows["primaryKey"] == "region_id"
+    dump = payload(with_client(url, tk[Role.VIEWER], lambda c: c.call_tool("export_schema", {})))
+    assert "CREATE TABLE" in dump["sql"] and dump["truncated"] is False
+
+    hidden = with_client(url, tk[Role.EDITOR], lambda c: c.call_tool("get_audit_log", {}))
+    assert hidden.is_error and "not available for your role" in hidden.content[0].text
+    log = payload(with_client(url, tk[Role.APPROVER], lambda c: c.call_tool("get_audit_log", {"limit": 5})))
+    assert log["entries"] and set(log["entries"][0]) == {"id", "at", "actor", "action", "target", "details"}
+    bad = with_client(url, tk[Role.VIEWER], lambda c: c.call_tool("read_rows", {"table": "nope"}))
+    assert bad.is_error and "list_tables" in bad.content[0].text
+    undone = payload(with_client(url, tk[Role.APPROVER], lambda c: c.call_tool("revert_change", {"change_id": made["id"]})))
+    assert undone["status"] == "applied" and undone["source"] == "revert"
