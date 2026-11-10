@@ -37,9 +37,6 @@ p.problems { padding: var(--space-2) var(--space-3); background: var(--redshift-
 
 /* ---- centred pages (forbidden, first load) ---- */
 .center { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-3); padding: var(--space-6); text-align: center; }
-.title { margin: 0; font-size: 40px; letter-spacing: 0.06em; color: var(--text-bright); }
-.abilities { list-style: none; padding: 0; margin: var(--space-2) 0; text-align: left; }
-.abilities li[data-allowed="false"] { color: var(--text-dim); }
 
 /* ---- chat ---- */
 .chat { display: grid; grid-template-columns: 232px minmax(0, 1fr); gap: var(--space-5); height: calc(100vh - 112px - var(--shell-bottom)); }

@@ -105,3 +105,19 @@ body:has(.shell) .cosmos { opacity: 0.35; }
   .shell-review .shell-nav-count { position: static; }
   .content { padding: var(--space-3); }
 }
+
+/* ---- sign-in and standalone pages ---- */
+.signin { min-height: 100vh; display: flex; align-items: center; padding: var(--space-6) clamp(var(--space-5), 9vw, 9rem); }
+.signin-card { max-width: 30rem; display: flex; flex-direction: column; align-items: flex-start; }
+.signin-mark { width: 28px; height: 28px; margin: 0 8px var(--space-5); }
+.signin-mark::after { left: -10px; right: -10px; top: 11px; height: 6px; }
+.signin-title { margin: 0; font-size: clamp(44px, 7vw, 72px); line-height: 1; letter-spacing: 0.02em; }
+.signin-tagline { margin: var(--space-4) 0 0; font-size: 18px; color: var(--text); }
+.signin-action { min-height: 44px; margin: var(--space-6) 0 var(--space-5); display: flex; align-items: center; }
+.signin-action .ui-button { min-height: 44px; padding: 0 20px; font-size: 15px; }
+.signin-action p { margin: 0; }
+.signin-note { margin: 0; max-width: 24rem; font-size: var(--size-small); color: var(--text-dim); }
+@media (max-width: 900px) { .signin { align-items: flex-end; padding-bottom: 12vh; } }
+
+.center-panel { width: min(30rem, 100%); text-align: left; }
+.center-panel .actions { margin-top: var(--space-4); }
