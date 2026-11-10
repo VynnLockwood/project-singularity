@@ -44,6 +44,13 @@ DEFAULT_RULES = [
         "description": "Dropping a table or column destroys data. Check the reason and that a backup exists.",
     },
     {
+        "name": "careWithDeletes",
+        "type": "forbidden",
+        "params": {"ops": ["delete_rows"]},
+        "severity": "warn",
+        "description": "Deleting rows destroys data. Check the reason, the row count and that a backup exists.",
+    },
+    {
         "name": "moneyIsNumeric",
         "type": "type_map",
         "params": {

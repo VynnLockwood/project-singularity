@@ -313,6 +313,9 @@ def statements_for(op: dict, state_before: dict, actor: str | None, conv: Conven
             )
         ]
 
+    if k == "delete_rows":
+        return [Stmt(S("DELETE FROM {} WHERE {}").format(tbl(op["table"], schema), _where(op["where"])))]
+
     if k == "deactivate_rows":
         t = op["table"]
         assignments = [S("{} = false").format(I(role_of(state_before, t, "is_active")))]
@@ -408,6 +411,8 @@ def describe(op: dict) -> str:
         return f"~ bulk load {op['expected_rows']} row(s) into {op['table']} from script {op['source']['script_id']} ({op['source']['stream']})"
     if k == "update_rows":
         return f"~ update {op['table']} set {sorted(op['set'])} where {op['where']}"
+    if k == "delete_rows":
+        return f"- delete rows from {op['table']} where {op['where']}  (reason: {op['reason']})"
     if k == "deactivate_rows":
         return f"~ deactivate rows in {op['table']} where {op['where']}"
     return k

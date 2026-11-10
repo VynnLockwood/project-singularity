@@ -226,6 +226,14 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_
             sqlgen.tbl(t, schema), sql.Identifier(op["column"]))).fetchone()["n"]
         if n:
             raise ApplyError(f"{n} row(s) in {t}.{op['column']} are NULL; fix or remove them first")
+    elif k == "delete_rows":
+        n = conn.execute(sql.SQL("SELECT count(*) AS n FROM {} WHERE {}").format(
+            sqlgen.tbl(t, schema), _where_sql(op["where"]))).fetchone()["n"]
+        if n and n <= max_rows:
+            cols = list(before[t]["columns"])
+            rows_before = [{c: jsonable(r[c]) for c in cols} for r in conn.execute(
+                sql.SQL("SELECT {} FROM {} WHERE {} FOR UPDATE").format(
+                    sql.SQL(", ").join(sql.Identifier(c) for c in cols), sqlgen.tbl(t, schema), _where_sql(op["where"]))).fetchall()]
     elif k == "update_rows" and pk_of(before, t):
         rows_before = _before_rows(conn, t, op["where"], list(op["set"]), max_rows, pk_of(before, t), schema)
     elif k == "deactivate_rows" and pk_of(before, t):
@@ -280,6 +288,8 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_
         if value is None:
             return [{"op": "drop_column_default", "table": t, "column": op["column"]}] if k == "set_column_default" else []
         return [{"op": "set_column_default", "table": t, "column": op["column"], "default": value}]
+    if k == "delete_rows":
+        return [{"op": "insert_rows", "table": t, "rows": rows_before}] if rows_before else None
     if k == "create_enum":
         return [{"op": "drop_enum", "name": op["name"], "reason": why}]
     if k in ("add_enum_value", "drop_enum"):

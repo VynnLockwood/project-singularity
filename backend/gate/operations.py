@@ -50,13 +50,13 @@ SCHEMA_OPS = {
     "set_column_default", "drop_column_default", "set_not_null", "drop_not_null",
     "create_view", "drop_view", "create_enum", "add_enum_value", "drop_enum",
 }
-DATA_OPS = {"insert_rows", "update_rows", "deactivate_rows", "bulk_insert"}
+DATA_OPS = {"insert_rows", "update_rows", "deactivate_rows", "bulk_insert", "delete_rows"}
 # Produced only by script intake; the normal propose path refuses it (see gate.check.run allow_bulk).
 INTERNAL_OPS = {"bulk_insert"}
 # Database-level ops: one per change, never mixed with table or data ops.
 DATABASE_OPS = {"create_schema", "rename_schema", "drop_schema"}
 ALL_OPS = SCHEMA_OPS | DATA_OPS | DATABASE_OPS
-DESTRUCTIVE_OPS = {"drop_column", "drop_table", "drop_index", "drop_constraint", "drop_schema", "drop_view", "drop_enum"}
+DESTRUCTIVE_OPS = {"drop_column", "drop_table", "drop_index", "drop_constraint", "drop_schema", "drop_view", "drop_enum", "delete_rows"}
 
 SCHEMA_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}\Z")
 RESERVED_SCHEMAS = frozenset({"singularity", "public", "information_schema"})
@@ -606,6 +606,11 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
             _ident(op.get("table"), "table", errs, where)
             _check_where(op.get("where"), errs, where)
             _check_values(op.get("set"), errs, where, "set")
+        elif kind == "delete_rows":
+            keys("table", "where", "reason")
+            _ident(op.get("table"), "table", errs, where)
+            _check_where(op.get("where"), errs, where)
+            _reason(op, errs, where)
         elif kind == "deactivate_rows":
             keys("table", "where")
             _ident(op.get("table"), "table", errs, where)

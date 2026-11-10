@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 
+import psycopg
 from django.db import transaction
 from django.utils import timezone
 
@@ -144,6 +145,21 @@ def propose_config(user, raw_ops, *, source: str, prompt: str = "", conversation
     return change
 
 
+def _warn_row_counts(res, schema: str) -> None:
+    """A delete_rows is checked against the data too: say how many rows it would remove (never blocks)."""
+    for i, op in enumerate(res.operations):
+        if op["op"] != "delete_rows":
+            continue
+        try:
+            n = introspect.count_where(op["table"], op["where"], schema)
+        except psycopg.Error:
+            continue
+        res.violations.append({
+            "rule": "deleteRowCount", "severity": "warn", "op_index": i, "suggestion": None,
+            "message": f"delete_rows on {op['table']} will remove {n} row(s)",
+        })
+
+
 def propose(user, raw_ops, *, source: str, prompt: str = "", conversation_id: int | None = None,
             reverts: Change | None = None, schema: str = "master") -> Change:
     if config_ops.has_config(raw_ops):
@@ -169,6 +185,8 @@ def propose(user, raw_ops, *, source: str, prompt: str = "", conversation_id: in
         actor=user.email, max_ops=max_ops, skip_rules=is_revert,
         allow_bulk=source == "script", schema=schema, **_limit_args(),
     )
+    if not res.errors:
+        _warn_row_counts(res, schema)
     change = Change(
         requester=user, source=source, prompt=prompt, conversation_id=conversation_id,
         kind=_kind(raw_ops), schema=schema, original_operations=raw_ops if isinstance(raw_ops, list) else [], reverts=reverts,

@@ -407,6 +407,12 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
             for k in {*op["where"], *op["set"]}:
                 need_col(t, k)
 
+    elif kind == "delete_rows":
+        t = op["table"]
+        if need_table(t):
+            for k in op["where"]:
+                need_col(t, k)
+
     elif kind == "deactivate_rows":
         t = op["table"]
         if need_table(t):
