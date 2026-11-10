@@ -1,4 +1,4 @@
-from django.db.models import Count, Q
+from django.db.models import Count
 from django.http import JsonResponse
 
 from accounts.api import endpoint, error
@@ -16,21 +16,17 @@ def _fail(exc):
 
 
 def _group(pk):
-    return DuplicateGroup.objects.select_related("merge_change").filter(pk=pk).first()
+    try:
+        return service.get_group(pk)
+    except service.DuplicateError:
+        return None
 
 
 @endpoint("GET")
 @unknown_schema_is_400
 def groups(request):
-    qs = DuplicateGroup.objects.select_related("merge_change")
     schema = schema_param(request, allow_all=True)  # absent = master like everywhere; explicit `*` = all schemas
-    if schema:
-        qs = qs.filter(schema=introspect.require_managed(schema))
-    if table := request.GET.get("table"):
-        qs = qs.filter(table_name=table)
-    items = [service.summary(g) for g in qs]
-    if status := request.GET.get("status"):
-        items = [g for g in items if g["status"] == status]
+    items = service.list_groups(schema=schema, table=request.GET.get("table"), status=request.GET.get("status"))
     open_groups = DuplicateGroup.objects.filter(status="open")
     if schema:
         open_groups = open_groups.filter(schema=schema)
@@ -70,10 +66,7 @@ def dismiss(request, group_id):
     g = _group(group_id)
     if g is None:
         return error("not found", 404)
-    g.status, g.decided_by = DuplicateGroup.Status.DISMISSED, request.user
-    g.save(update_fields=["status", "decided_by"])
-    record(request.user, "duplicates.dismissed", target=f"#{g.pk}", details={"table": g.table_name})
-    return JsonResponse(service.summary(g))
+    return JsonResponse(service.dismiss(g, request.user))
 
 
 @endpoint("POST", min_role="editor")

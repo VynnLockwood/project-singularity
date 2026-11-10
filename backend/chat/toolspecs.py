@@ -84,6 +84,18 @@ SPECS = {
                    "direction": {"type": "string", "enum": ["asc", "desc"]},
                    "filters": {"type": "object", "description": "{column: text contained}"},
                    "include_inactive": {"type": "boolean"}}, ["table"]),
+    "find_duplicates": (D["find_duplicates"],
+                        {"table": {"type": "string"}, **SCHEMA,
+                         "fields": {"type": "array", "items": {"type": "string"}, "description": "columns to compare; omit for all text columns"},
+                         "threshold": {"type": "number", "description": "0 to 1; omit for the team setting"}}, ["table"]),
+    "list_duplicates": (D["list_duplicates"],
+                        {"table": {"type": "string"}, **SCHEMA, "status": {"type": ["string", "null"]},
+                         "limit": {"type": "integer"}}, []),
+    "get_duplicate": (D["get_duplicate"], {"group_id": {"type": "integer"}}, ["group_id"]),
+    "merge_duplicates": (D["merge_duplicates"],
+                         {"group_id": {"type": "integer"}, "survivor_id": {"type": "integer", "description": "the record to keep"}},
+                         ["group_id", "survivor_id"]),
+    "dismiss_duplicate": (D["dismiss_duplicate"], {"group_id": {"type": "integer"}}, ["group_id"]),
 }
 
 

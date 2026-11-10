@@ -35,6 +35,11 @@ TOOL_ROLES = {
     "get_script": "editor",
     "list_changes": "viewer",
     "read_rows": "viewer",
+    "find_duplicates": "editor",
+    "list_duplicates": "viewer",
+    "get_duplicate": "viewer",
+    "merge_duplicates": "editor",
+    "dismiss_duplicate": "editor",
     "revert_change": "approver",
     "recheck_change": "editor",
     "get_audit_log": "approver",   # audit details can hold other people's prompts and emails
@@ -58,6 +63,21 @@ DESCRIPTIONS = {
         "(asc or desc), filters {column: text contained}, include_inactive. Returns the total and whether more "
         "rows remain. For joins or aggregates use query."
     ),
+    "find_duplicates": (
+        "Scan one table for records that look like the same thing (fuzzy match on its text columns, or on the "
+        "'fields' you name). Returns the scan summary and the open groups."
+    ),
+    "list_duplicates": (
+        "Duplicate groups already found, by table and status: open (the default), dismissed, merge_pending or merged. "
+        "Pass status=null for all."
+    ),
+    "get_duplicate": "The records of one duplicate group side by side, and the tables that reference them.",
+    "merge_duplicates": (
+        "Propose merging a group into one surviving record: references move to the survivor and the other records "
+        "are deactivated. This is a data change and goes through approval. Show the user the records first "
+        "(get_duplicate) and ask which one to keep."
+    ),
+    "dismiss_duplicate": "Mark a group as not duplicates, so a scan does not bring it back.",
     "revert_change": (
         "Undo an applied change by applying its stored reverse (approvers only). Changes that dropped something "
         "cannot be undone this way; the error says so."
@@ -176,6 +196,73 @@ def read_rows(user, table: str, schema: str = "master", offset: int = 0, limit: 
         hint = " Call describe_table to see the columns." if "unknown column" in str(exc) else ""
         raise ToolFailure(f"{exc}.{hint}") from exc
     return {**out, "truncated": out["offset"] + len(out["rows"]) < out["total"]}
+
+
+def _dup(fn):
+    """Run a duplicates call, turning its errors into ones the AI can act on."""
+    from duplicates import service as dup
+
+    try:
+        return fn(dup)
+    except introspect.UnknownSchema as exc:
+        raise ToolFailure(f"{exc} Call list_schemas to see the databases.") from exc
+    except dup.DuplicateError as exc:
+        text = str(exc).rstrip(".")
+        if text.lower().startswith("unknown schema"):
+            hint = " Call list_schemas to see the databases."
+        elif exc.status == 404 and "group" in text:
+            hint = " Call list_duplicates to see the groups."
+        elif exc.status == 404:
+            hint = " Call list_tables to see what exists."
+        else:
+            hint = ""
+        raise ToolFailure(f"{text}.{hint}") from exc
+
+
+def find_duplicates(user, table: str, schema: str = "master", fields: list | None = None,
+                    threshold: float | None = None) -> dict:
+    """Scan one table for records that look like the same thing; returns the scan summary and the groups."""
+    from audit.models import record
+
+    if fields is not None and (not isinstance(fields, list) or not all(isinstance(f, str) for f in fields)):
+        raise ToolFailure("fields must be a list of column names, for example [\"name\"]. Leave it out to use every text column.")
+    result = _dup(lambda dup: dup.scan(str(table), user, fields=fields, threshold=threshold, schema=schema))
+    record(user, "duplicates.scanned", target=result["table"], details=result)
+    groups = _dup(lambda dup: dup.list_groups(schema=schema, table=result["table"], status="open"))
+    return {**result, "groups_found": groups[:20], "truncated": result["truncated"] or len(groups) > 20}
+
+
+def list_duplicates(user, table: str | None = None, schema: str = "master", status: str | None = "open",
+                    limit: int | None = None) -> dict:
+    cap = clamp(limit, 20, 100)
+    groups = _dup(lambda dup: dup.list_groups(schema=schema, table=table or None, status=status or None))
+    return {"groups": groups[:cap], "truncated": len(groups) > cap}
+
+
+def get_duplicate(user, group_id: int) -> dict:
+    from duplicates import service as dup
+
+    g = _dup(lambda d: d.get_group(group_id))
+    try:
+        return dup.detail(g)
+    except Exception as exc:  # the table was dropped or changed shape since the scan
+        raise ToolFailure(
+            f"the records of group #{g.pk} can no longer be read (table {g.table_name!r} changed or is gone). "
+            f"Call dismiss_duplicate with group_id={g.pk}, or find_duplicates to scan again.") from exc
+
+
+def merge_duplicates(user, group_id: int, survivor_id: int) -> dict:
+    from duplicates import service as dup
+
+    if not isinstance(survivor_id, int) or isinstance(survivor_id, bool):
+        raise ToolFailure("survivor_id must be the id of the record to keep (one of the group's memberIds).")
+    g = _dup(lambda d: d.get_group(group_id))
+    change = _dup(lambda d: d.propose_merge(g, survivor_id, user, source="mcp"))
+    return {"group": dup.summary(g), "change": _result(user, change)}
+
+
+def dismiss_duplicate(user, group_id: int) -> dict:
+    return _dup(lambda d: d.dismiss(d.get_group(group_id), user))
 
 
 def _next_step(user, change: Change) -> str:
@@ -367,6 +454,11 @@ IMPL = {
     "list_changes": list_changes,
     "get_audit_log": get_audit_log,
     "read_rows": read_rows,
+    "find_duplicates": find_duplicates,
+    "list_duplicates": list_duplicates,
+    "get_duplicate": get_duplicate,
+    "merge_duplicates": merge_duplicates,
+    "dismiss_duplicate": dismiss_duplicate,
     "revert_change": revert_change,
     "recheck_change": recheck_change,
 }

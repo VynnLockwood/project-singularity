@@ -264,6 +264,33 @@ async def read_rows(table: str, schema: str = "master", offset: int = 0, limit: 
                      direction=direction, filters=filters, include_inactive=include_inactive)
 
 
+@mcp.tool(name="find_duplicates", description=tools.DESCRIPTIONS["find_duplicates"] + " " + DB_NOTE)
+async def find_duplicates(table: str, schema: str = "master", fields: list[str] | None = None,
+                          threshold: float | None = None) -> dict:
+    return await run("find_duplicates", table=table, schema=schema, fields=fields, threshold=threshold)
+
+
+@mcp.tool(name="list_duplicates", description=tools.DESCRIPTIONS["list_duplicates"])
+async def list_duplicates(table: str | None = None, schema: str = "master", status: str | None = "open",
+                          limit: int | None = None) -> dict:
+    return await run("list_duplicates", table=table, schema=schema, status=status, limit=limit)
+
+
+@mcp.tool(name="get_duplicate", description=tools.DESCRIPTIONS["get_duplicate"])
+async def get_duplicate(group_id: int) -> dict:
+    return await run("get_duplicate", group_id=group_id)
+
+
+@mcp.tool(name="merge_duplicates", description=tools.DESCRIPTIONS["merge_duplicates"])
+async def merge_duplicates(group_id: int, survivor_id: int) -> dict:
+    return await run("merge_duplicates", group_id=group_id, survivor_id=survivor_id)
+
+
+@mcp.tool(name="dismiss_duplicate", description=tools.DESCRIPTIONS["dismiss_duplicate"])
+async def dismiss_duplicate(group_id: int) -> dict:
+    return await run("dismiss_duplicate", group_id=group_id)
+
+
 LINK_PREFIX = "/mcp/t/"
 
 
