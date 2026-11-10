@@ -11,7 +11,7 @@ import copy
 from typing import Iterator
 
 from .conventions import Conventions
-from .operations import check_expression, normalize_type
+from .operations import check_expression, normalize_type, view_references
 
 
 class State(dict):
@@ -196,6 +196,20 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
                 _add_key(state[t], _trim(f"{t}_{c['name']}_key"), [c["name"]])
             state[t]["columns"][c["name"]] = _col_entry(c)
             refresh_roles(state, t, conv)
+
+    elif kind == "create_view":
+        n = op["name"]
+        if n in state or n in views_of(state):
+            err(f"{n!r} already exists (a table or view has that name)")
+        elif isinstance(state, State):
+            state.views[n] = {"query": op["query"], "tables": {r for r in view_references(op["query"]) if r in state}}
+
+    elif kind == "drop_view":
+        n = op["name"]
+        if n not in views_of(state):
+            err(f"view {n!r} does not exist")
+        else:
+            del state.views[n]
 
     elif kind == "rename_table":
         t, n = op["table"], op["new_name"]

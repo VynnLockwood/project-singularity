@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
-from .operations import DEFAULT_FUNCS, check_expression, ON_DELETE_VALUES, normalize_type
+from .operations import DEFAULT_FUNCS, check_expression, check_view_query, ON_DELETE_VALUES, normalize_type
 from .conventions import Conventions
 from .state import fk_name, index_name, pk_of, ref_column, role_of, unique_name, walk
 
@@ -176,6 +176,18 @@ def statements_for(op: dict, state_before: dict, actor: str | None, conv: Conven
             )
         ]
 
+    if k == "create_view":
+        problems = check_view_query(op["query"])          # re-verified here, like _render_check
+        if problems:
+            raise UnsafeOp("; ".join(problems))
+        out = [Stmt(S("CREATE VIEW {}.{} AS ").format(I(schema), I(op["name"])) + S(op["query"].strip().rstrip(";")))]
+        if op.get("comment"):
+            out.append(Stmt(S("COMMENT ON VIEW {}.{} IS {}").format(I(schema), I(op["name"]), lit(op["comment"]))))
+        return out
+
+    if k == "drop_view":
+        return [Stmt(S("DROP VIEW {}.{}").format(I(schema), I(op["name"])))]
+
     if k == "set_column_comment":
         return [_comment_col(op["table"], op["column"], op["comment"], schema)]
 
@@ -331,6 +343,10 @@ def describe(op: dict) -> str:
         return f"~ rename column {op['table']}.{op['column']} -> {op['new_name']}"
     if k == "alter_column_type":
         return f"~ change type of {op['table']}.{op['column']} to {normalize_type(op['type'])}"
+    if k == "create_view":
+        return f"+ create view {op['name']}"
+    if k == "drop_view":
+        return f"- drop view {op['name']}  (reason: {op['reason']})"
     if k == "set_column_comment":
         return f"~ set comment on {op['table']}.{op['column']}"
     if k == "set_column_default":

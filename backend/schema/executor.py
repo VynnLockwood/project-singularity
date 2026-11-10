@@ -237,12 +237,16 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_
     # --- run
     inserted_ids: list = []
     rowcount = None
+    if k == "create_view":      # the query is unqualified text: names resolve in the target schema
+        conn.execute(sql.SQL("SET LOCAL search_path TO {}").format(sql.Identifier(schema)))
     for s in stmts:
         cur = conn.execute(s.sql)
         if s.returning_id:
             inserted_ids.append(cur.fetchone()[pk_of(before, t)])
         if k in ("update_rows", "deactivate_rows"):
             rowcount = cur.rowcount
+    if k == "create_view":
+        conn.execute("RESET search_path")
     if rowcount is not None and rowcount > max_rows:
         raise ApplyError(f"operation touched {rowcount} rows (limit {max_rows})")
 
@@ -276,6 +280,10 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_
         if value is None:
             return [{"op": "drop_column_default", "table": t, "column": op["column"]}] if k == "set_column_default" else []
         return [{"op": "set_column_default", "table": t, "column": op["column"], "default": value}]
+    if k == "create_view":
+        return [{"op": "drop_view", "name": op["name"], "reason": why}]
+    if k == "drop_view":
+        return None
     if k == "set_not_null":
         return [{"op": "drop_not_null", "table": t, "column": op["column"]}]
     if k == "drop_not_null":

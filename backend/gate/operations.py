@@ -37,6 +37,7 @@ SCHEMA_OPS = {
     "drop_column", "drop_table", "drop_index", "drop_constraint",
     "add_check", "set_table_comment",
     "set_column_default", "drop_column_default", "set_not_null", "drop_not_null",
+    "create_view", "drop_view",
 }
 DATA_OPS = {"insert_rows", "update_rows", "deactivate_rows", "bulk_insert"}
 # Produced only by script intake; the normal propose path refuses it (see gate.check.run allow_bulk).
@@ -44,7 +45,7 @@ INTERNAL_OPS = {"bulk_insert"}
 # Database-level ops: one per change, never mixed with table or data ops.
 DATABASE_OPS = {"create_schema", "rename_schema", "drop_schema"}
 ALL_OPS = SCHEMA_OPS | DATA_OPS | DATABASE_OPS
-DESTRUCTIVE_OPS = {"drop_column", "drop_table", "drop_index", "drop_constraint", "drop_schema"}
+DESTRUCTIVE_OPS = {"drop_column", "drop_table", "drop_index", "drop_constraint", "drop_schema", "drop_view"}
 
 SCHEMA_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}\Z")
 RESERVED_SCHEMAS = frozenset({"singularity", "public", "information_schema"})
@@ -72,6 +73,69 @@ class OpError(Exception):
 
 def normalize_type(t: str) -> str:
     return re.sub(r"\s+", " ", t.strip().lower()).replace(", ", ",")
+
+
+MAX_VIEW_LEN = 10000
+
+
+def view_references(query: str) -> set[str]:
+    """Unqualified relation names a view query reads (CTE names excluded). The query must already be valid."""
+    import pglast
+    from pglast import ast
+    from pglast.visitors import Visitor
+
+    found: set[str] = set()
+    ctes: set[str] = set()
+
+    class V(Visitor):
+        def visit_RangeVar(self, ancestors, node):
+            if node.schemaname is None:
+                found.add(node.relname)
+
+        def visit_CommonTableExpr(self, ancestors, node):
+            ctes.add(node.ctename)
+
+    V()(pglast.parse_sql(query))
+    return found - ctes
+
+
+def check_view_query(query) -> list[str]:
+    """Problems with a view query (empty list = safe to render).
+
+    It must parse as exactly one SELECT (set operations and plain CTEs are fine) with no INTO, no
+    locking clause and no data-modifying statement anywhere inside it.
+    """
+    import pglast
+    from pglast import ast
+    from pglast.visitors import Visitor
+
+    if not isinstance(query, str) or not query.strip():
+        return ["view query must be non-empty text"]
+    if len(query) > MAX_VIEW_LEN:
+        return [f"view query is longer than {MAX_VIEW_LEN} characters"]
+    try:
+        parsed = pglast.parse_sql(query)
+    except pglast.parser.ParseError as exc:
+        return [f"view query does not parse: {exc}"]
+    if len(parsed) != 1 or not isinstance(parsed[0].stmt, ast.SelectStmt):
+        return ["view query must be exactly one SELECT statement"]
+    problems: list[str] = []
+
+    class V(Visitor):
+        def visit_SelectStmt(self, ancestors, node):
+            if node.intoClause is not None:
+                problems.append("view query must not use SELECT ... INTO")
+
+        def visit_LockingClause(self, ancestors, node):
+            problems.append("view query must not use FOR UPDATE / FOR SHARE")
+
+        def _write(self, ancestors, node):
+            problems.append("view query must not contain INSERT, UPDATE, DELETE or MERGE")
+
+        visit_InsertStmt = visit_UpdateStmt = visit_DeleteStmt = visit_MergeStmt = _write
+
+    V()(parsed)
+    return sorted(set(problems))
 
 
 def _ident(v, what: str, errs: list[str], where: str) -> None:
@@ -383,6 +447,16 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
                     errs.append(f"{where}: default is required")
                 else:
                     _check_default(op["default"], errs, where)
+        elif kind == "create_view":
+            keys("name", "query", "comment")
+            _ident(op.get("name"), "view name", errs, where)
+            errs.extend(f"{where}: {p}" for p in check_view_query(op.get("query")))
+            if "comment" in op and not isinstance(op["comment"], str):
+                errs.append(f"{where}: comment must be text")
+        elif kind == "drop_view":
+            keys("name", "reason")
+            _ident(op.get("name"), "view name", errs, where)
+            _reason(op, errs, where)
         elif kind == "set_column_comment":
             keys("table", "column", "comment")
             _ident(op.get("table"), "table", errs, where)

@@ -172,6 +172,8 @@ def evaluate(ops: list[dict], rules: list[dict]) -> tuple[list[dict], list[dict]
                         names.append(op["name"])
                     elif op["op"] == "rename_table":
                         names.append(op["new_name"])
+                    elif op["op"] == "create_view":
+                        names.append(op["name"])
                 else:
                     if op["op"] == "create_table":
                         names += [c["name"] for c in op["columns"]]
