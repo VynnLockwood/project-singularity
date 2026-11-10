@@ -1,7 +1,8 @@
 /* The frame around every view: background canvas, rail, top bar, main area. */
 .cosmos { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
 .shell, .center, main { position: relative; z-index: 1; }
-body:has(.shell) .cosmos { opacity: 0.5; }
+/* behind the app the scene is quiet; on the sign-in screen it is at full strength */
+body:has(.shell) .cosmos { opacity: 0.35; }
 
 .shell { display: grid; grid-template-columns: var(--rail-width) minmax(0, 1fr); min-height: 100vh; }
 

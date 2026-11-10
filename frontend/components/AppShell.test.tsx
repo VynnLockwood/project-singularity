@@ -108,6 +108,17 @@ describe("AppShell navigation and review", () => {
     expect(await screen.findByText("Change #5 rejected")).toBeInTheDocument();
   });
 
+  it("tells the background how busy the queue is, and marks the page as the app", async () => {
+    const levels: number[] = [];
+    const onLevel = (e: Event) => levels.push((e as CustomEvent<number>).detail);
+    addEventListener("cosmos:activity", onLevel);
+    await mount();
+    expect(document.documentElement.dataset.app).toBe("true");
+    act(() => emit({ type: "change", change: change({ id: 9 }) }));
+    await waitFor(() => expect(levels.at(-1)).toBeCloseTo(0.2));
+    removeEventListener("cosmos:activity", onLevel);
+  });
+
   it("opens the review tray with g then r", async () => {
     await mount();
     fireEvent.keyDown(document.body, { key: "g" });

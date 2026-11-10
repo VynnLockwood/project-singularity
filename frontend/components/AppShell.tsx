@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Change, Me } from "@/lib/api";
+import { flare, setActivity } from "@/lib/activity";
 import { canDecide } from "@/lib/changes";
 import { viewLabel } from "@/lib/nav";
 import { useShortcut } from "@/lib/shortcuts";
-import { useChanges } from "@/lib/useChanges";
+import { activityLevel, useChanges } from "@/lib/useChanges";
 import { useRoute } from "@/lib/useRoute";
 import { ToastProvider, useToast } from "@/components/ui";
 import { ChatView } from "./ChatView";
@@ -49,6 +50,7 @@ function Shell({ me, onLogout }: Props) {
     if (mineToDecide && !prev && !own.current.has(change.id)) {
       toast.info(`Change #${change.id} needs your review`, { action: { label: "Review", onClick: openTray } });
     }
+    if (prev?.status === "pending" && change.status === "applied") flare();
     if (change.requester === me.email && prev?.status === "pending" && change.status !== "pending") {
       if (change.status === "applied") toast.success(`Change #${change.id} applied`);
       else if (change.status === "rejected" || change.status === "failed") toast.error(`Change #${change.id} ${change.status}`);
@@ -72,6 +74,13 @@ function Shell({ me, onLogout }: Props) {
   useEffect(() => {
     document.title = route.view === "notfound" ? "Page not found – Singularity" : `${viewLabel(route.view)} – Singularity`;
   }, [route.view]);
+
+  // The background is drawn by the root layout; tell it this is the app and how busy the queue is.
+  useEffect(() => {
+    document.documentElement.dataset.app = "true";
+    return () => { delete document.documentElement.dataset.app; setActivity(0); };
+  }, []);
+  useEffect(() => { setActivity(activityLevel(mine.length)); }, [mine.length]);
 
   useShortcut("g r", openTray);
   useShortcut("mod+k", openPalette);

@@ -1,14 +1,22 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { ACTIVITY_EVENT, FLARE_EVENT, ease } from "@/lib/activity";
 import { INTENSITY_EVENT, LEVELS, loadCosmos, readIntensity, type Cosmos as Scene, type Intensity, type Particle } from "@/lib/cosmos";
 
 const TILT = -0.42; // the disk is seen at an angle, rotated like in the reference picture
 const FLAT = 0.34;
 const SPIN = 0.05; // radians per second at the innermost speed 1
+const FLARE_SECONDS = 0.6;
 
-/** Full-screen background: stars, a black hole and its glowing accretion disk. The particles come from the Rust engine. */
-export function Cosmos({ intensity }: { intensity?: Intensity } = {}) {
+/**
+ * Full-screen background: stars, a black hole and its glowing accretion disk. The particles come from the Rust engine.
+ * The disk also shows the state of the review queue: it spins up and brightens while changes wait
+ * (`activity`, 0 to 1, or the `cosmos:activity` event) and flares once when a change is applied.
+ */
+export function Cosmos({ intensity, activity }: { intensity?: Intensity; activity?: number } = {}) {
+  const target = useRef(activity ?? 0);
+  useEffect(() => { if (activity !== undefined) target.current = Math.max(0, Math.min(1, activity)); }, [activity]);
   const ref = useRef<HTMLCanvasElement>(null);
   const [level, setLevel] = useState<Intensity>(intensity ?? readIntensity);
 
@@ -41,10 +49,22 @@ export function Cosmos({ intensity }: { intensity?: Intensity } = {}) {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     };
 
+    // eased queue activity, the disk's accumulated rotation, and when the last flare began
+    let a = still ? target.current : 0;
+    let phase = 0, last = -1, flareAt = -Infinity;
+
     const draw = (t: number) => {
       if (!scene) return;
+      const dt = last < 0 ? 0 : Math.min(0.1, t - last);
+      last = t;
+      a = still ? target.current : ease(a, target.current, dt);
+      phase += dt * (1 + 0.6 * a);
+      const lit = 1 + 0.3 * a;
+      const burst = Math.max(0, 1 - (t - flareAt) / FLARE_SECONDS);
       ctx.clearRect(0, 0, w, h);
-      const cx = w * (w > 900 ? 0.72 : 0.5), cy = h * 0.42;
+      // inside the app the hole sits low and to the right, out from under the text
+      const inApp = document.documentElement.dataset.app === "true";
+      const cx = inApp ? w * 0.82 : w * (w > 900 ? 0.72 : 0.5), cy = inApp ? h * 0.78 : h * 0.42;
       const hr = Math.min(w, h) * 0.11, R = hr * 5.4;
       const cos = Math.cos(TILT), sin = Math.sin(TILT);
       const at = (x: number, y: number): [number, number] => [cx + x * cos - y * sin, cy + x * sin + y * cos];
@@ -58,7 +78,7 @@ export function Cosmos({ intensity }: { intensity?: Intensity } = {}) {
 
       // soft halo behind everything
       const halo = ctx.createRadialGradient(cx, cy, hr * 0.9, cx, cy, R * 1.25);
-      halo.addColorStop(0, "rgba(255,140,40,0.30)");
+      halo.addColorStop(0, `rgba(255,140,40,${Math.min(0.5, 0.3 * lit)})`);
       halo.addColorStop(0.5, "rgba(190,70,10,0.10)");
       halo.addColorStop(1, "rgba(0,0,0,0)");
       ctx.fillStyle = halo;
@@ -66,15 +86,15 @@ export function Cosmos({ intensity }: { intensity?: Intensity } = {}) {
 
       ctx.globalCompositeOperation = "lighter";
       const pos = scene.disk.map((p) => {
-        const a = p.angle + p.speed * SPIN * t;
-        return { p, a, back: Math.sin(a) < 0 };
+        const ang = p.angle + p.speed * SPIN * phase;
+        return { p, a: ang, back: Math.sin(ang) < 0 };
       });
       // each particle is a short streak along its orbit, so the disk reads as flowing light
       ctx.lineCap = "round";
       const streak = (p: Particle, x1: number, y1: number, x2: number, y2: number, k: number) => {
         const [sx, sy] = at(x1, y1);
         const [tx, ty] = at(x2, y2);
-        ctx.strokeStyle = `hsla(${p.hue}, 100%, ${52 + p.alpha * 20}%, ${Math.min(1, p.alpha * k * 1.25)})`;
+        ctx.strokeStyle = `hsla(${p.hue}, 100%, ${52 + p.alpha * 20}%, ${Math.min(1, p.alpha * k * 1.25 * lit)})`;
         ctx.lineWidth = p.size * 1.1;
         ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(tx, ty); ctx.stroke();
       };
@@ -99,8 +119,8 @@ export function Cosmos({ intensity }: { intensity?: Intensity } = {}) {
       body.addColorStop(1, "#3a1204");
       ctx.fillStyle = body;
       ctx.beginPath(); ctx.arc(hx, hy, hr, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = "rgba(255,190,110,0.55)"; ctx.lineWidth = 1.5;
-      ctx.shadowColor = "rgba(255,120,30,0.9)"; ctx.shadowBlur = 18 * cfg.glow;
+      ctx.strokeStyle = `rgba(255,190,110,${Math.min(1, 0.55 * lit + 0.45 * burst)})`; ctx.lineWidth = 1.5 + burst;
+      ctx.shadowColor = "rgba(255,120,30,0.9)"; ctx.shadowBlur = 18 * cfg.glow * lit + 30 * burst;
       ctx.beginPath(); ctx.arc(hx, hy, hr * 1.01, 0, Math.PI * 2); ctx.stroke();
       ctx.shadowBlur = 0;
 
@@ -121,8 +141,22 @@ export function Cosmos({ intensity }: { intensity?: Intensity } = {}) {
       if (still) draw(0); else raf = requestAnimationFrame(loop);
     });
     const onResize = () => { size(); if (still) draw(0); };
+    // a still scene has no loop: redraw its one frame when the queue or the placement changes
+    const onActivity = (e: Event) => {
+      const level = (e as CustomEvent<number>).detail;
+      if (typeof level === "number") target.current = level;
+      if (still) draw(0);
+    };
+    const onFlare = () => { if (!still) flareAt = last < 0 ? 0 : last; };
     window.addEventListener("resize", onResize);
-    return () => { dead = true; cancelAnimationFrame(raf); window.removeEventListener("resize", onResize); };
+    window.addEventListener(ACTIVITY_EVENT, onActivity);
+    window.addEventListener(FLARE_EVENT, onFlare);
+    return () => {
+      dead = true; cancelAnimationFrame(raf);
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener(ACTIVITY_EVENT, onActivity);
+      window.removeEventListener(FLARE_EVENT, onFlare);
+    };
   }, [level]);
 
   return <canvas ref={ref} className="cosmos" aria-hidden="true" />;

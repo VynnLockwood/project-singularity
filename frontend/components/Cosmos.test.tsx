@@ -46,6 +46,16 @@ describe("Cosmos background", () => {
     unmount();
   });
 
+  it("stays still when the queue gets busy at intensity still", async () => {
+    motion(false);
+    const { raf, unmount } = await mount("still");
+    const { setActivity, flare } = await import("@/lib/activity");
+    setActivity(1);
+    flare();
+    expect(raf).not.toHaveBeenCalled();
+    unmount();
+  });
+
   it("animates at intensity steady", async () => {
     motion(false);
     const { raf, unmount } = await mount("steady");
