@@ -273,6 +273,8 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_
         return [{"op": "drop_schema", "schema": op["name"], "reason": "undo create"}]
     if k == "rename_schema":
         return [{"op": "rename_schema", "schema": op["new_name"], "new_name": op["schema"]}]
+    if k == "move_table":
+        return [{"op": "move_table", "table": t, "from_schema": op["to_schema"], "to_schema": op["from_schema"]}]
     if k == "drop_schema":
         return None
     if k == "create_table":

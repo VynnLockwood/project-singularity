@@ -62,13 +62,34 @@ def _managed_counts() -> dict[str, int]:
 
 
 def _schemas_fingerprint(ops) -> str:
-    """Hash of the managed schema names; drop_schema also hashes table counts (emptiness matters)."""
+    """Hash of the managed schema names; drop_schema also hashes table counts (emptiness matters);
+    move_table also hashes the table on both sides of the move."""
     counts = _managed_counts()
     if any(o.get("op") == "drop_schema" for o in ops):
-        parts = counts
+        parts = {"schemas": counts}
     else:
-        parts = sorted(counts)
+        parts = {"schemas": sorted(counts)}
+    for o in ops:
+        if o.get("op") == "move_table":
+            for s in (o["from_schema"], o["to_schema"]):
+                try:
+                    parts[f"{s}.{o['table']}"] = introspect.fingerprint([o["table"]], s)
+                except introspect.UnknownSchema:
+                    parts[f"{s}.{o['table']}"] = "no such schema"
     return hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()
+
+
+def _schema_states(ops) -> dict[str, dict]:
+    """Snapshots of the schemas a move_table names (what its gate check needs)."""
+    names = {s for o in ops if isinstance(o, dict) and o.get("op") == "move_table"
+             for s in (o.get("from_schema"), o.get("to_schema"))}
+    out = {}
+    for n in names:
+        try:
+            out[n] = introspect.snapshot(n)
+        except introspect.UnknownSchema:
+            pass
+    return out
 
 
 def _current_fingerprint(change: Change) -> str:
@@ -81,8 +102,9 @@ def _current_fingerprint(change: Change) -> str:
     return ""
 
 
-def _limit_args() -> dict:
-    return {"managed_schemas": _managed_counts(), "max_schemas": get_config()["limits"]["maxSchemas"]}
+def _limit_args(ops=None) -> dict:
+    return {"managed_schemas": _managed_counts(), "max_schemas": get_config()["limits"]["maxSchemas"],
+            "schema_states": _schema_states(ops or [])}
 
 
 def _mark_stale(change: Change, user, error: str) -> Change:
@@ -183,7 +205,7 @@ def propose(user, raw_ops, *, source: str, prompt: str = "", conversation_id: in
     res = check.run(
         raw_ops, introspect.snapshot(schema), rule_service.active_rules(),
         actor=user.email, max_ops=max_ops, skip_rules=is_revert,
-        allow_bulk=source == "script", schema=schema, **_limit_args(),
+        allow_bulk=source == "script", schema=schema, **_limit_args(raw_ops),
     )
     if not res.errors:
         _warn_row_counts(res, schema)
@@ -244,7 +266,7 @@ def approve(user, change_id: int) -> Change:
         recheck = check.run(
             change.operations, state, rule_service.active_rules(), actor=change.requester.email,
             max_ops=max(len(change.operations), 1), skip_rules=True,
-            allow_bulk=change.source == "script", schema=change.schema, **_limit_args(),
+            allow_bulk=change.source == "script", schema=change.schema, **_limit_args(change.operations),
         )
         if moved or recheck.errors:
             return _mark_stale(change, user, "; ".join(recheck.errors) or "the schema or the rules changed since this was checked")
@@ -256,12 +278,15 @@ def approve(user, change_id: int) -> Change:
             # create_schema touches nothing existing and drop_schema only drops an empty schema: no backup.
             # rename_schema backs up the schema being renamed (taken under its old name).
             if _is_database(change.operations):
-                to_back_up = next((o["schema"] for o in change.operations if o["op"] == "rename_schema"), None)
+                to_back_up = [o["schema"] for o in change.operations if o["op"] == "rename_schema"]
+                for o in change.operations:
+                    if o["op"] == "move_table":
+                        to_back_up += [o["from_schema"], o["to_schema"]]
             else:
-                to_back_up = change.schema
-            if to_back_up:
+                to_back_up = [change.schema]
+            for name in to_back_up:
                 try:
-                    path = backup_schema(to_back_up, f"change-{change.pk}", cfg["backups"]["retentionDays"])
+                    path = backup_schema(name, f"change-{change.pk}", cfg["backups"]["retentionDays"])
                 except BackupError as exc:
                     return _fail(change, user, f"backup failed, nothing was changed: {exc}")
                 record(user, "backup.created", target=path.name)
@@ -372,7 +397,7 @@ def recheck(user, change_id: int) -> Change:
             res = check.run(
                 change.original_operations, introspect.snapshot(change.schema), rule_service.active_rules(),
                 actor=change.requester.email, max_ops=max(len(change.original_operations), 1), skip_rules=is_revert,
-                schema=change.schema, **_limit_args(),
+                schema=change.schema, **_limit_args(change.original_operations),
             )
             _apply_check(change, res, ops_for_tables=res.operations)
         except introspect.UnknownSchema:

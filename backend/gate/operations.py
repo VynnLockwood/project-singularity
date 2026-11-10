@@ -54,7 +54,7 @@ DATA_OPS = {"insert_rows", "update_rows", "deactivate_rows", "bulk_insert", "del
 # Produced only by script intake; the normal propose path refuses it (see gate.check.run allow_bulk).
 INTERNAL_OPS = {"bulk_insert"}
 # Database-level ops: one per change, never mixed with table or data ops.
-DATABASE_OPS = {"create_schema", "rename_schema", "drop_schema"}
+DATABASE_OPS = {"create_schema", "rename_schema", "drop_schema", "move_table"}
 ALL_OPS = SCHEMA_OPS | DATA_OPS | DATABASE_OPS
 DESTRUCTIVE_OPS = {"drop_column", "drop_table", "drop_index", "drop_constraint", "drop_schema", "drop_view", "drop_enum", "delete_rows"}
 
@@ -423,6 +423,13 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
                 errs.append(f"{where}: {msg}")
             if "comment" in op and not isinstance(op["comment"], str):
                 errs.append(f"{where}: comment must be text")
+        elif kind == "move_table":
+            keys("table", "from_schema", "to_schema")
+            _ident(op.get("table"), "table", errs, where)
+            for key in ("from_schema", "to_schema"):
+                msg = valid_schema_name(op.get(key)) if op.get(key) != "master" else None
+                if msg:
+                    errs.append(f"{where}: {key}: {msg}")
         elif kind == "rename_schema":
             keys("schema", "new_name")
             for key in ("schema", "new_name"):
@@ -640,7 +647,7 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
 
     kinds = {op.get("op") for op in raw if isinstance(op, dict)}
     if kinds & DATABASE_OPS and (len(raw) > 1):
-        errs.append("schema operations (create_schema, rename_schema, drop_schema) must be proposed alone, "
+        errs.append("schema operations (create_schema, rename_schema, drop_schema, move_table) must be proposed alone, "
                     "one per change, not mixed with other operations")
 
     if errs:

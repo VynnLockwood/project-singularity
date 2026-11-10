@@ -148,6 +148,9 @@ def statements_for(op: dict, state_before: dict, actor: str | None, conv: Conven
     if k == "drop_schema":
         return [Stmt(S("SELECT singularity.drop_managed_schema({})").format(sql.Literal(op["schema"])))]
 
+    if k == "move_table":
+        return [Stmt(S("ALTER TABLE {} SET SCHEMA {}").format(tbl(op["table"], op["from_schema"]), I(op["to_schema"])))]
+
     if k == "create_table":
         name = op["name"]
         defs = S(", ").join(_col_def(name, c, state_before, op["columns"], conv, schema) for c in op["columns"])
@@ -368,6 +371,8 @@ def describe(op: dict) -> str:
         return f"+ create schema {op['name']}"
     if k == "rename_schema":
         return f"~ rename schema {op['schema']} -> {op['new_name']}"
+    if k == "move_table":
+        return f"~ move table {op['table']} from {op['from_schema']} to {op['to_schema']}"
     if k == "drop_schema":
         return f"- drop schema {op['schema']}  (reason: {op['reason']})"
     if k == "create_table":

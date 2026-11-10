@@ -34,3 +34,10 @@ def make_table(name="t", extra=None, rows=None):
 
 def rows(sql):
     return query.run_select(sql)["rows"]
+
+
+def gate_db(ops, skip_rules=True):
+    """The gate's verdict on database-level ops (schemas, move_table): needs the managed schemas and their states."""
+    managed = {m["name"]: m["tables"] for m in introspect.managed_schemas()}
+    return check.run(ops, introspect.snapshot("master"), RULES, actor=ME, skip_rules=skip_rules, managed_schemas=managed,
+                     max_schemas=20, schema_states={s: introspect.snapshot(s) for s in managed})
