@@ -33,7 +33,9 @@ INSTRUCTIONS = """\
 Singularity manages master-data PostgreSQL databases (each "database" is a Postgres schema; master is the default).
 Start with get_rules (it has an example of every newer operation) and list_schemas. Find things with list_tables, describe_table, search_schema, read_rows
 (one table, paged) and query (one read-only SELECT).
-You never write SQL to change anything: call propose_change with structured operations. The gate checks the
+Prefer propose_change with structured operations. Use propose_sql only when no operation fits (functions,
+triggers, grants, bulk updates); say why in 'reason'. Raw SQL skips the rules, cannot be undone and is approved
+by a person in the web app: you cannot approve it. The gate checks the operations of propose_change; it checks the
 proposal against the team's rules and returns a diff. Show the diff to the user and ask for confirmation before
 calling approve_change. Schema changes by editors wait for an approver. Dropping things needs a 'reason'.
 Never say a change is applied until its status is 'applied'.
@@ -140,6 +142,11 @@ async def search_schema(query: str, limit: int | None = None, schema: str = "mas
 )
 async def propose_change(operations: list[dict], prompt: str = "", schema: str = "master") -> dict:
     return await run("propose_change", operations=operations, prompt=prompt, schema=schema)
+
+
+@mcp.tool(name="propose_sql", description=tools.DESCRIPTIONS["propose_sql"])
+async def propose_sql(sql: str, reason: str, schema: str = "master") -> dict:
+    return await run("propose_sql", sql=sql, reason=reason, schema=schema)
 
 
 @mcp.tool(
