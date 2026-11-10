@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ApiError, CHAT_MODEL_RE, CHAT_MODELS_MAX, saveSettings, type SettingsPayload, type Tunable } from "@/lib/api";
+import { ApiError, CHAT_MODEL_RE, CHAT_MODELS_MAX, getChatApiKey, saveSettings, setChatApiKey,
+  type SettingsPayload, type Tunable } from "@/lib/api";
 
 const asList = (v: Tunable["value"]) => (Array.isArray(v) ? v : []);
 const same = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
@@ -18,6 +19,11 @@ export function ChatModelSettings({ provider, models, defaultModel, keySet, canE
   const [inputError, setInputError] = useState("");
   const [error, setError] = useState("");
   const [msg, setMsg] = useState("");
+  // Write-only: the saved key is never rendered. Empty means "use the server's own key".
+  const [hasKey, setHasKey] = useState(false);
+  const [keyDraft, setKeyDraft] = useState("");
+
+  useEffect(() => { setHasKey(Boolean(getChatApiKey())); }, []);
 
   // Re-sync the draft when the saved values change (after a save or a reset elsewhere).
   const modelsKey = JSON.stringify(models.value);
@@ -61,6 +67,16 @@ export function ChatModelSettings({ provider, models, defaultModel, keySet, canE
           {Object.entries(keySet).map(([p, isSet]) => (
             <span key={p} className="muted small" aria-label={`${p} API key`}>{p}: {isSet ? "set" : "missing"}</span>
           ))}
+        </div>
+        <div className="setting-input">
+          <label className="small" htmlFor="chat-own-key">Your own key (this browser only)</label>
+          <input id="chat-own-key" type="password" autoComplete="off" placeholder={hasKey ? "Saved — type a new one to replace" : "Paste your provider API key"}
+            disabled={!canEdit} value={keyDraft} onChange={(e) => setKeyDraft(e.target.value)} />
+          <button className="link" disabled={!canEdit || !keyDraft.trim()}
+            onClick={() => { setChatApiKey(keyDraft.trim()); setKeyDraft(""); setHasKey(true); }}>Save key</button>
+          <button className="link" disabled={!canEdit || !hasKey}
+            onClick={() => { setChatApiKey(""); setKeyDraft(""); setHasKey(false); }}>Clear</button>
+          <span className="muted small" data-testid="own-key-status">{hasKey ? "in use" : "not set — server key is used"}</span>
         </div>
         <ul className="settings-list" aria-label="Chat models">
           {list.map((m) => {

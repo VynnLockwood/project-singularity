@@ -133,8 +133,35 @@ export const listConversations = () =>
   call<{ conversations: ConversationSummary[] }>("GET", "/chat/conversations").then((r) => r.conversations);
 export const createConversation = () => call<ConversationSummary>("POST", "/chat/conversations", {});
 export const getConversation = (id: number) => call<ConversationDetail>("GET", `/chat/conversations/${id}`);
+
+/**
+ * The user's own provider key, kept in this browser only. Sent per request and never
+ * stored server-side; empty string means "use the server's configured key".
+ */
+const KEY_STORAGE = "singularity.chatApiKey";
+
+export function getChatApiKey(): string {
+  try {
+    return window.localStorage.getItem(KEY_STORAGE) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function setChatApiKey(key: string): void {
+  try {
+    if (key) window.localStorage.setItem(KEY_STORAGE, key);
+    else window.localStorage.removeItem(KEY_STORAGE);
+  } catch {
+    /* storage unavailable (private mode): the key just won't persist */
+  }
+}
+
 export const sendMessage = (id: number, content: string) =>
-  call<{ messages: ChatMessage[]; changes: Change[] }>("POST", `/chat/conversations/${id}/messages`, { content });
+  call<{ messages: ChatMessage[]; changes: Change[] }>("POST", `/chat/conversations/${id}/messages`, {
+    content,
+    apiKey: getChatApiKey(),
+  });
 
 // ---- schema -------------------------------------------------------------------
 

@@ -73,7 +73,12 @@ def send_message(request, conv_id):
     if len(text) > 20_000:
         return error("message is too long", 400)
     try:
-        added = orchestrator.run_turn(conv, request.user, text.strip())
+        # Per-request, browser-supplied key. Never stored, never logged, never echoed back.
+        supplied = request.json.get("apiKey")
+        api_key = supplied.strip() if isinstance(supplied, str) else ""
+        if len(api_key) > 500:
+            return error("api key is too long", 400)
+        added = orchestrator.run_turn(conv, request.user, text.strip(), api_key=api_key)
     except ChatError as exc:
         return error(exc.message, CHAT_STATUS.get(exc.code, 502), code=exc.code)
     return JsonResponse({"messages": [_message(m) for m in added], "changes": _changes(conv)})

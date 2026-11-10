@@ -8,9 +8,14 @@ from .errors import ChatError
 BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
 
-def complete(messages: list[dict], tools: list[dict], model: str, *, timeout: float = 90) -> dict:
-    """Returns the assistant message: {"content": str, "tool_calls": [{"id","name","arguments"}]}."""
-    key = os.environ.get("OPENROUTER_API_KEY", "")
+def complete(messages: list[dict], tools: list[dict], model: str, *, timeout: float = 90,
+             key: str = "") -> dict:
+    """Returns the assistant message: {"content": str, "tool_calls": [{"id","name","arguments"}]}.
+
+    `key` is a per-request override from the caller (browser-supplied); when empty the
+    server env var is used. It is never logged or returned.
+    """
+    key = key or os.environ.get("OPENROUTER_API_KEY", "")
     if not key:
         raise ChatError("not_configured", "the chat is not configured: OPENROUTER_API_KEY is missing")
     body = {"model": model, "messages": messages}
