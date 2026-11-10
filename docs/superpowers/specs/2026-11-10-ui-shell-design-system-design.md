@@ -153,7 +153,7 @@ New folder `components/ui/`. Each part is one small file with its own test.
 
 Existing class names (`button`, `link`, `tab`, `badge`, `muted`, `problems`, and the rest) keep working: `globals.css` maps them onto the tokens, so every view takes the new look in piece 1 without being rewritten. Views move to the `ui/` parts one by one in piece 2.
 
-Styles: `app/tokens.css`, `app/base.css` (reset, type, form controls, focus ring), `app/shell.css`, `app/legacy.css` (the old class names, now token based), and one CSS module per `ui/` part.
+Styles: `app/tokens.css`, `app/base.css` (reset, type, form controls, focus ring), `app/shell.css`, `app/legacy.css` (the old class names, now token based), and `app/ui.css` for the `ui/` parts (plain CSS with `ui-` prefixed classes; CSS modules are avoided because the test runner does not resolve their class names).
 
 `AppShell.tsx` is split: `AppShell` (layout and wiring), `Rail`, `TopBar`, `ReviewTray`, and a `useChanges` hook that owns the live list, the WebSocket and `onDecide`.
 
