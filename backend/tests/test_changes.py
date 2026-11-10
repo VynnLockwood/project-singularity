@@ -3,6 +3,7 @@ import pytest
 from accounts.models import Role, User
 from approvals import service
 from approvals.models import Change
+from gate.defaults import DEFAULT_RULES
 from audit.models import AuditLog
 from schema import introspect, query
 from settings_app import services as rules_service
@@ -367,7 +368,7 @@ def test_serialize(editor):
 # ---- rules service ---------------------------------------------------------
 
 def test_default_rules_seeded_once(approver):
-    assert Rule.objects.count() == 10
+    assert Rule.objects.count() == len(DEFAULT_RULES)
     assert rules_service.seed_default_rules() == 0
 
 
