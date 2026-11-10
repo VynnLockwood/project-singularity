@@ -5,6 +5,8 @@ are defence in depth and give the AI a message it can act on.
 """
 from dataclasses import dataclass
 
+import re
+
 import pglast
 import psycopg
 from pglast import ast, enums
@@ -23,6 +25,10 @@ class RawSqlError(Exception):
         self.message = message
 
 
+class RawSqlChanged(RawSqlError):
+    """The real run did something other than the dry run showed the approver."""
+
+
 @dataclass
 class Statement:
     text: str
@@ -30,7 +36,14 @@ class Statement:
     node: object       # the pglast node
 
 
-_ROLES = ("role", "session_authorization")
+# settings a script must not touch: identity, the run's own timeouts and search path, read-only mode
+_FENCED_SETTINGS = ("role", "session_authorization", "statement_timeout", "lock_timeout",
+                    "idle_in_transaction_session_timeout", "transaction_timeout", "search_path",
+                    "default_transaction_read_only")
+_BODY_REFUSAL = re.compile(
+    r"set_config|pg_notify|\bsingularity\s*\.|\bsession\s+authorization\b"
+    r"|\b(?:set|reset)\s+(?:local\s+|session\s+)?\"?(?:" + "|".join(_FENCED_SETTINGS) + r")\b"
+    r"|\b(?:listen|unlisten|notify)\b")
 _OK_LANGUAGES = ("sql", "plpgsql")
 _NODE_REFUSALS = {
     ast.TransactionStmt: "transaction control (the whole script already runs in one transaction)",
@@ -46,6 +59,10 @@ _NODE_REFUSALS = {
     ast.CreateExtensionStmt: "CREATE EXTENSION (the database role cannot install extensions)",
     ast.CreateRoleStmt: "role changes",
     ast.AlterRoleStmt: "role changes",
+    ast.AlterRoleSetStmt: "role changes (including role defaults)",
+    ast.AlterDatabaseSetStmt: "changing database settings",
+    ast.DropOwnedStmt: "DROP OWNED",
+    ast.ReassignOwnedStmt: "REASSIGN OWNED",
     ast.DropRoleStmt: "role changes",
     ast.GrantRoleStmt: "role membership changes (GRANT of privileges on objects is allowed)",
 }
@@ -64,8 +81,10 @@ def _refusal(node) -> str | None:
     for cls, why in _NODE_REFUSALS.items():
         if isinstance(node, cls):
             return why
-    if isinstance(node, ast.VariableSetStmt) and node.name in _ROLES:
-        return "changing the role or session authorization"
+    if isinstance(node, ast.GrantStmt) and any(
+            (g.rolename or "").lower().startswith("singularity") for g in node.grantees or ()
+            if isinstance(g, ast.RoleSpec)):
+        return "GRANT/REVOKE for the Singularity database roles"
     if isinstance(node, ast.VacuumStmt) and node.is_vacuumcmd:
         return "VACUUM"
     if isinstance(node, ast.DoStmt) and (_lang(node.args) or "plpgsql") not in _OK_LANGUAGES:
@@ -88,13 +107,36 @@ def _concurrent(node) -> bool:
     return False
 
 
-class _SetConfig(Visitor):
-    found = False
+def _body_text(node) -> str | None:
+    """The source text of a DO block or function body, lower-cased with whitespace squeezed."""
+    opts = node.args if isinstance(node, ast.DoStmt) else node.options if isinstance(node, ast.CreateFunctionStmt) else None
+    for d in opts or ():
+        if d.defname != "as":
+            continue
+        parts = d.arg if isinstance(d.arg, (tuple, list)) else [d.arg]
+        return " ".join(re.sub(r"\s+", " ", p.sval.lower()) for p in parts if isinstance(p, ast.String))
+    return None
+
+
+class _Fenced(Visitor):
+    """Finds calls and settings that could change the role, the timeouts, or Singularity's own objects."""
+
+    def __init__(self):
+        super().__init__()
+        self.why: str | None = None
 
     def visit_FuncCall(self, ancestors, node):  # noqa: N802 - pglast visitor naming
-        names = [x.sval for x in node.funcname if isinstance(x, ast.String)]
+        names = [x.sval.lower() for x in node.funcname if isinstance(x, ast.String)]
         if names and names[-1] == "set_config":
-            self.found = True
+            self.why = "set_config() (it could change the role)"
+        elif names and names[-1] == "pg_notify":
+            self.why = "pg_notify()"
+        elif len(names) > 1 and names[0] == "singularity":
+            self.why = "calling the singularity schema's functions (use the schema operations in propose_change)"
+
+    def visit_VariableSetStmt(self, ancestors, node):  # noqa: N802
+        if node.kind == enums.VariableSetKind.VAR_RESET_ALL or (node.name or "").lower() in _FENCED_SETTINGS:
+            self.why = f"changing {node.name or 'settings (RESET ALL)'}: the role and this run's limits are fixed"
 
 
 def parse_statements(sql: str, *, max_bytes: int, max_statements: int) -> list[Statement]:
@@ -122,10 +164,14 @@ def parse_statements(sql: str, *, max_bytes: int, max_statements: int) -> list[S
         if _concurrent(node):
             raise RawSqlError(f"statement {n}: CONCURRENTLY is not allowed in raw SQL: it runs inside one "
                               "transaction, so concurrent index work is not possible")
-        v = _SetConfig()
+        v = _Fenced()
         v(node)
-        if v.found:
-            raise RawSqlError(f"statement {n}: set_config() is not allowed in raw SQL (it could change the role)")
+        if v.why:
+            raise RawSqlError(f"statement {n}: {v.why} is not allowed in raw SQL")
+        body = _body_text(node)
+        if body and _BODY_REFUSAL.search(body):
+            raise RawSqlError(f"statement {n}: this block or function changes the role, a fenced setting, "
+                              "notifications or the singularity schema, which is not allowed in raw SQL")
         out.append(Statement(text, n, node))
     return out
 
@@ -160,6 +206,10 @@ def warnings_for(statements: list[Statement], schema: str) -> list[dict]:
             out.append(_v(f"statement {n} truncates (empties) tables"))
         if isinstance(node, ast.DeleteStmt) and node.whereClause is None:
             out.append(_v(f"statement {n} is a DELETE without a WHERE: it removes every row"))
+        body = _body_text(node) if isinstance(node, ast.DoStmt) else None
+        if body and "execute" in body:
+            out.append(_v(f"statement {n} runs dynamic SQL (EXECUTE): what it does cannot be shown in advance, "
+                          "and the backup covers only the chosen database"))
         t = _Targets()
         t(node)
         seen = set()
@@ -179,8 +229,28 @@ def _tag(cur) -> str:
     return cur.statusmessage or "OK"
 
 
-def _run(statements: list[Statement], schema: str, *, commit: bool) -> list[str]:
+def _sequence_snapshot(conn) -> list[dict]:
+    """Every sequence the role may set, in any schema but Singularity's own, with its table owner if it has one."""
+    return conn.execute(
+        "SELECT format('%I.%I', n.nspname, c.relname) AS name, pg_sequence_last_value(c.oid) AS last_value, "
+        "s.seqstart AS start_value, (SELECT format('%I.%I', tn.nspname, t.relname) FROM pg_depend d "
+        "JOIN pg_class t ON t.oid = d.refobjid JOIN pg_namespace tn ON tn.oid = t.relnamespace "
+        "WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.refclassid = 'pg_class'::regclass "
+        "AND d.deptype IN ('a', 'i') AND has_table_privilege(t.oid, 'UPDATE') LIMIT 1) AS owner "
+        "FROM pg_sequence s JOIN pg_class c ON c.oid = s.seqrelid JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname NOT IN ('information_schema', 'singularity') "
+        "AND n.nspname !~ '^pg_' AND CASE WHEN c.relkind = 'S' THEN has_sequence_privilege(c.oid, 'UPDATE') ELSE false END").fetchall()
+
+
+def _restore_moved(conn, before: list[dict]) -> None:
+    """Put back the sequences whose value changed since `before` (an unchanged one is left alone: no race)."""
+    now = {r["name"]: r["last_value"] for r in _sequence_snapshot(conn)}
+    executor._restore_sequences(conn, [s for s in before if now.get(s["name"], s["last_value"]) != s["last_value"]])
+
+
+def _run(statements: list[Statement], schema: str, *, commit: bool, expected: list[str] | None = None) -> list[str]:
     lines: list[str] = []
+    n = 0
     try:
         with rw_connection() as conn:
             conn.execute(psql.SQL("SET LOCAL lock_timeout = {}").format(psql.Literal(executor.LOCK_TIMEOUT)))
@@ -188,16 +258,12 @@ def _run(statements: list[Statement], schema: str, *, commit: bool) -> list[str]
             conn.execute(psql.SQL("SET LOCAL search_path TO {}").format(psql.Identifier(schema)))
             seqs: list[dict] = []
             if not commit:
-                # a dry run must not move sequences: hold writers off the tables that own one, snapshot, restore
-                tables = [r["name"] for r in introspect.list_tables(schema)]
-                for t in tables:
-                    owned = executor._sequence_states(conn, [t], schema)
-                    if owned:
-                        conn.execute(psql.SQL("LOCK TABLE {}.{} IN SHARE ROW EXCLUSIVE MODE").format(
-                            psql.Identifier(schema), psql.Identifier(t)))
-                        seqs += owned
+                # a dry run must not move any sequence, in any schema: hold writers off the tables that own one,
+                # snapshot them all, restore the ones the script moved
+                seqs = _sequence_snapshot(conn)
+                for owner in sorted({q["owner"] for q in seqs if q["owner"]}):
+                    conn.execute(psql.SQL("LOCK TABLE {} IN SHARE ROW EXCLUSIVE MODE").format(psql.SQL(owner)))
                 conn.execute("SAVEPOINT raw_dry_run")
-            n = 0
             try:
                 for st in statements:
                     n = st.number
@@ -205,12 +271,16 @@ def _run(statements: list[Statement], schema: str, *, commit: bool) -> list[str]
             except BaseException:
                 if not commit:
                     conn.execute("ROLLBACK TO SAVEPOINT raw_dry_run")
-                    executor._restore_sequences(conn, seqs)
+                    _restore_moved(conn, seqs)
                 raise
             if commit:
+                if expected is not None and lines != expected:
+                    conn.rollback()
+                    raise RawSqlChanged("the data changed since this SQL was checked: it now does something other "
+                                        "than the dry run showed (" + "; ".join(lines) + "); re-check it")
                 conn.commit()
             else:
-                executor._restore_sequences(conn, seqs)
+                _restore_moved(conn, seqs)
                 conn.rollback()
     except psycopg.Error as exc:
         msg = exc.diag.message_primary or str(exc)
@@ -223,6 +293,10 @@ def dry_run(statements: list[Statement], schema: str) -> list[str]:
     return _run(statements, schema, commit=False)
 
 
-def run_in_transaction(statements: list[Statement], schema: str) -> list[str]:
-    """Run every statement in one transaction and commit; any error rolls everything back."""
-    return _run(statements, schema, commit=True)
+def run_in_transaction(statements: list[Statement], schema: str, expected: list[str] | None = None) -> list[str]:
+    """Run every statement in one transaction and commit; any error rolls everything back.
+
+    With `expected` (the dry run's lines) the commit happens only if the real run reports the same: otherwise
+    everything is rolled back and RawSqlChanged is raised.
+    """
+    return _run(statements, schema, commit=True, expected=expected)

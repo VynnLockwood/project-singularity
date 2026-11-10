@@ -7,7 +7,7 @@ from django.conf import settings
 from accounts.models import Role, User
 from approvals import service
 from audit.models import AuditLog
-from schema import introspect
+from schema import executor, introspect
 from schema.backup import BackupError
 from settings_app import tunables
 
@@ -59,15 +59,49 @@ def test_apply_runs_all_statements_and_audits(editor, approver):
     assert any(f"change-{ch.pk}" in p.name for p in Path(settings.BACKUP_DIR).iterdir())
 
 
-def test_failure_in_the_third_of_four_statements_changes_nothing(editor, approver):
-    make_table(extra=[col("code", unique=True)], rows=[{"code": "A"}])
+def test_failure_in_the_third_of_four_statements_changes_nothing(editor, approver, monkeypatch):
+    make_table(rows=[{"a": "1"}])
     sql = ("ALTER TABLE master.t ADD COLUMN c int; UPDATE master.t SET c = 1; "
-           "INSERT INTO master.t (code) VALUES ('B'); UPDATE master.t SET c = 2")
+           "SELECT pg_sleep(0.6); UPDATE master.t SET c = 2")
     ch = service.propose_sql(editor, sql, REASON)
-    apply([{"op": "insert_rows", "table": "t", "rows": [{"code": "B"}]}])      # data only: the fingerprint stays
+    monkeypatch.setattr(executor, "STATEMENT_TIMEOUT", "200ms")          # statement 3 now runs out of time
     ch = service.approve(approver, ch.pk)
     assert ch.status == "failed" and "statement 3" in ch.error, (ch.status, ch.error)
     assert "c" not in cols()
+    assert rows("SELECT count(*) FROM master.t")[0][0] == 1
+
+
+def test_data_that_moved_since_the_dry_run_makes_the_change_stale(editor, approver):
+    make_table(extra=[col("a"), col("flag")], rows=[{"a": "1", "flag": "n"}, {"a": "2", "flag": "n"}])
+    ch = service.propose_sql(editor, "DELETE FROM master.t WHERE flag = 'y'", REASON)
+    assert ch.diff == ["DELETE 0 (statement 1)"]
+    apply([{"op": "update_rows", "table": "t", "where": {"a": "1"}, "set": {"flag": "y"}}])
+    ch = service.approve(approver, ch.pk)
+    assert ch.status == "stale" and "data changed" in ch.error, (ch.status, ch.error)
+    assert rows("SELECT count(*) FROM master.t")[0][0] == 2
+
+
+def test_recheck_is_refused_when_raw_sql_is_switched_off(editor, approver):
+    make_table()
+    ch = service.propose_sql(editor, "UPDATE master.t SET a = 'x'", REASON)
+    tunables.apply(approver, {"sql.enabled": False})
+    with pytest.raises(service.ChangeError, match="switched off"):
+        service.recheck(editor, ch.pk)
+
+
+def test_a_refused_proposal_is_audited_with_its_sql(editor):
+    make_table()
+    with pytest.raises(service.ChangeError):
+        service.propose_sql(editor, "UPDATE master.t SET a = 1; SELECT * FROM nope", REASON)
+    e = AuditLog.objects.get(action="change.proposal_failed")
+    assert e.details["sql"].startswith("UPDATE master.t") and "nope" in e.details["error"]
+    assert e.details["schema"] == "master"
+
+
+def test_proposed_audit_carries_the_sql(editor):
+    make_table()
+    service.propose_sql(editor, "UPDATE master.t SET a = 'x'", REASON)
+    assert AuditLog.objects.get(action="change.proposed").details["sql"] == "UPDATE master.t SET a = 'x'"
 
 
 def test_backup_failure_runs_nothing(editor, approver, monkeypatch):

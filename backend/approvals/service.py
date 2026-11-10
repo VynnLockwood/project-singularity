@@ -249,6 +249,9 @@ def propose_sql(user, sql: str, reason: str, *, schema: str = "master", source: 
         violations = [{"rule": "rawSql", "severity": "warn", "message": RAW_SQL_WARNING, "op_index": None, "suggestion": None},
                       *rawsql.warnings_for(statements, schema)]
     except rawsql.RawSqlError as exc:
+        # the dry run may already have executed the script as the read/write role: keep a record of who ran what
+        record(user, "change.proposal_failed", target=f"schema {schema}",
+               details={"source": source, "kind": "sql", "schema": schema, "sql": sql, "error": exc.message})
         raise ChangeError("invalid", exc.message) from exc
     op = {"op": "raw_sql", "sql": sql, "reason": reason.strip()}
     change = Change(
@@ -259,7 +262,7 @@ def propose_sql(user, sql: str, reason: str, *, schema: str = "master", source: 
         reverse_operations=None,
     )
     change.save()
-    record(user, "change.proposed", target=f"#{change.pk}", details={"source": source, "kind": "sql", "status": change.status})
+    record(user, "change.proposed", target=f"#{change.pk}", details={"source": source, "kind": "sql", "status": change.status, "sql": sql})
     return change
 
 
@@ -381,7 +384,9 @@ def _approve_sql(change: Change, user, cfg) -> Change:
         return _fail(change, user, f"backup failed, nothing was changed: {exc}")
     record(user, "backup.created", target=path.name)
     try:
-        rawsql.run_in_transaction(_raw_statements(change), change.schema)
+        rawsql.run_in_transaction(_raw_statements(change), change.schema, expected=change.diff)
+    except rawsql.RawSqlChanged as exc:
+        return _mark_stale(change, user, exc.message)
     except rawsql.RawSqlError as exc:
         return _fail(change, user, exc.message)
     change.status = Change.Status.APPLIED
@@ -395,6 +400,8 @@ def _approve_sql(change: Change, user, cfg) -> Change:
 
 
 def _recheck_sql(change: Change, user) -> Change:
+    if not get_config()["sql"]["enabled"]:
+        raise ChangeError("bad_state", "raw SQL is switched off (setting sql.enabled); this change cannot be re-checked")
     try:
         statements = _raw_statements(change)
         diff = rawsql.dry_run(statements, change.schema)

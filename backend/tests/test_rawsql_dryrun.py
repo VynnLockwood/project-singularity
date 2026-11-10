@@ -91,3 +91,61 @@ def test_schema_fingerprint_changes_with_a_view_and_with_a_column():
     assert f1 != f0
     apply([{"op": "add_column", "table": "t", "column": col("b")}])
     assert introspect.schema_fingerprint("master") not in (f0, f1)
+
+
+def _seq_state(name):
+    return rows(f"SELECT last_value, is_called FROM {name}")[0]
+
+
+def test_dry_run_does_not_move_a_sequence_of_another_schema(crm):
+    apply([{"op": "create_table", "name": "c", "columns": [col("c_id", "integer", primary_key=True, identity=True), col("a")]}], schema="crm")
+    apply([{"op": "insert_rows", "table": "c", "rows": [{"a": "1"}, {"a": "2"}]}], schema="crm")
+    before = _seq_state("crm.c_c_id_seq")
+    rawsql.dry_run(stmts("INSERT INTO crm.c (a) VALUES ('x'), ('y'), ('z')"), "master")
+    assert _seq_state("crm.c_c_id_seq") == before
+    rawsql.dry_run(stmts("SELECT setval(pg_get_serial_sequence('crm.c', 'c_id'), 1, false)"), "master")
+    assert _seq_state("crm.c_c_id_seq") == before
+
+
+def test_dry_run_does_not_move_a_sequence_no_table_owns():
+    make_table()
+    with rw_connection(autocommit=True) as rw:
+        rw.execute("CREATE SEQUENCE master.loose")
+    rawsql.dry_run(stmts("SELECT nextval('loose'), nextval('loose')"), "master")
+    assert _seq_state("master.loose")[1] is False
+
+
+@pytest.mark.parametrize("ddl", [
+    "CREATE FUNCTION master.f() RETURNS int LANGUAGE sql AS 'SELECT 1'",
+    "CREATE SEQUENCE master.s2",
+    "CREATE DOMAIN master.d AS text",
+    "CREATE MATERIALIZED VIEW master.mv AS SELECT 1 AS x",
+    "ALTER TABLE master.t ENABLE ROW LEVEL SECURITY",
+    "CREATE RULE r AS ON INSERT TO master.t DO ALSO NOTHING",
+    "GRANT SELECT ON master.t TO PUBLIC",
+    "CREATE TRIGGER trg BEFORE INSERT ON master.t FOR EACH ROW EXECUTE FUNCTION master.tf()",
+    "CREATE OR REPLACE FUNCTION master.tf() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NULL; END'",
+    "CREATE OR REPLACE VIEW master.v AS SELECT a, 2 AS two FROM master.t",
+])
+def test_schema_fingerprint_sees_what_raw_sql_can_change(ddl):
+    make_table()
+    with rw_connection(autocommit=True) as rw:
+        rw.execute("CREATE FUNCTION master.tf() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END'")
+        rw.execute("CREATE VIEW master.v AS SELECT a FROM master.t")
+    before = introspect.schema_fingerprint("master")
+    with rw_connection(autocommit=True) as rw:
+        rw.execute(ddl.replace("CREATE RULE r", "CREATE RULE r"))
+    assert introspect.schema_fingerprint("master") != before
+
+
+def test_schema_fingerprint_ignores_data_and_sequence_position():
+    make_table(rows=[{"a": "1"}])
+    before = introspect.schema_fingerprint("master")
+    apply([{"op": "insert_rows", "table": "t", "rows": [{"a": "2"}]}])
+    assert introspect.schema_fingerprint("master") == before
+
+
+def test_dynamic_sql_in_a_block_gets_a_warning_that_it_cannot_be_checked():
+    got = rawsql.warnings_for(stmts("DO $$ BEGIN EXECUTE 'DROP SCHEMA crm CASCADE'; END $$"), "master")
+    assert any("dynamic SQL" in w["message"] and "statement 1" in w["message"] for w in got)
+    assert not rawsql.warnings_for(stmts("DO $$ BEGIN UPDATE t SET a = 1; END $$"), "master")
