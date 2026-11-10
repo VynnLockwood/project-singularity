@@ -102,7 +102,7 @@ def validate_rule_definition(rtype: str, params, severity: str) -> list[str]:
                 plain = strip_meta(c)
                 if isinstance(plain.get("name"), str):
                     plain["name"] = plain["name"].replace("{table}", "t")
-                _check_column(plain, errs, "params.columns", allow_references=False)
+                _check_column(plain, errs, "params.columns", allow_references=False, allow_enum=False)
     elif rtype == "forbidden":
         ops = params.get("ops")
         if not isinstance(ops, list) or not ops:
@@ -172,6 +172,8 @@ def evaluate(ops: list[dict], rules: list[dict]) -> tuple[list[dict], list[dict]
                         names.append(op["name"])
                     elif op["op"] == "rename_table":
                         names.append(op["new_name"])
+                    elif op["op"] in ("create_view", "create_enum"):
+                        names.append(op["name"])
                 else:
                     if op["op"] == "create_table":
                         names += [c["name"] for c in op["columns"]]

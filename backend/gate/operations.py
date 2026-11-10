@@ -18,6 +18,17 @@ TYPE_RE = re.compile(
     r"double precision|numeric|numeric\(\d{1,2},\s?\d{1,2}\)|varchar\(\d{1,4}\))\Z"
 )
 
+# An enum type's name: lowercase snake. A column type is a built-in (TYPE_RE) or the name of an enum of the
+# same schema; the state check (gate.state) decides which, because the shape check has no schema to look at.
+ENUM_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}\Z")
+MAX_ENUM_VALUES = 100
+MAX_ENUM_VALUE_BYTES = 63
+
+
+def type_shape_ok(t) -> bool:
+    return isinstance(t, str) and bool(TYPE_RE.fullmatch(normalize_type(t)) or ENUM_NAME_RE.fullmatch(normalize_type(t)))
+
+
 # Defaults: JSON literals or one of these function calls. Nothing free-form.
 DEFAULT_FUNCS = {"now()", "gen_random_uuid()", "current_date"}
 
@@ -36,14 +47,16 @@ SCHEMA_OPS = {
     "set_column_comment", "add_index", "add_foreign_key", "add_unique",
     "drop_column", "drop_table", "drop_index", "drop_constraint",
     "add_check", "set_table_comment",
+    "set_column_default", "drop_column_default", "set_not_null", "drop_not_null",
+    "create_view", "drop_view", "create_enum", "add_enum_value", "drop_enum",
 }
-DATA_OPS = {"insert_rows", "update_rows", "deactivate_rows", "bulk_insert"}
+DATA_OPS = {"insert_rows", "update_rows", "deactivate_rows", "bulk_insert", "delete_rows", "upsert_rows"}
 # Produced only by script intake; the normal propose path refuses it (see gate.check.run allow_bulk).
 INTERNAL_OPS = {"bulk_insert"}
 # Database-level ops: one per change, never mixed with table or data ops.
-DATABASE_OPS = {"create_schema", "rename_schema", "drop_schema"}
+DATABASE_OPS = {"create_schema", "rename_schema", "drop_schema", "move_table"}
 ALL_OPS = SCHEMA_OPS | DATA_OPS | DATABASE_OPS
-DESTRUCTIVE_OPS = {"drop_column", "drop_table", "drop_index", "drop_constraint", "drop_schema"}
+DESTRUCTIVE_OPS = {"drop_column", "drop_table", "drop_index", "drop_constraint", "drop_schema", "drop_view", "drop_enum", "delete_rows"}
 
 SCHEMA_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}\Z")
 RESERVED_SCHEMAS = frozenset({"singularity", "public", "information_schema"})
@@ -73,12 +86,82 @@ def normalize_type(t: str) -> str:
     return re.sub(r"\s+", " ", t.strip().lower()).replace(", ", ",")
 
 
+MAX_VIEW_LEN = 10000
+
+
+def view_references(query: str) -> set[str]:
+    """Unqualified relation names a view query reads (CTE names excluded). The query must already be valid."""
+    import pglast
+    from pglast import ast
+    from pglast.visitors import Visitor
+
+    found: set[str] = set()
+    ctes: set[str] = set()
+
+    class V(Visitor):
+        def visit_RangeVar(self, ancestors, node):
+            if node.schemaname is None:
+                found.add(node.relname)
+
+        def visit_CommonTableExpr(self, ancestors, node):
+            ctes.add(node.ctename)
+
+    V()(pglast.parse_sql(query))
+    return found - ctes
+
+
+def check_view_query(query) -> list[str]:
+    """Problems with a view query (empty list = safe to render).
+
+    It must parse as exactly one SELECT (set operations and plain CTEs are fine) with no INTO, no
+    locking clause and no data-modifying statement anywhere inside it.
+    """
+    import pglast
+    from pglast import ast
+    from pglast.visitors import Visitor
+
+    if not isinstance(query, str) or not query.strip():
+        return ["view query must be non-empty text"]
+    if len(query) > MAX_VIEW_LEN:
+        return [f"view query is longer than {MAX_VIEW_LEN} characters"]
+    try:
+        parsed = pglast.parse_sql(query)
+    except pglast.parser.ParseError as exc:
+        return [f"view query does not parse: {exc}"]
+    if len(parsed) != 1 or not isinstance(parsed[0].stmt, ast.SelectStmt):
+        return ["view query must be exactly one SELECT statement"]
+    problems: list[str] = []
+
+    class V(Visitor):
+        def visit_SelectStmt(self, ancestors, node):
+            if node.intoClause is not None:
+                problems.append("view query must not use SELECT ... INTO")
+
+        def visit_LockingClause(self, ancestors, node):
+            problems.append("view query must not use FOR UPDATE / FOR SHARE")
+
+        def _write(self, ancestors, node):
+            problems.append("view query must not contain INSERT, UPDATE, DELETE or MERGE")
+
+        visit_InsertStmt = visit_UpdateStmt = visit_DeleteStmt = visit_MergeStmt = _write
+
+    V()(parsed)
+    return sorted(set(problems))
+
+
 def _ident(v, what: str, errs: list[str], where: str) -> None:
     if not isinstance(v, str) or not IDENT_RE.fullmatch(v):
         errs.append(f"{where}: {what} must be an identifier (letters, digits, underscore or hyphen; max 63 chars)")
 
 
-def _check_column(col, errs: list[str], where: str, *, allow_references: bool = True) -> None:
+def _check_default(d, errs: list[str], where: str) -> None:
+    if isinstance(d, str) and d in DEFAULT_FUNCS:
+        return
+    if not isinstance(d, SCALAR):
+        errs.append(f"{where}: default must be a JSON scalar or one of {sorted(DEFAULT_FUNCS)}")
+
+
+def _check_column(col, errs: list[str], where: str, *, allow_references: bool = True, allow_enum: bool = True) -> None:
     if not isinstance(col, dict):
         errs.append(f"{where}: column must be an object")
         return
@@ -89,17 +172,13 @@ def _check_column(col, errs: list[str], where: str, *, allow_references: bool = 
         errs.append(f"{where}: unknown column keys {sorted(unknown)}")
     _ident(col.get("name"), "column name", errs, where)
     t = col.get("type")
-    if not isinstance(t, str) or not TYPE_RE.fullmatch(normalize_type(t)):
+    if not (type_shape_ok(t) if allow_enum else isinstance(t, str) and TYPE_RE.fullmatch(normalize_type(t))):
         errs.append(f"{where}: unsupported type {t!r}")
     for flag in ("nullable", "unique", "primary_key", "identity"):
         if flag in col and not isinstance(col[flag], bool):
             errs.append(f"{where}: {flag} must be true or false")
     if "default" in col:
-        d = col["default"]
-        if isinstance(d, str) and d in DEFAULT_FUNCS:
-            pass
-        elif not isinstance(d, SCALAR):
-            errs.append(f"{where}: default must be a JSON scalar or one of {sorted(DEFAULT_FUNCS)}")
+        _check_default(col["default"], errs, where)
     if "comment" in col and not isinstance(col["comment"], str):
         errs.append(f"{where}: comment must be text")
     ref = col.get("references")
@@ -289,6 +368,11 @@ def _check_cols_list(cols, errs: list[str], where: str) -> None:
         _ident(c, "column", errs, where)
 
 
+def _enum_value(v, errs: list[str], where: str) -> None:
+    if not isinstance(v, str) or not v or len(v.encode("utf-8")) > MAX_ENUM_VALUE_BYTES:
+        errs.append(f"{where}: each enum value must be non-empty text of at most {MAX_ENUM_VALUE_BYTES} bytes")
+
+
 def _reason(op, errs, where):
     r = op.get("reason")
     if not isinstance(r, str) or len(r.strip()) < 3:
@@ -339,6 +423,13 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
                 errs.append(f"{where}: {msg}")
             if "comment" in op and not isinstance(op["comment"], str):
                 errs.append(f"{where}: comment must be text")
+        elif kind == "move_table":
+            keys("table", "from_schema", "to_schema")
+            _ident(op.get("table"), "table", errs, where)
+            for key in ("from_schema", "to_schema"):
+                msg = valid_schema_name(op.get(key)) if op.get(key) != "master" else None
+                if msg:
+                    errs.append(f"{where}: {key}: {msg}")
         elif kind == "rename_schema":
             keys("schema", "new_name")
             for key in ("schema", "new_name"):
@@ -368,8 +459,49 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
             keys("table", "column", "type")
             _ident(op.get("table"), "table", errs, where)
             _ident(op.get("column"), "column", errs, where)
-            if not isinstance(op.get("type"), str) or not TYPE_RE.fullmatch(normalize_type(op["type"])):
+            if not type_shape_ok(op.get("type")):
                 errs.append(f"{where}: unsupported type {op.get('type')!r}")
+        elif kind in ("set_column_default", "drop_column_default", "set_not_null", "drop_not_null"):
+            keys("table", "column", *(["default"] if kind == "set_column_default" else []))
+            _ident(op.get("table"), "table", errs, where)
+            _ident(op.get("column"), "column", errs, where)
+            if kind == "set_column_default":
+                if "default" not in op:
+                    errs.append(f"{where}: default is required")
+                else:
+                    _check_default(op["default"], errs, where)
+        elif kind == "create_view":
+            keys("name", "query", "comment")
+            _ident(op.get("name"), "view name", errs, where)
+            errs.extend(f"{where}: {p}" for p in check_view_query(op.get("query")))
+            if "comment" in op and not isinstance(op["comment"], str):
+                errs.append(f"{where}: comment must be text")
+        elif kind == "create_enum":
+            keys("name", "values")
+            if not isinstance(op.get("name"), str) or not ENUM_NAME_RE.match(op["name"]):
+                errs.append(f"{where}: enum name must match ^[a-z][a-z0-9_]{{0,62}}$")
+            vals = op.get("values")
+            if not isinstance(vals, list) or not vals:
+                errs.append(f"{where}: values must be a non-empty list")
+            else:
+                if len(vals) > MAX_ENUM_VALUES:
+                    errs.append(f"{where}: at most {MAX_ENUM_VALUES} values")
+                if len(vals) != len(set(map(str, vals))):
+                    errs.append(f"{where}: values must be unique")
+                for v in vals:
+                    _enum_value(v, errs, where)
+        elif kind == "add_enum_value":
+            keys("name", "value")
+            _ident(op.get("name"), "enum name", errs, where)
+            _enum_value(op.get("value"), errs, where)
+        elif kind == "drop_enum":
+            keys("name", "reason")
+            _ident(op.get("name"), "enum name", errs, where)
+            _reason(op, errs, where)
+        elif kind == "drop_view":
+            keys("name", "reason")
+            _ident(op.get("name"), "view name", errs, where)
+            _reason(op, errs, where)
         elif kind == "set_column_comment":
             keys("table", "column", "comment")
             _ident(op.get("table"), "table", errs, where)
@@ -481,6 +613,31 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
             _ident(op.get("table"), "table", errs, where)
             _check_where(op.get("where"), errs, where)
             _check_values(op.get("set"), errs, where, "set")
+        elif kind == "upsert_rows":
+            keys("table", "key", "columns", "rows")
+            _ident(op.get("table"), "table", errs, where)
+            _check_cols_list(op.get("key"), errs, where)
+            _check_cols_list(op.get("columns"), errs, where)
+            key, cols_ = op.get("key"), op.get("columns")
+            if isinstance(key, list) and isinstance(cols_, list) and set(key) & set(cols_):
+                errs.append(f"{where}: columns must not contain a key column (they are what is overwritten)")
+            rows_ = op.get("rows")
+            if not isinstance(rows_, list) or not rows_:
+                errs.append(f"{where}: rows must be a non-empty list")
+            else:
+                for r in rows_:
+                    _check_values(r, errs, where, "row")
+                    if isinstance(r, dict) and isinstance(key, list) and isinstance(cols_, list):
+                        missing = [c for c in [*key, *cols_] if c not in r]
+                        if missing:
+                            errs.append(f"{where}: every row needs the key and the overwritten columns; missing {missing}")
+                        elif any(r[c] is None for c in key):
+                            errs.append(f"{where}: key values must not be null (a null key never matches an existing row)")
+        elif kind == "delete_rows":
+            keys("table", "where", "reason")
+            _ident(op.get("table"), "table", errs, where)
+            _check_where(op.get("where"), errs, where)
+            _reason(op, errs, where)
         elif kind == "deactivate_rows":
             keys("table", "where")
             _ident(op.get("table"), "table", errs, where)
@@ -492,7 +649,7 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
 
     kinds = {op.get("op") for op in raw if isinstance(op, dict)}
     if kinds & DATABASE_OPS and (len(raw) > 1):
-        errs.append("schema operations (create_schema, rename_schema, drop_schema) must be proposed alone, "
+        errs.append("schema operations (create_schema, rename_schema, drop_schema, move_table) must be proposed alone, "
                     "one per change, not mixed with other operations")
 
     if errs:
@@ -516,6 +673,11 @@ def affected_tables(ops: list[dict]) -> list[str]:
             out.update((o["table"], o["new_name"]))
         elif o["op"] == "drop_index":
             continue  # index name only; table not known from the op
+        elif o["op"] == "create_view":
+            out.update(view_references(o["query"]))
+            continue
+        elif o["op"] in ("drop_view", "create_enum", "add_enum_value", "drop_enum"):
+            continue  # no table named by the op
         else:
             out.add(o["table"])
         if o["op"] == "add_foreign_key":

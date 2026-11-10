@@ -10,6 +10,10 @@ allow-listed ones onto gate operations (spec section 2.3):
 * ALTER TABLE ... ADD GENERATED AS IDENTITY -> identity flag on the column
 * CREATE [UNIQUE] INDEX               -> add_index
 * COMMENT ON TABLE / COLUMN           -> set_table_comment / set_column_comment
+* ALTER TABLE ... ALTER COLUMN SET/DROP DEFAULT, SET/DROP NOT NULL -> folded into the column for a table made
+  in the script, else set_column_default / drop_column_default / set_not_null / drop_not_null
+* CREATE VIEW / DROP VIEW             -> create_view / drop_view (reason "script")
+* CREATE TYPE .. AS ENUM, ALTER TYPE .. ADD VALUE -> create_enum / add_enum_value
 * COPY ... FROM stdin, INSERT ... VALUES -> a lazy RowStream per table (no op here)
 
 Harmless boilerplate (SET, set_config/setval selects, OWNER TO, CREATE SCHEMA of the
@@ -32,6 +36,7 @@ from typing import Callable, Iterator
 import pglast
 from pglast import ast, enums
 from pglast.stream import RawStream
+from pglast.visitors import Visitor
 
 from scripts.copyparse import RowStreamError, ScriptIssue, iter_copy_rows  # noqa: F401 (re-exported)
 from scripts.copyparse import excerpt as _excerpt, iter_lines as _iter_lines
@@ -431,6 +436,10 @@ class _Translator:
         self.fks: list[dict] = []
         self.indexes: list[dict] = []
         self.comments: list[dict] = []
+        self.enums: set[str] = set()      # enum types made earlier in the script
+        self.enum_ops: list[dict] = []    # create_enum / add_enum_value, script order
+        self.alters: list[dict] = []      # column ops on tables the script does not create
+        self.view_ops: list[dict] = []    # create_view / drop_view, script order
         self.stream_cols: dict[str, list[str]] = {}
         self.stream_src: dict[str, list[Callable[[], Iterator[list[str | None]]]]] = {}
         self.stream_lines: dict[str, list[Callable[[], Iterator[int]]]] = {}
@@ -592,7 +601,7 @@ class _Translator:
     def _column_def(self, table: str, cd: ast.ColumnDef, actions: list) -> dict:
         if cd.collClause or cd.raw_default or cd.cooked_default or cd.fdwoptions or cd.compression:
             raise _Reject("COLLATE / compression / options are not supported")
-        typ, serial = _map_type(cd.typeName)
+        typ, serial = self._enum_type(cd.typeName) or _map_type(cd.typeName)
         col: dict = {"name": _ident(cd.colname, "column name"), "type": typ}
         if serial:
             col["identity"] = True
@@ -643,15 +652,118 @@ class _Translator:
                 col = self._column(self._script_table(table, "ADD GENERATED AS IDENTITY"),
                                    _ident(cmd.name, "column"))
                 actions.append(lambda col=col: col.update(identity=True))
+            elif cmd.subtype in (_AT.AT_ColumnDefault, _AT.AT_SetNotNull, _AT.AT_DropNotNull):
+                self._column_alter(table, cmd, actions)
             else:
                 what = cmd.subtype.name.removeprefix("AT_")
                 raise _Reject(f"ALTER TABLE {what} is not supported (allowed: ADD CONSTRAINT PRIMARY KEY / "
-                              "UNIQUE / FOREIGN KEY / CHECK, ADD GENERATED AS IDENTITY, OWNER TO)")
+                              "UNIQUE / FOREIGN KEY / CHECK, ADD GENERATED AS IDENTITY, ALTER COLUMN SET/DROP "
+                              "DEFAULT, ALTER COLUMN SET/DROP NOT NULL, OWNER TO)")
         if self.new_checks and table in self.tables:
             self._validate_checks([c["name"] for c in self.tables[table]["columns"]])
         for a in actions:
             a()
         return False
+
+    def _enum_type(self, tn: ast.TypeName) -> tuple[str, bool] | None:
+        """(enum name, False) when `tn` names an enum made earlier in this script, else None."""
+        names = [x.sval for x in tn.names if isinstance(x, ast.String)]
+        if len(names) != len(tn.names) or not 1 <= len(names) <= 2 or tn.typmods or tn.arrayBounds or tn.setof:
+            return None
+        if names[-1] not in self.enums or (len(names) == 2 and names[0] == "pg_catalog"):
+            return None
+        if len(names) == 2:
+            self._schema(names[0])
+        return names[-1], False
+
+    def _column_alter(self, table: str, cmd: ast.AlterTableCmd, actions: list) -> None:
+        column = _ident(cmd.name, "column")
+        kind = cmd.subtype
+        if kind == _AT.AT_ColumnDefault:
+            default = _map_default(cmd.def_) if cmd.def_ is not None else None
+            op = ({"op": "set_column_default", "table": table, "column": column, "default": default}
+                  if cmd.def_ is not None else {"op": "drop_column_default", "table": table, "column": column})
+        else:
+            op = {"op": "set_not_null" if kind == _AT.AT_SetNotNull else "drop_not_null",
+                  "table": table, "column": column}
+        t = self.tables.get(table)
+        if t is None:
+            actions.append(lambda op=op: self.alters.append(op))
+            return
+        c = self._column(t, column)
+
+        def fold(c=c, op=op):
+            if op["op"] == "set_column_default":
+                c["default"] = op["default"]
+            elif op["op"] == "drop_column_default":
+                c.pop("default", None)
+            else:
+                c["nullable"] = op["op"] == "drop_not_null"
+        actions.append(fold)
+
+    def create_enum(self, s: ast.CreateEnumStmt) -> None:
+        names = [x.sval for x in s.typeName if isinstance(x, ast.String)]
+        [name] = self._qualified(names, 1)
+        if name in self.enums:
+            raise _Reject(f"type {name!r} is created twice")
+        values = [x.sval for x in s.vals or ()]
+        self.enum_ops.append({"op": "create_enum", "name": name, "values": values})
+        self.enums.add(name)
+
+    def alter_enum(self, s: ast.AlterEnumStmt) -> None:
+        if s.oldVal is not None or not s.newVal:
+            raise _Reject("ALTER TYPE ... RENAME VALUE / RENAME TO is not supported (only ADD VALUE 'x')")
+        if s.newValNeighbor:
+            raise _Reject("ALTER TYPE ... ADD VALUE ... BEFORE / AFTER is not supported (new values go last)")
+        if s.skipIfNewValExists:
+            raise _Reject("ALTER TYPE ... ADD VALUE IF NOT EXISTS is not supported")
+        names = [x.sval for x in s.typeName if isinstance(x, ast.String)]
+        [name] = self._qualified(names, 1)
+        self.enum_ops.append({"op": "add_enum_value", "name": name, "value": s.newVal})
+
+    def create_view(self, s: ast.ViewStmt) -> None:
+        if s.replace:
+            raise _Reject("CREATE OR REPLACE VIEW is not supported (drop the view, then create it)")
+        if s.aliases:
+            raise _Reject("CREATE VIEW with a column list is not supported (name the columns in the SELECT)")
+        if s.options:
+            raise _Reject("CREATE VIEW with options is not supported")
+        if s.withCheckOption != enums.ViewCheckOption.NO_CHECK_OPTION:
+            raise _Reject("CREATE VIEW ... WITH CHECK OPTION is not supported")
+        name = self._rel(s.view)       # also refuses temporary views
+        self_ = self
+
+        class Unqualify(Visitor):
+            def visit_RangeVar(self, ancestors, node):  # noqa: N802 - pglast visitor naming
+                if node.schemaname:
+                    self_._schema(node.schemaname)
+                    node.schemaname = None
+
+            def _strip(self, names):
+                parts = [x.sval for x in names if isinstance(x, ast.String)]
+                if len(parts) == 2 and parts[0] != "pg_catalog":
+                    self_._schema(parts[0])
+                    return (ast.String(sval=parts[1]),)
+                return names
+
+            def visit_TypeName(self, ancestors, node):  # noqa: N802
+                node.names = self._strip(node.names)
+
+            def visit_FuncCall(self, ancestors, node):  # noqa: N802
+                node.funcname = self._strip(node.funcname)
+
+        Unqualify()(s.query)
+        self.view_ops.append({"op": "create_view", "name": name, "query": _sql(s.query)})
+
+    def drop_view(self, s: ast.DropStmt) -> None:
+        if s.missing_ok:
+            raise _Reject("DROP VIEW IF EXISTS is not supported")
+        if s.behavior == enums.DropBehavior.DROP_CASCADE:
+            raise _Reject("DROP VIEW ... CASCADE is not supported")
+        for obj in s.objects:
+            names = [x.sval for x in obj if isinstance(x, ast.String)]
+            [name] = self._qualified(names, 1)
+            self.view_ops.append({"op": "drop_view", "name": name, "reason": "script"})
 
     def create_index(self, s: ast.IndexStmt) -> None:
         table = self._rel(s.relation)
@@ -908,6 +1020,14 @@ class _Translator:
             self.create_index(s)
         elif isinstance(s, ast.CommentStmt):
             return self.comment(s)
+        elif isinstance(s, ast.CreateEnumStmt):
+            self.create_enum(s)
+        elif isinstance(s, ast.AlterEnumStmt):
+            self.alter_enum(s)
+        elif isinstance(s, ast.ViewStmt):
+            self.create_view(s)
+        elif isinstance(s, ast.DropStmt) and s.removeType == _OBJ.OBJECT_VIEW:
+            self.drop_view(s)
         elif isinstance(s, ast.CopyStmt):
             self.copy(s, piece.data)
         elif isinstance(s, ast.InsertStmt):
@@ -918,7 +1038,8 @@ class _Translator:
         else:
             words = " ".join(piece.text.split()[:2]).rstrip(";").upper()
             raise _Reject(f"{words} is not allowed in a script (allowed: CREATE TABLE, ALTER TABLE ... ADD "
-                          "CONSTRAINT, CREATE INDEX, COMMENT ON TABLE/COLUMN, COPY ... FROM stdin, "
+                          "CONSTRAINT / ALTER COLUMN, CREATE INDEX, COMMENT ON TABLE/COLUMN, CREATE / DROP VIEW, "
+                          "CREATE TYPE ... AS ENUM, ALTER TYPE ... ADD VALUE, COPY ... FROM stdin, "
                           "INSERT ... VALUES)")
         return False
 
@@ -1024,8 +1145,8 @@ class _Translator:
         unique_idx = [o for o in self.indexes if o.get("unique")]
         plain_idx = [o for o in self.indexes if not o.get("unique")]
         # unique constraints and unique indexes before foreign keys, which may reference them
-        self.out.ops = ([self.tables[t] for t in done] + self.uniques + unique_idx + self.checks + self.fks
-                        + plain_idx + self.comments)
+        self.out.ops = (self.enum_ops + [self.tables[t] for t in done] + self.uniques + unique_idx + self.checks
+                        + self.fks + plain_idx + self.comments + self.alters + self.view_ops)
         for table, cols in self.stream_cols.items():
             srcs, lines = self.stream_src[table], self.stream_lines[table]
             self.out.streams[table] = RowStream(

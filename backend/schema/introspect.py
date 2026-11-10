@@ -5,6 +5,7 @@ import hashlib
 import json
 
 from gate.operations import normalize_type
+from gate.state import State
 
 from .conn import ro_connection
 
@@ -102,6 +103,54 @@ JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = con.conkey[1]
 WHERE con.contype IN ('p', 'u') AND cardinality(con.conkey) = 1
 """
 
+KEYS_SQL = """
+SELECT c.relname AS table_name, con.conname AS name, array_agg(a.attname ORDER BY k.ord) AS cols
+FROM pg_constraint con
+JOIN pg_class c ON c.oid = con.conrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = %(schema)s
+JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) ON true
+JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
+WHERE con.contype IN ('p', 'u')
+GROUP BY c.relname, con.conname
+"""
+
+UNIQUE_INDEXES_SQL = """
+SELECT c.relname AS table_name, i.relname AS name, array_agg(a.attname ORDER BY k.ord) AS cols
+FROM pg_index x
+JOIN pg_class c ON c.oid = x.indrelid
+JOIN pg_class i ON i.oid = x.indexrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = %(schema)s
+JOIN LATERAL unnest(x.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord) ON true
+JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
+WHERE x.indisunique AND NOT x.indisprimary AND x.indexprs IS NULL AND x.indpred IS NULL
+  AND NOT EXISTS (SELECT 1 FROM pg_constraint con WHERE con.conindid = x.indexrelid)
+GROUP BY c.relname, i.relname
+"""
+
+ENUMS_SQL = """
+SELECT t.typname AS name, e.enumlabel AS label
+FROM pg_type t
+JOIN pg_namespace n ON n.oid = t.typnamespace AND n.nspname = %(schema)s
+JOIN pg_enum e ON e.enumtypid = t.oid
+ORDER BY t.typname, e.enumsortorder
+"""
+
+VIEWS_SQL = """
+SELECT c.relname AS name, pg_get_viewdef(c.oid) AS query, obj_description(c.oid) AS comment
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = %(schema)s
+WHERE c.relkind = 'v' ORDER BY c.relname
+"""
+
+VIEW_TABLES_SQL = """
+SELECT DISTINCT v.relname AS view_name, t.relname AS table_name
+FROM pg_rewrite r
+JOIN pg_class v ON v.oid = r.ev_class AND v.relkind = 'v'
+JOIN pg_namespace n ON n.oid = v.relnamespace AND n.nspname = %(schema)s
+JOIN pg_depend d ON d.objid = r.oid AND d.classid = 'pg_rewrite'::regclass AND d.refclassid = 'pg_class'::regclass
+JOIN pg_class t ON t.oid = d.refobjid AND t.oid <> v.oid
+JOIN pg_namespace tn ON tn.oid = t.relnamespace AND tn.nspname = %(schema)s
+"""
+
 CONSTRAINT_KINDS = {"p": "primary_key", "u": "unique", "f": "foreign_key", "c": "check"}
 
 
@@ -123,17 +172,18 @@ def external_state(state: dict | None = None, schema: str = "master") -> dict:
     return out
 
 
-def snapshot(schema: str = "master") -> dict:
-    """State dict for the gate: {table: {columns, indexes, constraints}}."""
+def snapshot(schema: str = "master") -> State:
+    """State for the gate: {table: {columns, indexes, constraints, pk, comment, keys, key_names, links}}
+    with `.views` and `.enums` for the schema's views and enum types."""
     require_managed(schema)
-    st: dict = {}
+    st = State()
     with ro_connection() as conn:
         for r in conn.execute(TABLES_SQL, {"schema": schema}):
             st[r["name"]] = {"columns": {}, "indexes": set(), "constraints": set(), "pk": None,
                              "comment": r["comment"]}
         for r in conn.execute(COLUMNS_SQL, {"schema": schema}):
             st[r["table_name"]]["columns"][r["column_name"]] = {
-                "type": normalize_type(r["type"]), "nullable": r["nullable"],
+                "type": normalize_type(r["type"]), "nullable": r["nullable"], "default": r["default"],
             }
         for r in conn.execute(CONSTRAINTS_SQL, {"schema": schema}):
             st[r["table_name"]]["constraints"].add(r["name"])
@@ -141,7 +191,40 @@ def snapshot(schema: str = "master") -> dict:
             st[r["table_name"]]["indexes"].add(r["name"])
         for r in conn.execute(PK_SQL, {"schema": schema}):
             st[r["table_name"]]["pk"] = r["column_name"]
+        for t in st.values():
+            t["keys"], t["key_names"], t["links"] = set(), {}, set()
+        for sql_ in (KEYS_SQL, UNIQUE_INDEXES_SQL):
+            for r in conn.execute(sql_, {"schema": schema}):
+                key = frozenset(r["cols"])
+                st[r["table_name"]]["keys"].add(key)
+                st[r["table_name"]]["key_names"][r["name"]] = key
+        for r in conn.execute(FK_SQL, {"schema": schema}):
+            a, b = r["from_table"], r["to_table"]
+            if a != b:
+                st[a]["links"].add(b)
+                st[b]["links"].add(a)
+        for r in conn.execute(ENUMS_SQL, {"schema": schema}):
+            st.enums.setdefault(r["name"], []).append(r["label"])
+        for t in st.values():       # format_type qualifies enum names that are not on the search path
+            for c in t["columns"].values():
+                bare = c["type"].removeprefix(f"{schema}.")
+                if bare in st.enums:
+                    c["type"] = bare
+        for r in conn.execute(VIEWS_SQL, {"schema": schema}):
+            st.views[r["name"]] = {"query": r["query"], "tables": set()}
+        for r in conn.execute(VIEW_TABLES_SQL, {"schema": schema}):
+            st.views[r["view_name"]]["tables"].add(r["table_name"])
     return st
+
+
+def count_where(table: str, where: dict, schema: str = "master") -> int:
+    """How many rows of `table` match `where` (same grammar as update_rows). Read-only."""
+    from psycopg import sql
+    from gate import sqlgen
+    require_managed(schema)
+    q = sql.SQL("SELECT count(*) AS n FROM {} WHERE {}").format(sqlgen.tbl(table, schema), sqlgen._where(where))
+    with ro_connection() as conn:
+        return int(conn.execute(q).fetchone()["n"])
 
 
 def list_tables(schema: str = "master") -> list[dict]:
@@ -151,6 +234,21 @@ def list_tables(schema: str = "master") -> list[dict]:
             {"name": r["name"], "comment": r["comment"], "rowEstimate": r["row_estimate"]}
             for r in conn.execute(TABLES_SQL, {"schema": schema})
         ]
+
+
+def list_views(schema: str = "master") -> list[dict]:
+    require_managed(schema)
+    with ro_connection() as conn:
+        return [{"name": r["name"], "comment": r["comment"]} for r in conn.execute(VIEWS_SQL, {"schema": schema})]
+
+
+def list_enums(schema: str = "master") -> list[dict]:
+    require_managed(schema)
+    out: dict[str, list[str]] = {}
+    with ro_connection() as conn:
+        for r in conn.execute(ENUMS_SQL, {"schema": schema}):
+            out.setdefault(r["name"], []).append(r["label"])
+    return [{"name": n, "values": v} for n, v in out.items()]
 
 
 def describe_table(name: str, schema: str = "master") -> dict | None:

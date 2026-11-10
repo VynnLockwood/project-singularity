@@ -14,10 +14,10 @@ from psycopg import sql
 
 from gate import sqlgen
 from gate.conventions import Conventions
-from gate.state import fk_name, index_name, pk_of, role_of, unique_name
+from gate.state import enums_of, fk_name, index_name, pk_of, role_of, unique_name
 
 from .conn import rw_connection
-from .util import jsonable, pg_type_to_allowed
+from .util import jsonable, pg_default_to_allowed, pg_type_to_allowed
 
 
 class ApplyError(Exception):
@@ -78,6 +78,17 @@ def _col_comment(conn, table: str, column: str, schema: str) -> str:
         (schema, table, column),
     ).fetchone()
     return (row["c"] if row else None) or ""
+
+
+def _col_default(conn, table: str, column: str, schema: str) -> tuple[str | None, str]:
+    """(default expression or None, column type) as the database has them."""
+    row = conn.execute(
+        "SELECT pg_get_expr(d.adbin, d.adrelid) AS e, format_type(a.atttypid, a.atttypmod) AS t FROM pg_attribute a "
+        "LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum "
+        "WHERE a.attrelid = format('%%I.%%I', %s::text, %s::text)::regclass AND a.attname = %s AND NOT a.attisdropped",
+        (schema, table, column),
+    ).fetchone()
+    return (row["e"], row["t"]) if row else (None, "")
 
 
 def _table_comment(conn, table: str, schema: str) -> str:
@@ -201,13 +212,40 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_
         return _bulk_insert(conn, op, before, actor, row_source, schema=schema)
 
     # --- capture what we need before changing anything
-    prev_type = prev_comment = rows_before = None
+    prev_type = prev_comment = rows_before = prev_default = None
     if k == "alter_column_type":
         prev_type = _col_type(conn, t, op["column"], schema)
     elif k == "set_column_comment":
         prev_comment = _col_comment(conn, t, op["column"], schema)
     elif k == "set_table_comment":
         prev_comment = _table_comment(conn, t, schema)
+    elif k in ("set_column_default", "drop_column_default"):
+        prev_default = _col_default(conn, t, op["column"], schema)
+    elif k == "set_not_null":
+        n = conn.execute(sql.SQL("SELECT count(*) AS n FROM {} WHERE {} IS NULL").format(
+            sqlgen.tbl(t, schema), sql.Identifier(op["column"]))).fetchone()["n"]
+        if n:
+            raise ApplyError(f"{n} row(s) in {t}.{op['column']} are NULL; fix or remove them first")
+    elif k == "upsert_rows":
+        if len(op["rows"]) <= max_rows:
+            existing = []
+            for row in op["rows"]:
+                old = conn.execute(sql.SQL("SELECT {} FROM {} WHERE {} FOR UPDATE").format(
+                    sql.SQL(", ").join(sql.Identifier(c) for c in op["columns"]), sqlgen.tbl(t, schema),
+                    _where_sql({c: row[c] for c in op["key"]}))).fetchone()
+                existing.append({c: jsonable(old[c]) for c in op["columns"]} if old else None)
+            rows_before = existing
+    elif k == "delete_rows":
+        n = conn.execute(sql.SQL("SELECT count(*) AS n FROM {} WHERE {}").format(
+            sqlgen.tbl(t, schema), _where_sql(op["where"]))).fetchone()["n"]
+        cascades = conn.execute(
+            "SELECT 1 FROM pg_constraint WHERE contype = 'f' AND confrelid = format('%%I.%%I', %s::text, %s::text)::regclass "
+            "AND confdeltype IN ('c', 'n', 'd')", (schema, t)).fetchone()
+        if n and n <= max_rows and not cascades:   # a cascade also removes other tables' rows: not restorable
+            cols = list(before[t]["columns"])
+            rows_before = [{c: jsonable(r[c]) for c in cols} for r in conn.execute(
+                sql.SQL("SELECT {} FROM {} WHERE {} FOR UPDATE").format(
+                    sql.SQL(", ").join(sql.Identifier(c) for c in cols), sqlgen.tbl(t, schema), _where_sql(op["where"]))).fetchall()]
     elif k == "update_rows" and pk_of(before, t):
         rows_before = _before_rows(conn, t, op["where"], list(op["set"]), max_rows, pk_of(before, t), schema)
     elif k == "deactivate_rows" and pk_of(before, t):
@@ -219,12 +257,16 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_
     # --- run
     inserted_ids: list = []
     rowcount = None
+    if k == "create_view":      # the query is unqualified text: names resolve in the target schema
+        conn.execute(sql.SQL("SET LOCAL search_path TO {}").format(sql.Identifier(schema)))
     for s in stmts:
         cur = conn.execute(s.sql)
         if s.returning_id:
             inserted_ids.append(cur.fetchone()[pk_of(before, t)])
         if k in ("update_rows", "deactivate_rows"):
             rowcount = cur.rowcount
+    if k == "create_view":
+        conn.execute("RESET search_path")
     if rowcount is not None and rowcount > max_rows:
         raise ApplyError(f"operation touched {rowcount} rows (limit {max_rows})")
 
@@ -234,6 +276,8 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_
         return [{"op": "drop_schema", "schema": op["name"], "reason": "undo create"}]
     if k == "rename_schema":
         return [{"op": "rename_schema", "schema": op["new_name"], "new_name": op["schema"]}]
+    if k == "move_table":
+        return [{"op": "move_table", "table": t, "from_schema": op["to_schema"], "to_schema": op["from_schema"]}]
     if k == "drop_schema":
         return None
     if k == "create_table":
@@ -245,12 +289,49 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_
     if k == "rename_column":
         return [{"op": "rename_column", "table": t, "column": op["new_name"], "new_name": op["column"]}]
     if k == "alter_column_type":
-        allowed = pg_type_to_allowed(prev_type or "")
+        allowed = pg_type_to_allowed(prev_type or "", enums_of(before), schema)
         return [{"op": "alter_column_type", "table": t, "column": op["column"], "type": allowed}] if allowed else None
     if k == "set_column_comment":
         return [{"op": "set_column_comment", "table": t, "column": op["column"], "comment": prev_comment}]
     if k == "set_table_comment":
         return [{"op": "set_table_comment", "table": t, "comment": prev_comment}]
+    if k in ("set_column_default", "drop_column_default"):
+        ok, value = pg_default_to_allowed(*prev_default)
+        if not ok:
+            return None
+        if value is None:
+            return [{"op": "drop_column_default", "table": t, "column": op["column"]}] if k == "set_column_default" else []
+        return [{"op": "set_column_default", "table": t, "column": op["column"], "default": value}]
+    if k == "upsert_rows":
+        if rows_before is None:
+            return None
+        back: list[dict] = []
+        inserted = [r for r, old in zip(op["rows"], rows_before) if old is None]
+        for r, old in zip(op["rows"], rows_before):
+            if old is not None:
+                back.append({"op": "update_rows", "table": t, "where": {c: r[c] for c in op["key"]}, "set": old})
+        if inserted and len(op["key"]) == 1:
+            back.append({"op": "delete_rows", "table": t, "where": {op["key"][0]: [r[op["key"][0]] for r in inserted]},
+                         "reason": "undo upsert"})
+        else:
+            back += [{"op": "delete_rows", "table": t, "where": {c: r[c] for c in op["key"]}, "reason": "undo upsert"}
+                     for r in inserted]
+        return back or None
+    if k == "delete_rows":
+        return [{"op": "insert_rows", "table": t, "rows": rows_before}] if rows_before else None
+    if k == "create_enum":
+        return [{"op": "drop_enum", "name": op["name"], "reason": why}]
+    if k in ("add_enum_value", "drop_enum"):
+        return None
+    if k == "create_view":
+        return [{"op": "drop_view", "name": op["name"], "reason": why}]
+    if k == "drop_view":
+        return None
+    if k in ("set_not_null", "drop_not_null"):
+        was_nullable = before[t]["columns"][op["column"]]["nullable"]
+        if was_nullable == (k == "drop_not_null"):
+            return []          # the column was already in the state this op sets: nothing to undo
+        return [{"op": "drop_not_null" if k == "set_not_null" else "set_not_null", "table": t, "column": op["column"]}]
     if k == "add_check":
         return [{"op": "drop_constraint", "table": t, "name": op["name"], "reason": why}]
     if k == "add_index":

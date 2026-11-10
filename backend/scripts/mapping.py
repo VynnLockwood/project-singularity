@@ -51,7 +51,7 @@ from pglast import ast
 from pglast.stream import RawStream
 from pglast.visitors import Visitor
 
-from gate.operations import IDENT_RE, check_expression
+from gate.operations import IDENT_RE, check_expression, view_references
 from scripts.copyparse import RowStreamError, ScriptIssue
 from scripts.sqlparse import ParsedScript
 
@@ -101,6 +101,14 @@ class _Src:
         return next((i["columns"][0] for i in self.indexes if i.get("unique") and len(i["columns"]) == 1), None)
 
 
+# Ops the mapping does not rename or reshape: enum types, views and column ops on tables that already exist.
+# They are carried to the result as they are (enums first, then tables, then column ops, then views).
+_ENUM_OPS = ("create_enum", "add_enum_value")
+_VIEW_OPS = ("create_view", "drop_view")
+_COLUMN_OPS = ("set_column_default", "drop_column_default", "set_not_null", "drop_not_null")
+_PASS_THROUGH = _ENUM_OPS + _VIEW_OPS + _COLUMN_OPS
+
+
 def _sources(parsed: ParsedScript) -> tuple[dict[str, _Src], list[str]]:
     """Source tables in script order, and the names of tables that ops touch but the script neither
     creates nor loads (not supported with a mapping)."""
@@ -122,7 +130,7 @@ def _sources(parsed: ParsedScript) -> tuple[dict[str, _Src], list[str]]:
     foreign: list[str] = []
     for op in parsed.ops:
         kind = op["op"]
-        if kind == "create_table":
+        if kind == "create_table" or kind in _PASS_THROUGH:
             continue
         s = srcs.get(op["table"])
         if s is None or not s.created:
@@ -520,6 +528,16 @@ def apply_mapping(parsed: ParsedScript, mapping: dict, external_state: dict | No
                       "rows cannot be loaded parents first")
 
     # --- bulk loads (rows are counted only for a mapping without issues: counting reads every row)
+    # a view keeps its query as written, so it only works over tables whose names and columns are unchanged
+    for o in parsed.ops:
+        if o["op"] != "create_view":
+            continue
+        for t in sorted(view_references(o["query"]) & set(mapped)):
+            m = tables[t]
+            if (target_of[t] != t or m.get("refs") or m.get("drop")
+                    or any(tc != sc for tc, sc in m["columns"].items())):
+                bad(f"tables.{t}", f"view {o['name']} reads table {t!r}, whose mapping renames or drops columns or "
+                                   "changes its name; keep it unchanged (or leave the view out of the script)")
     if issues:
         return MappingResult([], issues)
     bulks: list[dict] = []
@@ -578,7 +596,11 @@ def apply_mapping(parsed: ParsedScript, mapping: dict, external_state: dict | No
         if key not in seen_u:
             seen_u.add(key)
             deduped.append(u)
-    ops = ([creates[n] for n in order if n in creates] + deduped + unique_idx + checks + fks + plain_idx + bulks)
+    enum_ops = [copy.deepcopy(o) for o in parsed.ops if o["op"] in _ENUM_OPS]
+    column_ops = [copy.deepcopy(o) for o in parsed.ops if o["op"] in _COLUMN_OPS]
+    view_ops = [copy.deepcopy(o) for o in parsed.ops if o["op"] in _VIEW_OPS]
+    ops = (enum_ops + [creates[n] for n in order if n in creates] + deduped + unique_idx + checks + fks + plain_idx
+           + column_ops + view_ops + bulks)
     return MappingResult(ops, [])
 
 

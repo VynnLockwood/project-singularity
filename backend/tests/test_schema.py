@@ -59,7 +59,7 @@ def test_describe_missing_table_is_none():
 def test_snapshot_matches_what_the_gate_expects():
     make_customer()
     snap = introspect.snapshot()
-    assert snap["customer"]["columns"]["customer_id"] == {"type": "integer", "nullable": False}
+    assert snap["customer"]["columns"]["customer_id"] == {"type": "integer", "nullable": False, "default": None}
     assert "customer_pkey" in snap["customer"]["constraints"]
     # A follow-up op validated against the real snapshot works
     res = check.run([{"op": "add_column", "table": "customer", "column": col("email")}], snap, RULES)

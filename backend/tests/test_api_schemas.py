@@ -237,7 +237,7 @@ def test_chat_toolspecs_include_schema_and_list_schemas():
         assert "schema" not in specs[name]["parameters"]["required"]
     d = specs["propose_change"]["description"]
     assert "create_schema{name,comment?}" in d and "rename_schema{schema,new_name}" in d and "drop_schema{schema,reason}" in d
-    assert "Schema ops go alone, in their own change; a 'database' is a Postgres schema" in d
+    assert "These go alone, in their own change; a 'database' is a Postgres schema" in d
 
 
 def test_chat_dispatch_forwards_schema(two):

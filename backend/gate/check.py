@@ -29,11 +29,44 @@ class CheckResult:
         }
 
 
-def _validate_database_ops(ops: list[dict], managed: dict[str, int], max_schemas: int) -> list[str]:
+def _validate_move(o: dict, managed: dict[str, int], states: dict[str, dict] | None) -> list[str]:
+    t, src, dst = o["table"], o["from_schema"], o["to_schema"]
+    if src == dst:
+        return ["from_schema and to_schema are the same schema"]
+    missing = [s for s in (src, dst) if s not in managed]
+    if missing:
+        return [f"schema {s!r} does not exist or is not managed" for s in missing]
+    if not states or src not in states or dst not in states:
+        return ["schema state unavailable: cannot check move_table"]
+    from .state import enums_of, views_of
+    a, b = states[src], states[dst]
+    if t not in a:
+        return [f"table {t!r} does not exist in schema {src!r}"]
+    errors = []
+    if t in b or t in views_of(b) or t in enums_of(b):
+        errors.append(f"schema {dst!r} already has a table, view or enum named {t!r}")
+    deps = sorted(v for v, d in views_of(a).items() if t in d["tables"])
+    if deps:
+        errors.append(f"view(s) {', '.join(deps)} in {src!r} depend on {t!r}; drop or recreate them first")
+    typed = sorted({c["type"] for c in a[t]["columns"].values() if c["type"] in enums_of(a)})
+    if typed:
+        errors.append(f"table {t!r} has columns of enum type {', '.join(typed)}; a type cannot cross schemas, "
+                      "so change those columns to another type first")
+    links = sorted(a[t].get("links", set()))
+    if links:
+        errors.append(f"table {t!r} has foreign keys to or from {', '.join(links)}; "
+                      "a foreign key cannot cross schemas, so drop it first")
+    return errors
+
+
+def _validate_database_ops(ops: list[dict], managed: dict[str, int], max_schemas: int,
+                           states: dict[str, dict] | None = None) -> list[str]:
     """Validate schema-level ops against the managed schemas (name -> table count)."""
     errors: list[str] = []
     for o in ops:
         kind = o["op"]
+        if kind == "move_table":
+            errors += _validate_move(o, managed, states)
         if kind == "create_schema":
             if o["name"] in managed:
                 errors.append(f"schema {o['name']!r} already exists")
@@ -65,7 +98,8 @@ def _validate_database_ops(ops: list[dict], managed: dict[str, int], max_schemas
 def run(raw_ops, schema_state: dict, rule_list: list[dict], *, actor: str | None = None,
         max_ops: int = 50, skip_rules: bool = False, allow_bulk: bool = False,
         max_script_rows: int | None = None, schema: str = "master",
-        managed_schemas: dict[str, int] | None = None, max_schemas: int = 20) -> CheckResult:
+        managed_schemas: dict[str, int] | None = None, max_schemas: int = 20,
+        schema_states: dict[str, dict] | None = None) -> CheckResult:
     """Check `raw_ops` against the current schema state and rules.
 
     skip_rules is used only for reverts, which must be able to restore an old
@@ -105,7 +139,7 @@ def run(raw_ops, schema_state: dict, rule_list: list[dict], *, actor: str | None
         if managed_schemas is None:
             errors = ["managed schema state unavailable: cannot check schema operations"]
         else:
-            errors = _validate_database_ops(ops_out, managed_schemas, max_schemas)
+            errors = _validate_database_ops(ops_out, managed_schemas, max_schemas, schema_states)
     else:
         errors, _ = state_mod.validate(ops_out, schema_state, conv)
     errors = pre_errors + errors

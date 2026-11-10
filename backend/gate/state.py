@@ -11,7 +11,28 @@ import copy
 from typing import Iterator
 
 from .conventions import Conventions
-from .operations import check_expression, normalize_type
+from .operations import TYPE_RE, check_expression, normalize_type, view_references
+
+
+class State(dict):
+    """The tables of one schema ({table: {...}}) plus its views and enum types.
+
+    A dict subclass so every loop over tables keeps working; views and enums ride along as attributes.
+    views: {name: {"query": str, "tables": set[str]}}; enums: {name: [value, ...]} in sort order.
+    """
+
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        self.views: dict[str, dict] = {}
+        self.enums: dict[str, list[str]] = {}
+
+
+def views_of(state: dict) -> dict:
+    return getattr(state, "views", {})
+
+
+def enums_of(state: dict) -> dict:
+    return getattr(state, "enums", {})
 
 
 def _trim(s: str) -> str:
@@ -73,7 +94,38 @@ def ref_column(state: dict, ref: dict, conv: Conventions | None = None, own_tabl
 
 def _col_entry(col: dict) -> dict:
     nullable = col.get("nullable", True) and not col.get("primary_key", False)
-    return {"type": normalize_type(col["type"]), "nullable": nullable}
+    return {"type": normalize_type(col["type"]), "nullable": nullable, "default": col.get("default")}
+
+
+def _add_key(t: dict, name: str, cols) -> None:
+    """Record a primary key or unique column set (under its constraint or index name)."""
+    key = frozenset(cols)
+    t.setdefault("keys", set()).add(key)
+    t.setdefault("key_names", {})[name] = key
+
+
+def _drop_key_named(t: dict, name: str) -> None:
+    key = t.get("key_names", {}).pop(name, None)
+    if key is not None and key not in t.get("key_names", {}).values():
+        t.get("keys", set()).discard(key)
+
+
+def _link(state: dict, a: str, b: str) -> None:
+    if a in state and b in state and a != b:
+        state[a].setdefault("links", set()).add(b)
+        state[b].setdefault("links", set()).add(a)
+
+
+def _unlink_all(state: dict, name: str) -> None:
+    for other in state.get(name, {}).get("links", set()):
+        if other in state:
+            state[other].get("links", set()).discard(name)
+
+
+def _need_type(t: str, state: dict, err) -> None:
+    nt = normalize_type(t)
+    if not TYPE_RE.fullmatch(nt) and nt not in enums_of(state):
+        err(f"unsupported type {t!r}: not a built-in type or an enum of this schema")
 
 
 def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str = "",
@@ -101,12 +153,16 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
         cols = {}
         constraints = set()
         pk = None
+        new: dict = {}
         for c in op["columns"]:
+            _need_type(c["type"], state, err)
             cols[c["name"]] = _col_entry(c)
             if c.get("primary_key"):
                 pk = c["name"]
+                _add_key(new, _trim(f"{name}_pkey"), [c["name"]])
             if c.get("unique"):
                 constraints.add(_trim(f"{name}_{c['name']}_key"))
+                _add_key(new, _trim(f"{name}_{c['name']}_key"), [c["name"]])
             if c.get("primary_key"):
                 constraints.add(_trim(f"{name}_pkey"))
             ref = c.get("references")
@@ -120,7 +176,11 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
                     err(f"column {c['name']} references missing column {rt}.{rc}")
                 constraints.add(fk_name(name, c["name"]))
         state[name] = {"columns": cols, "indexes": set(), "constraints": constraints, "pk": pk,
-                       "comment": op.get("comment")}
+                       "comment": op.get("comment"), "keys": new.get("keys", set()),
+                       "key_names": new.get("key_names", {}), "links": set()}
+        for c in op["columns"]:
+            if c.get("references"):
+                _link(state, name, c["references"]["table"])
         refresh_roles(state, name, conv)
 
     elif kind == "add_column":
@@ -128,6 +188,7 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
         if need_table(t):
             if c["name"] in state[t]["columns"]:
                 err(f"column {t}.{c['name']} already exists")
+            _need_type(c["type"], state, err)
             ref = c.get("references")
             if ref:
                 rt, rc = ref["table"], ref_column(state, ref)
@@ -136,10 +197,54 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
                 elif rc not in state[rt]["columns"]:
                     err(f"column {c['name']} references missing column {rt}.{rc}")
                 state[t]["constraints"].add(fk_name(t, c["name"]))
+            if ref:
+                _link(state, t, ref["table"])
             if c.get("unique"):
                 state[t]["constraints"].add(_trim(f"{t}_{c['name']}_key"))
+                _add_key(state[t], _trim(f"{t}_{c['name']}_key"), [c["name"]])
             state[t]["columns"][c["name"]] = _col_entry(c)
             refresh_roles(state, t, conv)
+
+    elif kind == "create_view":
+        n = op["name"]
+        if n in state or n in views_of(state):
+            err(f"{n!r} already exists (a table or view has that name)")
+        elif isinstance(state, State):
+            state.views[n] = {"query": op["query"], "tables": {r for r in view_references(op["query"]) if r in state}}
+
+    elif kind == "create_enum":
+        n = op["name"]
+        if n in state or n in views_of(state) or n in enums_of(state):
+            err(f"{n!r} already exists (a table, view or enum has that name)")
+        elif isinstance(state, State):
+            state.enums[n] = list(op["values"])
+
+    elif kind == "add_enum_value":
+        n, v = op["name"], op["value"]
+        if n not in enums_of(state):
+            err(f"enum {n!r} does not exist")
+        elif v in state.enums[n]:
+            err(f"enum {n!r} already has the value {v!r}")
+        else:
+            state.enums[n].append(v)
+
+    elif kind == "drop_enum":
+        n = op["name"]
+        if n not in enums_of(state):
+            err(f"enum {n!r} does not exist")
+        else:
+            users = [f"{t}.{c}" for t, v in state.items() for c, e in v["columns"].items() if e["type"] == n]
+            if users:
+                err(f"enum {n!r} is still used by {', '.join(sorted(users))}")
+            else:
+                del state.enums[n]
+
+    elif kind == "drop_view":
+        n = op["name"]
+        if n not in views_of(state):
+            err(f"view {n!r} does not exist")
+        else:
+            del state.views[n]
 
     elif kind == "rename_table":
         t, n = op["table"], op["new_name"]
@@ -148,6 +253,10 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
                 err(f"table {n!r} already exists")
             else:
                 state[n] = state.pop(t)
+                for other in state[n].get("links", set()):
+                    if other in state:
+                        state[other]["links"].discard(t)
+                        state[other]["links"].add(n)
 
     elif kind == "rename_column":
         t, c, n = op["table"], op["column"], op["new_name"]
@@ -158,15 +267,34 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
                 state[t]["columns"][n] = state[t]["columns"].pop(c)
                 if state[t].get("pk") == c:
                     state[t]["pk"] = n
+                ren = lambda k: frozenset(n if x == c else x for x in k)
+                state[t]["keys"] = {ren(k) for k in state[t].get("keys", set())}
+                state[t]["key_names"] = {nm: ren(k) for nm, k in state[t].get("key_names", {}).items()}
                 refresh_roles(state, t, conv)
 
     elif kind == "alter_column_type":
         t, c = op["table"], op["column"]
         if need_col(t, c):
+            _need_type(op["type"], state, err)
             state[t]["columns"][c]["type"] = normalize_type(op["type"])
 
     elif kind == "set_column_comment":
         need_col(op["table"], op["column"])
+
+    elif kind in ("set_column_default", "drop_column_default", "set_not_null", "drop_not_null"):
+        t, c = op["table"], op["column"]
+        if need_col(t, c):
+            entry = state[t]["columns"][c]
+            if kind == "set_column_default":
+                entry["default"] = op["default"]
+            elif kind == "drop_column_default":
+                entry["default"] = None
+            elif kind == "set_not_null":
+                entry["nullable"] = False
+            elif pk_of(state, t) == c:
+                err(f"column {t}.{c} is the primary key and cannot be made nullable")
+            else:
+                entry["nullable"] = True
 
     elif kind in ("add_index", "add_unique"):
         t = op["table"]
@@ -178,11 +306,14 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
                 if n in state[t]["constraints"]:
                     err(f"constraint {n!r} already exists")
                 state[t]["constraints"].add(n)
+                _add_key(state[t], n, op["columns"])
             else:
                 n = op.get("name") or index_name(t, op["columns"])
                 if any(n in s["indexes"] for s in state.values()):
                     err(f"index {n!r} already exists")
                 state[t]["indexes"].add(n)
+                if op.get("unique"):
+                    _add_key(state[t], n, op["columns"])
 
     elif kind == "add_foreign_key":
         t, c = op["table"], op["column"]
@@ -197,6 +328,7 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
             if n in state[t]["constraints"]:
                 err(f"constraint {n!r} already exists")
             state[t]["constraints"].add(n)
+            _link(state, t, rt)
 
     elif kind == "add_check":
         t, n = op["table"], op["name"]
@@ -215,11 +347,14 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
         t, c = op["table"], op["column"]
         if need_col(t, c):
             del state[t]["columns"][c]
+            state[t]["keys"] = {k for k in state[t].get("keys", set()) if c not in k}
+            state[t]["key_names"] = {nm: k for nm, k in state[t].get("key_names", {}).items() if c not in k}
             refresh_roles(state, t, conv)
 
     elif kind == "drop_table":
         t = op["table"]
         if need_table(t):
+            _unlink_all(state, t)
             del state[t]
 
     elif kind == "drop_index":
@@ -229,6 +364,7 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
             err(f"index {n!r} does not exist")
         else:
             state[owner]["indexes"].discard(n)
+            _drop_key_named(state[owner], n)
 
     elif kind == "drop_constraint":
         t, n = op["table"], op["name"]
@@ -236,6 +372,7 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
             if n not in state[t]["constraints"]:
                 err(f"constraint {t}.{n} does not exist")
             state[t]["constraints"].discard(n)
+            _drop_key_named(state[t], n)
 
     elif kind == "insert_rows":
         t = op["table"]
@@ -268,6 +405,21 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
         t = op["table"]
         if need_table(t):
             for k in {*op["where"], *op["set"]}:
+                need_col(t, k)
+
+    elif kind == "upsert_rows":
+        t = op["table"]
+        if need_table(t):
+            used = {*op["key"], *op["columns"], *(k for r in op["rows"] for k in r)}
+            for k in sorted(used):
+                need_col(t, k)
+            if frozenset(op["key"]) not in state[t].get("keys", set()):
+                err(f"key ({', '.join(op['key'])}) of {t} is not a primary key or unique constraint")
+
+    elif kind == "delete_rows":
+        t = op["table"]
+        if need_table(t):
+            for k in op["where"]:
                 need_col(t, k)
 
     elif kind == "deactivate_rows":
