@@ -739,6 +739,19 @@ class _Translator:
                     self_._schema(node.schemaname)
                     node.schemaname = None
 
+            def _strip(self, names):
+                parts = [x.sval for x in names if isinstance(x, ast.String)]
+                if len(parts) == 2 and parts[0] != "pg_catalog":
+                    self_._schema(parts[0])
+                    return (ast.String(sval=parts[1]),)
+                return names
+
+            def visit_TypeName(self, ancestors, node):  # noqa: N802
+                node.names = self._strip(node.names)
+
+            def visit_FuncCall(self, ancestors, node):  # noqa: N802
+                node.funcname = self._strip(node.funcname)
+
         Unqualify()(s.query)
         self.view_ops.append({"op": "create_view", "name": name, "query": _sql(s.query)})
 

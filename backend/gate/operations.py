@@ -631,6 +631,8 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
                         missing = [c for c in [*key, *cols_] if c not in r]
                         if missing:
                             errs.append(f"{where}: every row needs the key and the overwritten columns; missing {missing}")
+                        elif any(r[c] is None for c in key):
+                            errs.append(f"{where}: key values must not be null (a null key never matches an existing row)")
         elif kind == "delete_rows":
             keys("table", "where", "reason")
             _ident(op.get("table"), "table", errs, where)
@@ -671,6 +673,11 @@ def affected_tables(ops: list[dict]) -> list[str]:
             out.update((o["table"], o["new_name"]))
         elif o["op"] == "drop_index":
             continue  # index name only; table not known from the op
+        elif o["op"] == "create_view":
+            out.update(view_references(o["query"]))
+            continue
+        elif o["op"] in ("drop_view", "create_enum", "add_enum_value", "drop_enum"):
+            continue  # no table named by the op
         else:
             out.add(o["table"])
         if o["op"] == "add_foreign_key":

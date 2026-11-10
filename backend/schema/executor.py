@@ -238,7 +238,10 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_
     elif k == "delete_rows":
         n = conn.execute(sql.SQL("SELECT count(*) AS n FROM {} WHERE {}").format(
             sqlgen.tbl(t, schema), _where_sql(op["where"]))).fetchone()["n"]
-        if n and n <= max_rows:
+        cascades = conn.execute(
+            "SELECT 1 FROM pg_constraint WHERE contype = 'f' AND confrelid = format('%%I.%%I', %s::text, %s::text)::regclass "
+            "AND confdeltype IN ('c', 'n', 'd')", (schema, t)).fetchone()
+        if n and n <= max_rows and not cascades:   # a cascade also removes other tables' rows: not restorable
             cols = list(before[t]["columns"])
             rows_before = [{c: jsonable(r[c]) for c in cols} for r in conn.execute(
                 sql.SQL("SELECT {} FROM {} WHERE {} FOR UPDATE").format(
@@ -324,10 +327,11 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_
         return [{"op": "drop_view", "name": op["name"], "reason": why}]
     if k == "drop_view":
         return None
-    if k == "set_not_null":
-        return [{"op": "drop_not_null", "table": t, "column": op["column"]}]
-    if k == "drop_not_null":
-        return [{"op": "set_not_null", "table": t, "column": op["column"]}]
+    if k in ("set_not_null", "drop_not_null"):
+        was_nullable = before[t]["columns"][op["column"]]["nullable"]
+        if was_nullable == (k == "drop_not_null"):
+            return []          # the column was already in the state this op sets: nothing to undo
+        return [{"op": "drop_not_null" if k == "set_not_null" else "set_not_null", "table": t, "column": op["column"]}]
     if k == "add_check":
         return [{"op": "drop_constraint", "table": t, "name": op["name"], "reason": why}]
     if k == "add_index":

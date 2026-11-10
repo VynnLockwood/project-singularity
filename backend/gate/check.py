@@ -48,6 +48,10 @@ def _validate_move(o: dict, managed: dict[str, int], states: dict[str, dict] | N
     deps = sorted(v for v, d in views_of(a).items() if t in d["tables"])
     if deps:
         errors.append(f"view(s) {', '.join(deps)} in {src!r} depend on {t!r}; drop or recreate them first")
+    typed = sorted({c["type"] for c in a[t]["columns"].values() if c["type"] in enums_of(a)})
+    if typed:
+        errors.append(f"table {t!r} has columns of enum type {', '.join(typed)}; a type cannot cross schemas, "
+                      "so change those columns to another type first")
     links = sorted(a[t].get("links", set()))
     if links:
         errors.append(f"table {t!r} has foreign keys to or from {', '.join(links)}; "
