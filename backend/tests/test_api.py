@@ -5,6 +5,7 @@ from django.test import Client
 
 from accounts.models import Role, User
 from approvals.models import Change
+from gate.defaults import DEFAULT_RULES
 
 pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("master")]
 
@@ -173,7 +174,7 @@ def test_query_limit_is_capped_by_config(approver, monkeypatch):
 
 def test_rules_read_for_all_write_for_approvers(viewer, editor, approver):
     rules = viewer.get("/api/rules").json()["rules"]
-    assert len(rules) == 10 and rules[0]["name"] == "tableNaming"
+    assert len(rules) == len(DEFAULT_RULES) and rules[0]["name"] == "tableNaming"
     rid = rules[0]["id"]
     assert patch(editor, f"/api/rules/{rid}", {"enabled": False}).status_code == 403
     r = patch(approver, f"/api/rules/{rid}", {"params": {**rules[0]["params"], "style": "camelCase"}})

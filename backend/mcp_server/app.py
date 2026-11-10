@@ -31,7 +31,7 @@ current_user: ContextVar = ContextVar("current_user", default=None)
 
 INSTRUCTIONS = """\
 Singularity manages master-data PostgreSQL databases (each "database" is a Postgres schema; master is the default).
-Start with get_rules and list_schemas. Find things with list_tables, describe_table, search_schema, read_rows
+Start with get_rules (it has an example of every newer operation) and list_schemas. Find things with list_tables, describe_table, search_schema, read_rows
 (one table, paged) and query (one read-only SELECT).
 You never write SQL to change anything: call propose_change with structured operations. The gate checks the
 proposal against the team's rules and returns a diff. Show the diff to the user and ask for confirmation before
@@ -103,7 +103,7 @@ async def list_schemas() -> dict:
     return await run("list_schemas")
 
 
-@mcp.tool(name="list_tables", description="Tables in one database (schema, default master), with comments and row estimates. " + DB_NOTE)
+@mcp.tool(name="list_tables", description="Tables in one database (schema, default master), with comments and row estimates, plus its views and enum types. " + DB_NOTE)
 async def list_tables(schema: str = "master") -> dict:
     return await run("list_tables", schema=schema)
 
@@ -133,19 +133,8 @@ async def search_schema(query: str, limit: int | None = None, schema: str = "mas
 @mcp.tool(
     name="propose_change",
     description=(
-        "Propose structural or data changes as a list of operations (never SQL). Each is an object with an 'op': "
-        "create_table{name,columns[{name,type,nullable?,unique?,default?,comment?,references?{table,column?}}],comment?}, "
-        "add_column{table,column}, rename_table{table,new_name}, rename_column{table,column,new_name}, "
-        "alter_column_type{table,column,type}, set_column_comment{table,column,comment}, add_index{table,columns,unique?}, "
-        "add_unique{table,columns}, add_foreign_key{table,column,ref_table,ref_column?,on_delete?(restrict|cascade|set null|no action)}, "
-        "add_check{table,name,expression}, set_table_comment{table,comment}, "
-        "drop_column{table,column,reason}, drop_table{table,reason}, drop_index{name,reason}, drop_constraint{table,name,reason}, "
-        "insert_rows{table,rows[]}, update_rows{table,where{},set{}}, deactivate_rows{table,where{}}. "
-        "Schema operations: create_schema{name,comment?}, rename_schema{schema,new_name}, drop_schema{schema,reason}. "
-        "Schema ops go alone, in their own change; a 'database' is a Postgres schema. Other operations act on the `schema` argument (default master). "
-        "(bulk_insert exists but is produced by script intake only; never write it yourself, the gate refuses it.) "
-        "Types: text, integer, bigint, smallint, boolean, date, timestamptz, timestamp, uuid, jsonb, real, "
-        "double precision, numeric, numeric(p,s), varchar(n). Audit columns are added automatically. "
+        "Propose structural or data changes as a list of operations (never SQL). " + tools.OPERATIONS_HELP +
+        " Call get_rules for one example of each newer operation. "
         "Returns the checked change with a diff; nothing is applied until it is approved."
     ),
 )

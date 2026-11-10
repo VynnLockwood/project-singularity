@@ -51,6 +51,51 @@ RANK = {"viewer": 0, "editor": 1, "approver": 2}
 
 # What each newer tool is for, in the words an AI client reads. One text, used by both the MCP
 # server (mcp_server/app.py) and the web chat (chat/toolspecs.py), so the two cannot drift apart.
+# The operations the gate understands, as one text for every client that proposes changes (the MCP server's
+# propose_change and the web chat's). Edit it here only.
+OPERATIONS_HELP = (
+    "Each operation is an object with an 'op': "
+    "create_table{name,columns[{name,type,nullable?,unique?,default?,comment?,references?{table,column?}}],comment?}, "
+    "add_column{table,column}, rename_table{table,new_name}, rename_column{table,column,new_name}, "
+    "alter_column_type{table,column,type}, set_column_comment{table,column,comment}, add_index{table,columns,unique?}, "
+    "add_unique{table,columns}, add_foreign_key{table,column,ref_table,ref_column?,on_delete?(restrict|cascade|set null|no action)}, "
+    "add_check{table,name,expression}, set_table_comment{table,comment}, "
+    "set_column_default{table,column,default}, drop_column_default{table,column}, "
+    "set_not_null{table,column} (refused while the column holds NULLs), drop_not_null{table,column}, "
+    "create_view{name,query,comment?} (one read-only SELECT over this database's tables), drop_view{name,reason}, "
+    "create_enum{name,values[]} (then use the name as a column type), add_enum_value{name,value}, drop_enum{name,reason}, "
+    "drop_column{table,column,reason}, drop_table{table,reason}, drop_index{name,reason}, drop_constraint{table,name,reason}, "
+    "insert_rows{table,rows[]}, update_rows{table,where{},set{}}, deactivate_rows{table,where{}}, "
+    "delete_rows{table,where{},reason} (real deletion; prefer deactivate_rows), "
+    "upsert_rows{table,key[],columns[],rows[]} (insert, or overwrite 'columns' when the key exists; the key must be a unique key). "
+    "Database-level operations: create_schema{name,comment?}, rename_schema{schema,new_name}, drop_schema{schema,reason}, "
+    "move_table{table,from_schema,to_schema}. These go alone, in their own change; a 'database' is a Postgres schema. "
+    "Every other operation acts on the `schema` argument (default master). "
+    "(bulk_insert exists but is produced by script intake only; never write it yourself, the gate refuses it.) "
+    "Types: text, integer, bigint, smallint, boolean, date, timestamptz, timestamp, uuid, jsonb, real, "
+    "double precision, numeric, numeric(p,s), varchar(n), or the name of an enum made with create_enum. "
+    "Audit columns are added automatically."
+)
+
+# One example per newer operation, returned by get_rules so a client can copy the exact shape.
+OPERATION_EXAMPLES = {
+    "set_column_default": {"op": "set_column_default", "table": "customer", "column": "status", "default": "new"},
+    "drop_column_default": {"op": "drop_column_default", "table": "customer", "column": "status"},
+    "set_not_null": {"op": "set_not_null", "table": "customer", "column": "name"},
+    "drop_not_null": {"op": "drop_not_null", "table": "customer", "column": "name"},
+    "create_view": {"op": "create_view", "name": "active_customer", "query": "SELECT id, name FROM customer WHERE is_active",
+                    "comment": "customers still active"},
+    "drop_view": {"op": "drop_view", "name": "active_customer", "reason": "replaced by a report"},
+    "create_enum": {"op": "create_enum", "name": "customer_status", "values": ["new", "active", "closed"]},
+    "add_enum_value": {"op": "add_enum_value", "name": "customer_status", "value": "paused"},
+    "drop_enum": {"op": "drop_enum", "name": "customer_status", "reason": "no column uses it"},
+    "delete_rows": {"op": "delete_rows", "table": "customer", "where": {"code": ["C-9"]}, "reason": "created by mistake"},
+    "upsert_rows": {"op": "upsert_rows", "table": "customer", "key": ["code"], "columns": ["name"],
+                    "rows": [{"code": "C-1", "name": "Acme"}]},
+    "move_table": {"op": "move_table", "table": "customer", "from_schema": "master", "to_schema": "crm"},
+}
+
+
 DESCRIPTIONS = {
     "list_changes": (
         "History of proposed changes, newest first: pending, applied, rejected, failed or stale. Filter by status, "
@@ -119,6 +164,7 @@ def get_rules(user) -> dict:
             "Follow these rules when you design tables and columns. Rules with severity 'block' reject a "
             "change; 'warn' rules are shown to the reviewer. The gate checks every proposal again."
         ),
+        "operations": OPERATION_EXAMPLES,
         "rules": [
             {k: r[k] for k in ("name", "type", "severity", "description", "params")}
             for r in rule_services.active_rules() if r["enabled"]
@@ -162,7 +208,8 @@ def list_schemas(user) -> dict:
 
 def list_tables(user, schema: str = "master") -> dict:
     try:
-        return {"tables": introspect.list_tables(schema)}
+        return {"tables": introspect.list_tables(schema), "views": introspect.list_views(schema),
+                "enums": introspect.list_enums(schema)}
     except introspect.UnknownSchema as exc:
         raise ToolFailure(f"{exc} Call list_schemas to see the databases.") from exc
 

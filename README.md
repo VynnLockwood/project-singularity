@@ -51,6 +51,29 @@ Every tool states the role it needs; a client only sees the tools its user's rol
 | `list_users` | approver | People and their roles. |
 | `reindex_search` | approver | Refresh the schema search index. |
 
+## Operations the gate understands
+
+Every change is a list of these structured operations, never SQL. Each one is checked against the rules, shown
+as a diff, and applied only after approval. "Undo" says whether Revert can reverse it.
+
+| Operation | Kind | Undo |
+|---|---|---|
+| create_table, add_column, add_index, add_unique, add_foreign_key, add_check | schema | yes |
+| rename_table, rename_column, alter_column_type, set_column_comment, set_table_comment | schema | yes |
+| set_column_default, drop_column_default, set_not_null, drop_not_null | schema | yes |
+| create_view | schema | yes |
+| create_enum | schema | yes |
+| add_enum_value, drop_enum, drop_view | schema | no |
+| drop_column, drop_table, drop_index, drop_constraint | schema, needs a reason | no |
+| insert_rows, update_rows, deactivate_rows | data | yes |
+| upsert_rows | data | yes (up to the row limit) |
+| delete_rows | data, needs a reason | yes (up to the row limit) |
+| create_schema, rename_schema, move_table | database, goes alone | yes |
+| drop_schema | database, needs a reason | no |
+
+Enum type names can be used as column types once created. `get_rules` returns one example of each newer
+operation, and `list_tables` also lists a database's views and enum types.
+
 ## Data grid
 
 The Data tab edits one table at a time: server-side paging, sort and filter, reference columns as dropdowns (labelled by the target's name column), and a draft that collects your edits. **Save for approval** sends one proposal through the same rules gate as everything else: identical edits are grouped into one `update_rows`, new rows into one `insert_rows`, and removed rows are *deactivated* (`isActive = false`), never deleted. Editors approve their own data changes in the review tray. Viewers see the grid read-only.

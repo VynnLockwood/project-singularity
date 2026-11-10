@@ -8,28 +8,14 @@ from mcp_server import tools as mcp_tools
 
 D = mcp_tools.DESCRIPTIONS
 
-_OPS = (
-    "Each operation is an object with an 'op': "
-    "create_table{name,columns[{name,type,nullable?,unique?,default?,comment?,references?{table,column?}}],comment?}, "
-    "add_column{table,column}, rename_table{table,new_name}, rename_column{table,column,new_name}, "
-    "alter_column_type{table,column,type}, set_column_comment{table,column,comment}, add_index{table,columns,unique?}, "
-    "add_unique{table,columns}, add_foreign_key{table,column,ref_table,ref_column?,on_delete?(restrict|cascade|set null|no action)}, "
-    "add_check{table,name,expression}, set_table_comment{table,comment}, "
-    "drop_column{table,column,reason}, drop_table{table,reason}, drop_index{name,reason}, drop_constraint{table,name,reason}, "
-    "insert_rows{table,rows[]}, update_rows{table,where{},set{}}, deactivate_rows{table,where{}}, "
-    "create_schema{name,comment?}, rename_schema{schema,new_name}, drop_schema{schema,reason}. "
-    "Schema ops go alone, in their own change; a 'database' is a Postgres schema. "
-    "(bulk_insert exists but is produced by script intake only; never write it yourself, the gate refuses it.) "
-    "Types: text, integer, bigint, smallint, boolean, date, timestamptz, timestamp, uuid, jsonb, real, "
-    "double precision, numeric, numeric(p,s), varchar(n). Audit columns are added automatically."
-)
+_OPS = mcp_tools.OPERATIONS_HELP
 
 SCHEMA = {"schema": {"type": "string", "description": "the database (Postgres schema) to use; default master. See list_schemas"}}
 
 SPECS = {
     "get_rules": ("The team's database design rules. Read these before designing tables.", {}, []),
     "list_schemas": ("The databases (a 'database' is a Postgres schema) with table counts and comments. master is the default.", {}, []),
-    "list_tables": ("Tables in one database (schema, default master), with comments and row estimates.", {**SCHEMA}, []),
+    "list_tables": ("Tables, views and enum types in one database (schema, default master); tables carry comments and row estimates.", {**SCHEMA}, []),
     "describe_table": ("Columns, types, constraints and indexes of one table.",
                        {"table": {"type": "string"}, **SCHEMA}, ["table"]),
     "query": ("Run one read-only SELECT against one database (schema, default master). Row-limited.",

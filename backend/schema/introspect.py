@@ -236,6 +236,21 @@ def list_tables(schema: str = "master") -> list[dict]:
         ]
 
 
+def list_views(schema: str = "master") -> list[dict]:
+    require_managed(schema)
+    with ro_connection() as conn:
+        return [{"name": r["name"], "comment": r["comment"]} for r in conn.execute(VIEWS_SQL, {"schema": schema})]
+
+
+def list_enums(schema: str = "master") -> list[dict]:
+    require_managed(schema)
+    out: dict[str, list[str]] = {}
+    with ro_connection() as conn:
+        for r in conn.execute(ENUMS_SQL, {"schema": schema}):
+            out.setdefault(r["name"], []).append(r["label"])
+    return [{"name": n, "values": v} for n, v in out.items()]
+
+
 def describe_table(name: str, schema: str = "master") -> dict | None:
     require_managed(schema)
     with ro_connection() as conn:
