@@ -14,6 +14,27 @@ from .conventions import Conventions
 from .operations import check_expression, normalize_type
 
 
+class State(dict):
+    """The tables of one schema ({table: {...}}) plus its views and enum types.
+
+    A dict subclass so every loop over tables keeps working; views and enums ride along as attributes.
+    views: {name: {"query": str, "tables": set[str]}}; enums: {name: [value, ...]} in sort order.
+    """
+
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        self.views: dict[str, dict] = {}
+        self.enums: dict[str, list[str]] = {}
+
+
+def views_of(state: dict) -> dict:
+    return getattr(state, "views", {})
+
+
+def enums_of(state: dict) -> dict:
+    return getattr(state, "enums", {})
+
+
 def _trim(s: str) -> str:
     return s[:63]
 
@@ -73,7 +94,32 @@ def ref_column(state: dict, ref: dict, conv: Conventions | None = None, own_tabl
 
 def _col_entry(col: dict) -> dict:
     nullable = col.get("nullable", True) and not col.get("primary_key", False)
-    return {"type": normalize_type(col["type"]), "nullable": nullable}
+    return {"type": normalize_type(col["type"]), "nullable": nullable, "default": col.get("default")}
+
+
+def _add_key(t: dict, name: str, cols) -> None:
+    """Record a primary key or unique column set (under its constraint or index name)."""
+    key = frozenset(cols)
+    t.setdefault("keys", set()).add(key)
+    t.setdefault("key_names", {})[name] = key
+
+
+def _drop_key_named(t: dict, name: str) -> None:
+    key = t.get("key_names", {}).pop(name, None)
+    if key is not None and key not in t.get("key_names", {}).values():
+        t.get("keys", set()).discard(key)
+
+
+def _link(state: dict, a: str, b: str) -> None:
+    if a in state and b in state and a != b:
+        state[a].setdefault("links", set()).add(b)
+        state[b].setdefault("links", set()).add(a)
+
+
+def _unlink_all(state: dict, name: str) -> None:
+    for other in state.get(name, {}).get("links", set()):
+        if other in state:
+            state[other].get("links", set()).discard(name)
 
 
 def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str = "",
@@ -101,12 +147,15 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
         cols = {}
         constraints = set()
         pk = None
+        new: dict = {}
         for c in op["columns"]:
             cols[c["name"]] = _col_entry(c)
             if c.get("primary_key"):
                 pk = c["name"]
+                _add_key(new, _trim(f"{name}_pkey"), [c["name"]])
             if c.get("unique"):
                 constraints.add(_trim(f"{name}_{c['name']}_key"))
+                _add_key(new, _trim(f"{name}_{c['name']}_key"), [c["name"]])
             if c.get("primary_key"):
                 constraints.add(_trim(f"{name}_pkey"))
             ref = c.get("references")
@@ -120,7 +169,11 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
                     err(f"column {c['name']} references missing column {rt}.{rc}")
                 constraints.add(fk_name(name, c["name"]))
         state[name] = {"columns": cols, "indexes": set(), "constraints": constraints, "pk": pk,
-                       "comment": op.get("comment")}
+                       "comment": op.get("comment"), "keys": new.get("keys", set()),
+                       "key_names": new.get("key_names", {}), "links": set()}
+        for c in op["columns"]:
+            if c.get("references"):
+                _link(state, name, c["references"]["table"])
         refresh_roles(state, name, conv)
 
     elif kind == "add_column":
@@ -136,8 +189,11 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
                 elif rc not in state[rt]["columns"]:
                     err(f"column {c['name']} references missing column {rt}.{rc}")
                 state[t]["constraints"].add(fk_name(t, c["name"]))
+            if ref:
+                _link(state, t, ref["table"])
             if c.get("unique"):
                 state[t]["constraints"].add(_trim(f"{t}_{c['name']}_key"))
+                _add_key(state[t], _trim(f"{t}_{c['name']}_key"), [c["name"]])
             state[t]["columns"][c["name"]] = _col_entry(c)
             refresh_roles(state, t, conv)
 
@@ -148,6 +204,10 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
                 err(f"table {n!r} already exists")
             else:
                 state[n] = state.pop(t)
+                for other in state[n].get("links", set()):
+                    if other in state:
+                        state[other]["links"].discard(t)
+                        state[other]["links"].add(n)
 
     elif kind == "rename_column":
         t, c, n = op["table"], op["column"], op["new_name"]
@@ -158,6 +218,9 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
                 state[t]["columns"][n] = state[t]["columns"].pop(c)
                 if state[t].get("pk") == c:
                     state[t]["pk"] = n
+                ren = lambda k: frozenset(n if x == c else x for x in k)
+                state[t]["keys"] = {ren(k) for k in state[t].get("keys", set())}
+                state[t]["key_names"] = {nm: ren(k) for nm, k in state[t].get("key_names", {}).items()}
                 refresh_roles(state, t, conv)
 
     elif kind == "alter_column_type":
@@ -178,11 +241,14 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
                 if n in state[t]["constraints"]:
                     err(f"constraint {n!r} already exists")
                 state[t]["constraints"].add(n)
+                _add_key(state[t], n, op["columns"])
             else:
                 n = op.get("name") or index_name(t, op["columns"])
                 if any(n in s["indexes"] for s in state.values()):
                     err(f"index {n!r} already exists")
                 state[t]["indexes"].add(n)
+                if op.get("unique"):
+                    _add_key(state[t], n, op["columns"])
 
     elif kind == "add_foreign_key":
         t, c = op["table"], op["column"]
@@ -197,6 +263,7 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
             if n in state[t]["constraints"]:
                 err(f"constraint {n!r} already exists")
             state[t]["constraints"].add(n)
+            _link(state, t, rt)
 
     elif kind == "add_check":
         t, n = op["table"], op["name"]
@@ -215,11 +282,14 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
         t, c = op["table"], op["column"]
         if need_col(t, c):
             del state[t]["columns"][c]
+            state[t]["keys"] = {k for k in state[t].get("keys", set()) if c not in k}
+            state[t]["key_names"] = {nm: k for nm, k in state[t].get("key_names", {}).items() if c not in k}
             refresh_roles(state, t, conv)
 
     elif kind == "drop_table":
         t = op["table"]
         if need_table(t):
+            _unlink_all(state, t)
             del state[t]
 
     elif kind == "drop_index":
@@ -229,6 +299,7 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
             err(f"index {n!r} does not exist")
         else:
             state[owner]["indexes"].discard(n)
+            _drop_key_named(state[owner], n)
 
     elif kind == "drop_constraint":
         t, n = op["table"], op["name"]
@@ -236,6 +307,7 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
             if n not in state[t]["constraints"]:
                 err(f"constraint {t}.{n} does not exist")
             state[t]["constraints"].discard(n)
+            _drop_key_named(state[t], n)
 
     elif kind == "insert_rows":
         t = op["table"]

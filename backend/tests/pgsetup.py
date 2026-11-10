@@ -73,3 +73,8 @@ def wipe_master(dbname: str) -> None:
     with connect("singularity_master_rw", dbname) as rw:
         for (t,) in rw.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'master'").fetchall():
             rw.execute(f'DROP TABLE IF EXISTS master."{t}" CASCADE')
+        for (v,) in rw.execute("SELECT viewname FROM pg_views WHERE schemaname = 'master'").fetchall():
+            rw.execute(f'DROP VIEW IF EXISTS master."{v}" CASCADE')
+        for (e,) in rw.execute("SELECT t.typname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace "
+                               "WHERE n.nspname = 'master' AND t.typtype = 'e'").fetchall():
+            rw.execute(f'DROP TYPE IF EXISTS master."{e}" CASCADE')
