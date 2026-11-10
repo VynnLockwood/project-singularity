@@ -294,6 +294,8 @@ def approve(user, change_id: int) -> Change:
 
         if change.kind == "config":
             return _apply_config(change, user)
+        if change.kind == "sql":
+            return _approve_sql(change, user, cfg)
 
         is_revert = change.source == "revert"
         try:
@@ -354,6 +356,69 @@ def approve(user, change_id: int) -> Change:
         record(user, "change.applied", target=f"#{change.pk}",
                details={"kind": change.kind, "tables": change.affected_tables, "reversible": result.reverse_ops is not None})
         return change
+
+
+def _raw_statements(change: Change):
+    """The statements of a kind-sql change, parsed again from the stored text (never trusted blindly)."""
+    limits = get_config()["limits"]
+    return rawsql.parse_statements(change.operations[0]["sql"], max_bytes=limits["maxSqlBytes"],
+                                   max_statements=limits["maxSqlStatements"])
+
+
+def _approve_sql(change: Change, user, cfg) -> Change:
+    if not cfg["sql"]["enabled"]:
+        raise ChangeError("bad_state", "raw SQL is switched off (setting sql.enabled); this change cannot be applied")
+    try:
+        if introspect.schema_fingerprint(change.schema) != change.fingerprint:
+            return _mark_stale(change, user, "the database changed since this SQL was checked; re-check it")
+    except introspect.UnknownSchema:
+        return _mark_stale(change, user, f"schema {change.schema!r} no longer exists (it was renamed or dropped); propose the change again")
+    change.decided_by, change.decided_at = user, timezone.now()
+    record(user, "change.approved", target=f"#{change.pk}")
+    try:
+        path = backup_schema(change.schema, f"change-{change.pk}", cfg["backups"]["retentionDays"])
+    except BackupError as exc:
+        return _fail(change, user, f"backup failed, nothing was changed: {exc}")
+    record(user, "backup.created", target=path.name)
+    try:
+        rawsql.run_in_transaction(_raw_statements(change), change.schema)
+    except rawsql.RawSqlError as exc:
+        return _fail(change, user, exc.message)
+    change.status = Change.Status.APPLIED
+    change.applied_at = timezone.now()
+    change.reverse_operations = None
+    change.error = ""
+    change.save()
+    record(user, "change.applied", target=f"#{change.pk}",
+           details={"kind": "sql", "sql": change.operations[0]["sql"], "backup": path.name, "reversible": False})
+    return change
+
+
+def _recheck_sql(change: Change, user) -> Change:
+    try:
+        statements = _raw_statements(change)
+        diff = rawsql.dry_run(statements, change.schema)
+        violations = [{"rule": "rawSql", "severity": "warn", "message": RAW_SQL_WARNING, "op_index": None, "suggestion": None},
+                      *rawsql.warnings_for(statements, change.schema)]
+        change.fingerprint = introspect.schema_fingerprint(change.schema)
+    except introspect.UnknownSchema:
+        return _mark_stale(change, user, f"schema {change.schema!r} no longer exists (it was renamed or dropped); propose the change again")
+    except rawsql.RawSqlError as exc:
+        change.check_result = {"errors": [exc.message], "violations": [], "autoAdded": []}
+        change.status = Change.Status.REJECTED
+        change.decision_note = "blocked: the SQL no longer runs"
+        change.save()
+        record(user, "change.rechecked", target=f"#{change.pk}", details={"status": change.status})
+        return change
+    change.generated_sql = [s.text for s in statements]
+    change.diff = diff
+    change.check_result = {"errors": [], "violations": violations, "autoAdded": []}
+    change.status = Change.Status.PENDING
+    change.decision_note = ""
+    change.error = ""
+    change.save()
+    record(user, "change.rechecked", target=f"#{change.pk}", details={"status": change.status})
+    return change
 
 
 def _follow_renames(change: Change) -> None:
@@ -433,6 +498,8 @@ def recheck(user, change_id: int) -> Change:
             change.save()
             record(user, "change.rechecked", target=f"#{change.pk}", details={"status": change.status})
             return change
+        if change.kind == "sql":
+            return _recheck_sql(change, user)
         is_revert = change.source == "revert"
         try:
             res = check.run(

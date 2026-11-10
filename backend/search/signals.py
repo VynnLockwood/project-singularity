@@ -9,5 +9,5 @@ from . import indexer
 
 @receiver(post_save, sender=Change)
 def schema_change_applied(sender, instance, **kwargs):
-    if instance.status == Change.Status.APPLIED and instance.kind == "schema":
+    if instance.status == Change.Status.APPLIED and instance.kind in ("schema", "sql"):
         transaction.on_commit(indexer.schedule_reindex)
