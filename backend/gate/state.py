@@ -407,6 +407,15 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
             for k in {*op["where"], *op["set"]}:
                 need_col(t, k)
 
+    elif kind == "upsert_rows":
+        t = op["table"]
+        if need_table(t):
+            used = {*op["key"], *op["columns"], *(k for r in op["rows"] for k in r)}
+            for k in sorted(used):
+                need_col(t, k)
+            if frozenset(op["key"]) not in state[t].get("keys", set()):
+                err(f"key ({', '.join(op['key'])}) of {t} is not a primary key or unique constraint")
+
     elif kind == "delete_rows":
         t = op["table"]
         if need_table(t):

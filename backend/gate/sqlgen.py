@@ -313,6 +313,23 @@ def statements_for(op: dict, state_before: dict, actor: str | None, conv: Conven
             )
         ]
 
+    if k == "upsert_rows":
+        t = op["table"]
+        by, upd = role_of(state_before, t, "created_by"), role_of(state_before, t, "updated_at")
+        out = []
+        for row in op["rows"]:
+            row = dict(row)
+            if actor and by and by not in row:
+                row[by] = actor
+            cols = list(row)
+            sets = [S("{} = EXCLUDED.{}").format(I(c), I(c)) for c in op["columns"]]
+            if upd and upd not in op["columns"]:
+                sets.append(S("{} = now()").format(I(upd)))
+            out.append(Stmt(S("INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO UPDATE SET {}").format(
+                tbl(t, schema), S(", ").join(I(c) for c in cols), S(", ").join(lit(row[c]) for c in cols),
+                S(", ").join(I(c) for c in op["key"]), S(", ").join(sets))))
+        return out
+
     if k == "delete_rows":
         return [Stmt(S("DELETE FROM {} WHERE {}").format(tbl(op["table"], schema), _where(op["where"])))]
 
@@ -411,6 +428,8 @@ def describe(op: dict) -> str:
         return f"~ bulk load {op['expected_rows']} row(s) into {op['table']} from script {op['source']['script_id']} ({op['source']['stream']})"
     if k == "update_rows":
         return f"~ update {op['table']} set {sorted(op['set'])} where {op['where']}"
+    if k == "upsert_rows":
+        return f"~ upsert {len(op['rows'])} row(s) into {op['table']} on ({', '.join(op['key'])})"
     if k == "delete_rows":
         return f"- delete rows from {op['table']} where {op['where']}  (reason: {op['reason']})"
     if k == "deactivate_rows":

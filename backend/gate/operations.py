@@ -50,7 +50,7 @@ SCHEMA_OPS = {
     "set_column_default", "drop_column_default", "set_not_null", "drop_not_null",
     "create_view", "drop_view", "create_enum", "add_enum_value", "drop_enum",
 }
-DATA_OPS = {"insert_rows", "update_rows", "deactivate_rows", "bulk_insert", "delete_rows"}
+DATA_OPS = {"insert_rows", "update_rows", "deactivate_rows", "bulk_insert", "delete_rows", "upsert_rows"}
 # Produced only by script intake; the normal propose path refuses it (see gate.check.run allow_bulk).
 INTERNAL_OPS = {"bulk_insert"}
 # Database-level ops: one per change, never mixed with table or data ops.
@@ -606,6 +606,24 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
             _ident(op.get("table"), "table", errs, where)
             _check_where(op.get("where"), errs, where)
             _check_values(op.get("set"), errs, where, "set")
+        elif kind == "upsert_rows":
+            keys("table", "key", "columns", "rows")
+            _ident(op.get("table"), "table", errs, where)
+            _check_cols_list(op.get("key"), errs, where)
+            _check_cols_list(op.get("columns"), errs, where)
+            key, cols_ = op.get("key"), op.get("columns")
+            if isinstance(key, list) and isinstance(cols_, list) and set(key) & set(cols_):
+                errs.append(f"{where}: columns must not contain a key column (they are what is overwritten)")
+            rows_ = op.get("rows")
+            if not isinstance(rows_, list) or not rows_:
+                errs.append(f"{where}: rows must be a non-empty list")
+            else:
+                for r in rows_:
+                    _check_values(r, errs, where, "row")
+                    if isinstance(r, dict) and isinstance(key, list) and isinstance(cols_, list):
+                        missing = [c for c in [*key, *cols_] if c not in r]
+                        if missing:
+                            errs.append(f"{where}: every row needs the key and the overwritten columns; missing {missing}")
         elif kind == "delete_rows":
             keys("table", "where", "reason")
             _ident(op.get("table"), "table", errs, where)

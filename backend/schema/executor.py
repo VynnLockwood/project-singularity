@@ -226,6 +226,15 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_
             sqlgen.tbl(t, schema), sql.Identifier(op["column"]))).fetchone()["n"]
         if n:
             raise ApplyError(f"{n} row(s) in {t}.{op['column']} are NULL; fix or remove them first")
+    elif k == "upsert_rows":
+        if len(op["rows"]) <= max_rows:
+            existing = []
+            for row in op["rows"]:
+                old = conn.execute(sql.SQL("SELECT {} FROM {} WHERE {} FOR UPDATE").format(
+                    sql.SQL(", ").join(sql.Identifier(c) for c in op["columns"]), sqlgen.tbl(t, schema),
+                    _where_sql({c: row[c] for c in op["key"]}))).fetchone()
+                existing.append({c: jsonable(old[c]) for c in op["columns"]} if old else None)
+            rows_before = existing
     elif k == "delete_rows":
         n = conn.execute(sql.SQL("SELECT count(*) AS n FROM {} WHERE {}").format(
             sqlgen.tbl(t, schema), _where_sql(op["where"]))).fetchone()["n"]
@@ -288,6 +297,21 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_
         if value is None:
             return [{"op": "drop_column_default", "table": t, "column": op["column"]}] if k == "set_column_default" else []
         return [{"op": "set_column_default", "table": t, "column": op["column"], "default": value}]
+    if k == "upsert_rows":
+        if rows_before is None:
+            return None
+        back: list[dict] = []
+        inserted = [r for r, old in zip(op["rows"], rows_before) if old is None]
+        for r, old in zip(op["rows"], rows_before):
+            if old is not None:
+                back.append({"op": "update_rows", "table": t, "where": {c: r[c] for c in op["key"]}, "set": old})
+        if inserted and len(op["key"]) == 1:
+            back.append({"op": "delete_rows", "table": t, "where": {op["key"][0]: [r[op["key"][0]] for r in inserted]},
+                         "reason": "undo upsert"})
+        else:
+            back += [{"op": "delete_rows", "table": t, "where": {c: r[c] for c in op["key"]}, "reason": "undo upsert"}
+                     for r in inserted]
+        return back or None
     if k == "delete_rows":
         return [{"op": "insert_rows", "table": t, "rows": rows_before}] if rows_before else None
     if k == "create_enum":
