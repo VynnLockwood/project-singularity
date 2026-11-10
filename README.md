@@ -7,11 +7,11 @@ An internal tool for designing and managing a **master data** database in Postgr
 
 ## Status
 
-Milestones 1 to 7 are done: compose stack, nginx gateway, Postgres schemas and roles, Google sign-in, roles, audit log, the rules gate, structured operations and SQL generation, the change lifecycle with approvals, backups and revert, REST API, and the MCP server. The `worker` container is a placeholder until later milestones. Milestone 7 (3D universe) turns the Schema tab into a 3D view with a 2D toggle. Milestone 6 (Rust engine) adds the Duplicates tab and column stats. Milestone 5 (grid editor) adds the Data tab. Milestone 4 (search) adds the embed service and schema search. Milestone 3 (web chat) adds the signed-in app: a chat with the assistant (OpenRouter), an Approve / Reject popup that appears live over WebSocket, a review queue, and a 2D schema diagram.
+Milestones 1 to 7 are done: compose stack, nginx gateway, Postgres schemas and roles, Google sign-in, roles, audit log, the rules gate, structured operations and SQL generation, the change lifecycle with approvals, backups and revert, REST API, and the MCP server. The `worker` container is a placeholder until later milestones. Milestone 7 (3D universe) turns the Schema tab into a 3D view with a 2D toggle. Milestone 6 (Rust engine) adds the Duplicates tab and column stats. Milestone 5 (grid editor) adds the Data tab. Milestone 4 (search) adds the embed service and schema search. Milestone 3 (web chat) adds the signed-in app: a chat with the assistant (OpenRouter), a review tray with Approve / Reject that updates live over WebSocket, a review queue, and a 2D schema diagram.
 
 ## Web chat
 
-Set `OPENROUTER_API_KEY` in `.env` (only the `api` container receives it) and manage the chat provider and models on the Settings page (approvers). `defaultModel` and `allowedModels` under `chat` in `singularity.yaml` only seed the first value; `maxToolRounds` and `messagesPerMinute` are set there too. The assistant has the same tools as an MCP client for your role, but no approve tool: the popup is the only way to approve from chat, so the model cannot approve its own proposals. Changes proposed from any source (chat, MCP client) show up live for the requester and for approvers.
+Set `OPENROUTER_API_KEY` in `.env` (only the `api` container receives it) and manage the chat provider and models on the Settings page (approvers). `defaultModel` and `allowedModels` under `chat` in `singularity.yaml` only seed the first value; `maxToolRounds` and `messagesPerMinute` are set there too. The assistant has the same tools as an MCP client for your role, but no approve tool: the review tray is the only way to approve from chat, so the model cannot approve its own proposals. Changes proposed from any source (chat, MCP client) show up live for the requester and for approvers.
 
 ## Connect an AI client (MCP)
 
@@ -27,7 +27,7 @@ The link form puts the token in the address because those connectors cannot send
 
 ## Data grid
 
-The Data tab edits one table at a time: server-side paging, sort and filter, reference columns as dropdowns (labelled by the target's name column), and a draft that collects your edits. **Save for approval** sends one proposal through the same rules gate as everything else: identical edits are grouped into one `update_rows`, new rows into one `insert_rows`, and removed rows are *deactivated* (`isActive = false`), never deleted. Editors approve their own data changes in the popup. Viewers see the grid read-only.
+The Data tab edits one table at a time: server-side paging, sort and filter, reference columns as dropdowns (labelled by the target's name column), and a draft that collects your edits. **Save for approval** sends one proposal through the same rules gate as everything else: identical edits are grouped into one `update_rows`, new rows into one `insert_rows`, and removed rows are *deactivated* (`isActive = false`), never deleted. Editors approve their own data changes in the review tray. Viewers see the grid read-only.
 
 Limits: the grid does not detect that someone else changed the same cell after you loaded the page (last approved write wins), and one save is capped by `maxOpsPerProposal` / `maxRowsPerDataOp` in `singularity.yaml`.
 
@@ -41,7 +41,7 @@ Known gaps: OAuth access tokens do not expire (revoke them in the Connect tab) a
 
 The `engine/` crate (Rust) does the heavy lifting twice from one codebase: as a Python module (PyO3) inside the backend for duplicate detection, and as WebAssembly in the browser for column statistics. Names are normalized (Unicode NFKC, Thai digits and zero-width marks, company suffixes like Co., Ltd., จำกัด), grouped by blocking keys, then scored with Jaro-Winkler, token-sorted Jaro-Winkler and bigram overlap; a group's score is its weakest link.
 
-The **Duplicates** tab scans one table at a time (`duplicates.*` in `singularity.yaml`), lists groups with their score, and shows the records side by side. Pick the record to keep and **Merge**: this is an ordinary data change that moves every foreign-key reference to the survivor and then deactivates the others, so it goes through the same rules gate and approval popup. "Not duplicates" dismisses a group and a scan will not bring it back.
+The **Duplicates** tab scans one table at a time (`duplicates.*` in `singularity.yaml`), lists groups with their score, and shows the records side by side. Pick the record to keep and **Merge**: this is an ordinary data change that moves every foreign-key reference to the survivor and then deactivates the others, so it goes through the same rules gate and approval. "Not duplicates" dismisses a group and a scan will not bring it back.
 
 The **Column stats** button in the Data tab summarises the rows on screen (distinct, empty %, min/max/mean, top values). The browser build is optional: if `frontend/public/engine/` is missing, a TypeScript implementation that passes the same golden test cases (`engine/testdata/stats_cases.json`) is used. CI builds the WASM package and uploads it as an artifact.
 
@@ -51,11 +51,25 @@ Not verified in the build sandbox: the Docker image (Rust stage), the WASM build
 
 The **Settings** tab has three sections. **Quality**: search confidence, duplicate similarity, scan caps, query and proposal limits, chat model and rate limits, backup retention. Approvers change them and they apply within seconds (stored in the database over the values in `singularity.yaml`; Reset returns to the file's value; every change is audited). **Rules**: turn each gate rule on or off, switch it between block and warn, edit its parameters, see its history and restore an older version. **Team** (approvers): set people's roles. Deploy-time things (sign-in domains, the list of allowed models, the embedding model) stay in `singularity.yaml`.
 
-**Changing settings from an AI client.** Settings, rules and roles can also be changed over MCP and in the web chat, but never directly: `get_settings` (viewer) reads them, `list_users` (approver) lists people, and `propose_config_change` (editor) proposes operations (`set_setting`, `reset_setting`, `update_rule`, `create_rule`, `set_user_role`; up to 20, not mixed with schema or data operations). The proposal is dry-run in a rolled-back transaction, then waits in the approval queue as a **Settings change**. Approvers (not the proposer) see it live in the popup and the Queue, the Settings tab shows a banner while changes are waiting, and approving applies all operations atomically. Applied settings changes can be reverted from the Queue. Approvers editing directly in the Settings tab still apply immediately (audited).
+**Changing settings from an AI client.** Settings, rules and roles can also be changed over MCP and in the web chat, but never directly: `get_settings` (viewer) reads them, `list_users` (approver) lists people, and `propose_config_change` (editor) proposes operations (`set_setting`, `reset_setting`, `update_rule`, `create_rule`, `set_user_role`; up to 20, not mixed with schema or data operations). The proposal is dry-run in a rolled-back transaction, then waits in the approval queue as a **Settings change**. Approvers (not the proposer) see it live in the review tray and Activity, the Settings tab shows a banner while changes are waiting, and approving applies all operations atomically. Applied settings changes can be reverted from the Queue. Approvers editing directly in the Settings tab still apply immediately (audited).
 
 ## Look and feel
 
 The theme is a black hole with an accretion disk. The starfield and the disk's particles (orbit, speed, colour) are generated by the Rust engine (`engine/src/cosmos.rs`, WebAssembly in the browser, TypeScript twin checked against `engine/testdata/cosmos_cases.json`); the browser only draws and animates them on a canvas behind the app. It stands still when the system asks for reduced motion.
+
+The disk also shows the state of the review queue: it spins up and brightens while changes wait for you, and flares once when a change is applied. Status colours come from the same picture: blue-white for applied, orange for waiting, deep red for rejected or failed, always next to an icon and a word.
+
+**Design system.** Every colour, type, space and motion value is a CSS variable in `frontend/app/tokens.css`; a test (`lib/contrast.test.ts`) fails if a text and background pair drops below WCAG AA. Fonts are self-hosted (Chakra Petch for titles, IBM Plex Sans and Sans Thai for text, IBM Plex Mono for SQL), so a build needs no font server. Shared parts live in `frontend/components/ui/`.
+
+**Getting around.**
+
+- A side rail groups the views (Work, Quality, Review, System). It shrinks to icons on a medium screen and becomes a bottom bar with a More sheet on a phone.
+- The address bar holds your place (`/settings`, `/data`, `/database/master/province`), so refresh, back and shared links work.
+- `Ctrl K` (`⌘ K` on a Mac) opens the command palette: jump to any view or table, or run an action. `Shift Enter` on a table opens it in Data.
+- Changes that need your decision arrive as a toast and collect in the review tray (`g` then `r`, or the Review button). The tray sits beside the page, so nothing covers your work. A change you just made opens the tray at once.
+- Loading shows on the part that loads (a thin bar on the grid, skeleton rows on first load). Nothing blocks the whole app.
+
+Screenshots: [`docs/superpowers/screens/2026-11-10/`](docs/superpowers/screens/2026-11-10/).
 
 ## Schema universe (3D)
 

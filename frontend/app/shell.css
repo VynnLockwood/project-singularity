@@ -1,0 +1,123 @@
+/* The frame around every view: background canvas, rail, top bar, main area. */
+.cosmos { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
+.shell, .center, main { position: relative; z-index: 1; }
+/* behind the app the scene is quiet; on the sign-in screen it is at full strength */
+body:has(.shell) .cosmos { opacity: 0.35; }
+
+.shell { display: grid; grid-template-columns: var(--rail-width) minmax(0, 1fr); min-height: 100vh; }
+
+.shell-skip { position: absolute; left: -9999px; top: var(--space-2); z-index: 100; padding: var(--space-2) var(--space-3); background: var(--disk); color: var(--on-disk); border-radius: var(--radius-control); font-weight: 500; text-decoration: none; }
+.shell-skip:focus { left: var(--space-2); }
+
+/* ---- rail ---- */
+.shell-rail { position: sticky; top: 0; height: 100vh; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; padding: var(--space-4) var(--space-2) var(--space-3); background: color-mix(in srgb, var(--surface-1) 90%, transparent); border-right: 1px solid var(--line); z-index: 6; }
+
+.shell-brand { display: flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-2) var(--space-3); }
+.shell-brand-name { font-family: var(--font-title); font-weight: 600; font-size: 17px; letter-spacing: 0.04em; color: var(--text-bright); }
+/* a tiny black hole: the dark body, its bright ring, and the disk seen at an angle */
+.shell-brand-mark { position: relative; flex: none; width: 18px; height: 18px; border-radius: 50%; background: var(--void); box-shadow: 0 0 0 1.5px var(--disk), 0 0 10px color-mix(in srgb, var(--disk) 60%, transparent); margin: 0 3px; }
+.shell-brand-mark::after { content: ""; position: absolute; left: -6px; right: -6px; top: 7px; height: 4px; border-radius: 50%; border: 1.5px solid var(--disk-hot); border-top-color: transparent; transform: rotate(-20deg); }
+
+.shell-nav-group { display: flex; flex-direction: column; gap: 2px; }
+.shell-nav-heading { font-size: 11px; color: var(--text-faint); padding: var(--space-3) var(--space-3) var(--space-1); }
+.shell-nav-item { position: relative; display: flex; align-items: center; gap: 10px; width: 100%; min-height: 34px; padding: 0 var(--space-3); border: 0; border-radius: var(--radius-control); background: none; color: var(--text-dim); text-align: left; transition: color var(--dur-fast), background-color var(--dur-fast); }
+.shell-nav-item:hover { color: var(--text-bright); background: var(--surface-3); }
+.shell-nav-item[aria-current="page"] { color: var(--text-bright); background: var(--surface-3); font-weight: 500; box-shadow: inset 2px 0 0 var(--disk); }
+.shell-nav-item[aria-current="page"] .ui-icon { color: var(--disk); }
+.shell-nav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shell-nav-count { min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--disk); color: var(--on-disk); font-size: 11px; font-weight: 500; line-height: 18px; text-align: center; animation: shell-pop 600ms ease-out; }
+@keyframes shell-pop { 0% { transform: scale(0.6); } 45% { transform: scale(1.25); } 100% { transform: scale(1); } }
+
+.shell-rail-foot { margin-top: auto; display: flex; flex-direction: column; gap: 2px; padding-top: var(--space-3); border-top: 1px solid var(--line); font-size: var(--size-small); }
+.shell-live { display: inline-flex; align-items: center; gap: var(--space-2); padding: 2px var(--space-3); color: var(--text-dim); }
+.shell-live[data-online="true"] .ui-icon { color: var(--blueshift); }
+.shell-live[data-online="false"] .ui-icon { color: var(--disk-hot); }
+.shell-me { padding: 0 var(--space-3); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shell-role { padding: 0 var(--space-3) var(--space-2); color: var(--text-faint); }
+.shell-signout { font-size: var(--size-text); }
+.shell-more { display: none; }
+
+/* ---- main column ---- */
+.shell-main { min-width: 0; display: flex; flex-direction: column; min-height: 100vh; }
+.shell-main > .problems { margin: var(--space-3) var(--space-5) 0; }
+.shell-top { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: var(--space-3); min-height: 52px; padding: 0 var(--space-5); border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--void) 82%, transparent); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+.shell-crumbs { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-2); list-style: none; margin: 0; padding: 0; color: var(--text-dim); white-space: nowrap; overflow: hidden; }
+.shell-crumbs li + li::before { content: "/"; color: var(--line-strong); margin-right: var(--space-2); }
+.shell-crumbs li[aria-current="location"] { font-family: var(--font-title); font-weight: 600; font-size: var(--size-title-3); color: var(--text-bright); overflow: hidden; text-overflow: ellipsis; }
+
+.shell-search, .shell-review { display: inline-flex; align-items: center; gap: var(--space-2); height: 32px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-control); background: var(--surface-1); color: var(--text-dim); transition: border-color var(--dur-fast), color var(--dur-fast); }
+.shell-search { min-width: 15rem; color: var(--text-faint); }
+.shell-search span { flex: 1; text-align: left; }
+.shell-search:hover, .shell-review:hover { border-color: var(--text-faint); color: var(--text-bright); }
+.shell-review[data-waiting="true"] { border-color: var(--disk); color: var(--text-bright); }
+
+.content { flex: 1; min-height: 0; padding: var(--space-5); }
+.content:focus-visible { outline: none; }
+
+@media (min-width: 1101px) {
+  .shell[data-tray="open"] .shell-main { padding-right: var(--tray-width); }
+}
+
+/* ---- medium: the rail keeps its icons ---- */
+@media (max-width: 1100px) {
+  .shell { grid-template-columns: 56px minmax(0, 1fr); }
+  .shell-brand { padding: 0 0 var(--space-3); justify-content: center; }
+  .shell-brand-name, .shell-me, .shell-role { display: none; }
+  .shell-nav-heading { height: 1px; padding: 0; margin: var(--space-2) var(--space-2); background: var(--line); font-size: 0; }
+  .shell-nav-group:first-of-type .shell-nav-heading { display: none; }
+  .shell-nav-item { justify-content: center; padding: 0; min-height: 38px; }
+  .shell-nav-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
+  .shell-rail .shell-nav-count { position: absolute; top: 2px; right: 2px; min-width: 16px; padding: 0 4px; line-height: 16px; font-size: 10px; }
+  .shell-live { justify-content: center; padding: var(--space-2) 0; font-size: 0; gap: 0; }
+  .shell-top { padding: 0 var(--space-4); }
+  .content { padding: var(--space-4); }
+}
+
+/* ---- phone: a bottom bar, with the rest behind More ---- */
+@media (max-width: 720px) {
+  :root:has(.shell) { --shell-bottom: 56px; }
+  .shell { grid-template-columns: minmax(0, 1fr); }
+  .shell-main { padding-bottom: var(--shell-bottom); }
+  .shell-rail { position: fixed; top: auto; left: 0; right: 0; bottom: 0; height: var(--shell-bottom); flex-direction: row; align-items: stretch; gap: 0; padding: 0 var(--space-1); border-right: 0; border-top: 1px solid var(--line-strong); background: var(--surface-1); overflow: visible; z-index: 60; }
+  .shell-brand, .shell-nav-heading, .shell-rail-foot, .shell-nav-item:not([data-primary], .shell-more) { display: none; }
+  .shell-nav-group { display: contents; }
+  .shell-nav-item { flex: 1; flex-direction: column; gap: 2px; min-height: 0; padding: 6px 0; font-size: 11px; box-shadow: none; }
+  .shell-nav-item[aria-current="page"] { background: none; box-shadow: inset 0 2px 0 var(--disk); border-radius: 0; }
+  .shell-nav-label { position: static; width: auto; height: auto; clip: auto; flex: none; }
+  .shell-rail .shell-nav-count { top: 4px; right: calc(50% - 22px); }
+  .shell-more { display: flex; }
+
+  /* the More sheet: every item, the account and sign out */
+  .shell-rail[data-more="open"] { box-shadow: 0 -32px 48px var(--void); height: auto; max-height: 85vh; flex-direction: column; gap: 2px; padding: var(--space-3) var(--space-2); overflow-y: auto; }
+  .shell-rail[data-more="open"] .shell-nav-group { display: flex; }
+  .shell-rail[data-more="open"] .shell-nav-heading { display: block; height: auto; margin: 0; padding: var(--space-3) var(--space-3) var(--space-1); background: none; font-size: 11px; }
+  .shell-rail[data-more="open"] .shell-nav-item { display: flex; flex: none; flex-direction: row; justify-content: flex-start; gap: 10px; min-height: 44px; padding: 0 var(--space-3); font-size: var(--size-text); }
+  .shell-rail[data-more="open"] .shell-nav-item[aria-current="page"] { background: var(--surface-3); box-shadow: inset 2px 0 0 var(--disk); border-radius: var(--radius-control); }
+  .shell-rail[data-more="open"] .shell-nav-label { flex: 1; }
+  .shell-rail[data-more="open"] .shell-nav-count { position: static; }
+  .shell-rail[data-more="open"] .shell-rail-foot { display: flex; margin-top: var(--space-2); }
+  .shell-rail[data-more="open"] .shell-me, .shell-rail[data-more="open"] .shell-role { display: block; }
+  .shell-rail[data-more="open"] .shell-live { justify-content: flex-start; padding: 2px var(--space-3); font-size: var(--size-small); gap: var(--space-2); }
+
+  .shell-top { padding: 0 var(--space-3); }
+  .shell-search { min-width: 0; }
+  .shell-search span, .shell-search .ui-kbd, .shell-review span:not(.shell-nav-count) { display: none; }
+  .content { padding: var(--space-3); }
+}
+
+/* ---- sign-in and standalone pages ---- */
+.signin { min-height: 100vh; display: flex; align-items: center; padding: var(--space-6) clamp(var(--space-5), 9vw, 9rem); }
+.signin-card { max-width: 30rem; display: flex; flex-direction: column; align-items: flex-start; }
+.signin-mark { width: 28px; height: 28px; margin: 0 8px var(--space-5); }
+.signin-mark::after { left: -10px; right: -10px; top: 11px; height: 6px; }
+.signin-title { margin: 0; font-size: clamp(44px, 7vw, 72px); line-height: 1; letter-spacing: 0.02em; }
+.signin-tagline { margin: var(--space-4) 0 0; font-size: 18px; color: var(--text); }
+.signin-action { min-height: 44px; margin: var(--space-6) 0 var(--space-5); display: flex; align-items: center; }
+.signin-action .ui-button { min-height: 44px; padding: 0 20px; font-size: 15px; }
+.signin-action p { margin: 0; }
+.signin-note { margin: 0; max-width: 24rem; font-size: var(--size-small); color: var(--text-dim); }
+@media (max-width: 900px) { .signin { align-items: flex-end; padding-bottom: 12vh; } }
+
+.center-panel { width: min(30rem, 100%); text-align: left; }
+.center-panel .actions { margin-top: var(--space-4); }
+@media (max-width: 900px) { .signin-mark { display: none; } }

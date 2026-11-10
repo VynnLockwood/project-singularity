@@ -4,6 +4,7 @@ const dict = {
   en: {
     appName: "Singularity",
     tagline: "Design master data with a prompt.",
+    gateLine: "Every change passes the rules gate and an approval before it reaches the database.",
     signIn: "Sign in with Google",
     signOut: "Sign out",
     signedInAs: "Signed in as",
@@ -22,6 +23,7 @@ const dict = {
   th: {
     appName: "Singularity",
     tagline: "ออกแบบข้อมูลหลักด้วยการสั่งงาน",
+    gateLine: "ทุกการเปลี่ยนแปลงต้องผ่านกฎและการอนุมัติก่อนถึงฐานข้อมูล",
     signIn: "เข้าสู่ระบบด้วย Google",
     signOut: "ออกจากระบบ",
     signedInAs: "เข้าสู่ระบบเป็น",

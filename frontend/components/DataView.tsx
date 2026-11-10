@@ -9,7 +9,7 @@ interface Props {
   live: Change[];
   refreshKey: number;
   onProposed?: (change: Change) => void;
-  onBusy: (b: boolean) => void;
+  onBusy?: (b: boolean) => void;
 }
 
 export function DataView({ me, live, refreshKey, onProposed, onBusy }: Props) {

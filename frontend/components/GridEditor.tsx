@@ -9,6 +9,7 @@ import {
   buildOperations, cellText, draftSize, emptyDraft, validate, type Draft,
 } from "@/lib/grid";
 
+import { ProgressBar, Skeleton } from "@/components/ui";
 import { ColumnStats } from "./ColumnStats";
 
 const PAGE_SIZES = [25, 50, 100, 200] as const;
@@ -20,8 +21,8 @@ interface Props {
   live: Change[];
   /** Called with the proposal once saved, so the app can show the approval popup right away. */
   onProposed?: (change: Change) => void;
-  /** Set true while a page fetch is in flight; drives the overlay in AppShell. */
-  onBusy: (b: boolean) => void;
+  /** Told when a page fetch starts and ends. The grid shows its own progress; nothing covers the app. */
+  onBusy?: (b: boolean) => void;
 }
 
 export function GridEditor({ me, table, live, onProposed, onBusy }: Props) {
@@ -42,6 +43,7 @@ export function GridEditor({ me, table, live, onProposed, onBusy }: Props) {
   const [reload, setReload] = useState(0);
   const [showStats, setShowStats] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   const appliedHere = live.filter((c) => c.status === "applied" && c.kind === "data" && c.tables.includes(table)).length;
 
@@ -59,11 +61,12 @@ export function GridEditor({ me, table, live, onProposed, onBusy }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    onBusy(true);
+    setLoading(true);
+    onBusy?.(true);
     getRows(table, { offset, limit: pageSize, sort, dir, filters: applied, inactive })
       .then((p) => { if (!cancelled) { setPage(p); setError(""); } })
       .catch((e) => { if (!cancelled) setError(e instanceof ApiError ? e.message : "Could not load rows."); })
-      .finally(() => { onBusy(false); });
+      .finally(() => { onBusy?.(false); if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [table, offset, pageSize, sort, dir, applied, inactive, reload, appliedHere]);
 
@@ -152,7 +155,7 @@ export function GridEditor({ me, table, live, onProposed, onBusy }: Props) {
   };
 
   if (error && !page) return <p className="problems" role="alert">{error}</p>;
-  if (!page) return <p className="muted">Loading…</p>;
+  if (!page) return <div role="status"><span className="sr-only">Loading…</span><Skeleton rows={8} /></div>;
 
   const last = Math.min(offset + pageSize, page.total);
   return (
@@ -185,7 +188,8 @@ export function GridEditor({ me, table, live, onProposed, onBusy }: Props) {
       {error && <p className="problems" role="alert">{error}</p>}
       {showStats && <ColumnStats columns={columns} rows={page.rows} />}
 
-      <div className="grid-scroll">
+      <ProgressBar active={loading} label="Loading rows" />
+      <div className="grid-scroll" aria-busy={loading}>
         <table className="grid">
           <thead>
             <tr>

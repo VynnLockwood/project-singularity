@@ -1,13 +1,15 @@
 import { t } from "@/lib/i18n";
+import { Button, Panel } from "@/components/ui";
 
 export default function Forbidden() {
   return (
     <main className="center">
-      <h1 className="title">{t("en", "forbiddenTitle")}</h1>
-      <p className="muted">{t("en", "forbiddenBody")}</p>
-      <a className="button" href="/">
-        {t("en", "backHome")}
-      </a>
+      <Panel title={t("en", "forbiddenTitle")} className="center-panel">
+        <p className="muted">{t("en", "forbiddenBody")}</p>
+        <div className="actions">
+          <Button href="/">{t("en", "backHome")}</Button>
+        </div>
+      </Panel>
     </main>
   );
 }

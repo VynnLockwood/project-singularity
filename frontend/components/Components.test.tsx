@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Me } from "@/lib/api";
 import { change } from "@/lib/fixtures";
-import { ApprovalPopup } from "./ApprovalPopup";
+import { ReviewTray } from "./ReviewTray";
 import { ChangeCard } from "./ChangeCard";
 import { SchemaDiagram } from "./SchemaView";
 
@@ -47,21 +47,18 @@ describe("ChangeCard", () => {
   });
 });
 
-describe("ApprovalPopup", () => {
-  it("shows nothing when there is nothing this person can decide", () => {
-    const { container } = render(<ApprovalPopup me={me("editor")} changes={[change()]} onDecide={vi.fn()} onSnooze={vi.fn()} />);
-    expect(container).toBeEmptyDOMElement();
+describe("ReviewTray", () => {
+  it("says nothing is waiting when there is nothing to decide", () => {
+    render(<ReviewTray me={me("editor")} changes={[]} open onClose={vi.fn()} onDecide={vi.fn()} deciding={null} />);
+    expect(screen.getByText("Nothing is waiting for review.")).toBeInTheDocument();
   });
 
-  it("asks about the oldest decidable change, counts the rest, and can snooze", () => {
-    const onSnooze = vi.fn();
-    const changes = [change({ id: 7 }), change({ id: 8 }), change({ id: 9, status: "applied" })];
-    render(<ApprovalPopup me={me("approver", "a@x.com")} changes={changes} onDecide={vi.fn()} onSnooze={onSnooze} />);
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
-    expect(screen.getByLabelText("Change #7")).toBeInTheDocument();
-    expect(screen.getByText("1 more waiting")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Later" }));
-    expect(onSnooze).toHaveBeenCalledWith(7);
+  it("shows the oldest decidable change first and counts them", () => {
+    const changes = [change({ id: 8 }), change({ id: 7 })];
+    render(<ReviewTray me={me("approver", "a@x.com")} changes={changes} open onClose={vi.fn()} onDecide={vi.fn()} deciding={null} />);
+    const cards = screen.getAllByLabelText(/^Change #/).map((n) => n.getAttribute("aria-label"));
+    expect(cards).toEqual(["Change #7", "Change #8"]);
+    expect(screen.getByText("2 waiting")).toBeInTheDocument();
   });
 });
 
