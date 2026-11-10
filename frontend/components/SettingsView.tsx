@@ -37,10 +37,10 @@ export function QualitySettings({ canEdit }: { canEdit: boolean }) {
   const dirty = Object.keys(draft);
   const save = async () => {
     setError(""); setMsg("");
-    const changes: Record<string, number | string> = {};
+    const changes: Record<string, number | string | boolean> = {};
     for (const k of dirty) {
       const t = items.find((i) => i.key === k)!;
-      changes[k] = t.options ? draft[k] : Number(draft[k]);
+      changes[k] = t.kind === "bool" ? draft[k] === "true" : t.options ? draft[k] : Number(draft[k]);
     }
     try { setData(await saveSettings(changes)); setDraft({}); setMsg("Saved. Other servers pick it up within a few seconds."); } catch (e) { setError(fail(e)); }
   };
@@ -58,7 +58,10 @@ export function QualitySettings({ canEdit }: { canEdit: boolean }) {
           <p className="muted small">{t.help}</p>
         </div>
         <div className="setting-input">
-          {t.options ? (
+          {t.kind === "bool" ? (
+            <input aria-label={t.label} type="checkbox" disabled={!canEdit} checked={shown === "true"}
+              onChange={(e) => setDraft({ ...draft, [t.key]: String(e.target.checked) })} />
+          ) : t.options ? (
             <select aria-label={t.label} disabled={!canEdit} value={shown} onChange={(e) => setDraft({ ...draft, [t.key]: e.target.value })}>
               {t.options.map((o) => <option key={o}>{o}</option>)}
             </select>

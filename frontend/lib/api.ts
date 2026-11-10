@@ -349,11 +349,11 @@ export interface Tunable {
   key: string;
   label: string;
   help: string;
-  kind: "int" | "float" | "model" | "choice" | "models";
+  kind: "int" | "float" | "model" | "choice" | "models" | "bool";
   min: number | null;
   max: number | null;
-  default: number | string | string[];
-  value: number | string | string[];
+  default: number | string | boolean | string[];
+  value: number | string | boolean | string[];
   overridden: boolean;
   options?: string[];
 }
@@ -364,7 +364,7 @@ export interface SettingsPayload {
 }
 export const getSettings = () => call<SettingsPayload>("GET", "/settings");
 /** value null resets a setting to the singularity.yaml default */
-export const saveSettings = (changes: Record<string, number | string | string[] | null>) =>
+export const saveSettings = (changes: Record<string, number | string | boolean | string[] | null>) =>
   call<SettingsPayload>("PATCH", "/settings", changes);
 
 export interface Rule {

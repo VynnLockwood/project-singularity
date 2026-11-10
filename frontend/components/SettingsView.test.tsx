@@ -7,6 +7,7 @@ const tunables: Tunable[] = [
   { key: "search.minConfidence", label: "Search confidence", help: "h", kind: "float", min: 0, max: 1, default: 0.8, value: 0.8, overridden: false },
   { key: "search.topK", label: "Search results", help: "h", kind: "int", min: 1, max: 20, default: 5, value: 9, overridden: true },
   { key: "chat.provider", label: "Chat provider", help: "h", kind: "choice", min: null, max: null, default: "openrouter", value: "openrouter", overridden: false, options: ["openrouter", "opencode"] },
+  { key: "sql.enabled", label: "Raw SQL", help: "h", kind: "bool", min: null, max: null, default: true, value: true, overridden: false },
   { key: "chat.models", label: "Chat models", help: "h", kind: "models", min: null, max: null, default: ["a/b", "c/d"], value: ["a/b", "c/d"], overridden: false },
   { key: "chat.defaultModel", label: "Default chat model", help: "h", kind: "model", min: null, max: null, default: "a/b", value: "a/b", overridden: false, options: ["a/b", "c/d"] },
 ];
@@ -40,6 +41,13 @@ describe("SettingsView", () => {
     fireEvent.click(screen.getByText("Save changes"));
     await waitFor(() => expect(saveSettings).toHaveBeenCalledWith({ "search.minConfidence": 0.7 }));
     expect(await screen.findByText(/Saved/)).toBeInTheDocument();
+  });
+
+  it("switches a true/false setting with a checkbox and saves a real boolean", async () => {
+    const { saveSettings } = await setup("approver");
+    fireEvent.click(await screen.findByLabelText("Raw SQL"));
+    fireEvent.click(screen.getByText("Save changes"));
+    await waitFor(() => expect(saveSettings).toHaveBeenCalledWith({ "sql.enabled": false }));
   });
 
   it("resets an overridden setting to the file default", async () => {
