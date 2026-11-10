@@ -236,6 +236,13 @@ def list_tables(schema: str = "master") -> list[dict]:
         ]
 
 
+def schema_fingerprint(schema: str = "master") -> str:
+    """Hash of everything structural in a schema (tables, views, enums): raw SQL may touch any of it."""
+    names = [t["name"] for t in list_tables(schema)]
+    parts = {"tables": fingerprint(names, schema), "views": list_views(schema), "enums": list_enums(schema)}
+    return hashlib.sha256(json.dumps(parts, sort_keys=True, default=str).encode()).hexdigest()
+
+
 def list_views(schema: str = "master") -> list[dict]:
     require_managed(schema)
     with ro_connection() as conn:
