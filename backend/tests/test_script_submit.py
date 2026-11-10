@@ -75,7 +75,7 @@ def test_viewer_cannot_upload(viewer, editor):
 
 # ---------------------------------------------------------------- submit a data-only script
 
-def test_editor_submit_data_only_then_self_approve_loads_rows(editor, approver):
+def test_editor_submit_data_only_then_an_approver_loads_rows(editor, approver):
     _c = approvals.propose(approver, PROVINCE, source="web")
     approvals.approve(approver, _c.pk)
     s = validated(editor)
@@ -84,7 +84,10 @@ def test_editor_submit_data_only_then_self_approve_loads_rows(editor, approver):
     s.refresh_from_db()
     assert s.status == Script.Status.SUBMITTED and s.change_id == change.pk
 
-    applied = approvals.approve(editor, change.pk)   # editors decide their own data change
+    with pytest.raises(approvals.ChangeError) as e:     # every script load is approvers-only
+        approvals.approve(editor, change.pk)
+    assert e.value.code == "forbidden"
+    applied = approvals.approve(approver, change.pk)
     assert applied.status == Change.Status.APPLIED
     rows = query.run_select('SELECT province_id, province_name FROM province ORDER BY 1')["rows"]
     assert rows == [[10, "Alpha"], [11, "Beta"]]

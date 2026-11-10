@@ -375,7 +375,7 @@ def _next_step(user, change: Change) -> str:
             return "This configuration change is not valid. Read 'check.errors', fix the operations and call propose_config_change again."
         return "The gate blocked this change. Fix the problems in 'check' (use the suggestions) and call propose_change again."
     if change.status == "pending":
-        if service.can_decide(user, change):
+        if user.can_approve and service.can_decide(user, change):   # approve_change is an approver-only tool
             return (
                 "Show the user the 'diff' and any warnings, and ask them to confirm. Only after they say yes, "
                 f"call approve_change with change_id={change.pk}."

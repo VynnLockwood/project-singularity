@@ -108,6 +108,7 @@ def test_applied_config_changes_can_be_reverted(people):
     assert Rule.objects.get(name="noFloat").enabled and not Setting.objects.filter(key="search.topK").exists()
 
 
+@pytest.mark.usefixtures("master")
 def test_stale_schema_proposals_are_marked_when_rules_change(people):
     # a rules change invalidates schema proposals checked against the old rules
     from approvals.models import Change as C
