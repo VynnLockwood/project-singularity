@@ -9,6 +9,7 @@ import { useChanges } from "@/lib/useChanges";
 import { useRoute } from "@/lib/useRoute";
 import { ToastProvider, useToast } from "@/components/ui";
 import { ChatView } from "./ChatView";
+import { CommandPalette } from "./CommandPalette";
 import { ConnectView } from "./ConnectView";
 import { DatabaseView } from "./DatabaseView";
 import { DataView } from "./DataView";
@@ -35,10 +36,13 @@ function Shell({ me, onLogout }: Props) {
   const [route, navigate] = useRoute();
   const toast = useToast();
   const [trayOpen, setTrayOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [draft, setDraft] = useState("");
   /** Changes proposed from this browser: their owner is already looking at them, so they get no "needs review" toast. */
   const own = useRef(new Set<number>());
   const openTray = useCallback(() => setTrayOpen(true), []);
+  const openPalette = useCallback(() => setPaletteOpen(true), []);
+  const closePalette = useCallback(() => setPaletteOpen(false), []);
 
   const changes = useChanges(me, (change, prev) => {
     const mineToDecide = canDecide(me, change);
@@ -70,6 +74,7 @@ function Shell({ me, onLogout }: Props) {
   }, [route.view]);
 
   useShortcut("g r", openTray);
+  useShortcut("mod+k", openPalette);
 
   const configWaiting = live.filter((c) => c.kind === "config" && c.status === "pending").length;
   const configApplied = live.filter((c) => c.kind === "config" && c.status === "applied").length;
@@ -82,7 +87,7 @@ function Shell({ me, onLogout }: Props) {
       <a className="shell-skip" href="#content">Skip to content</a>
       <Rail me={me} route={route} navigate={navigate} waiting={mine.length} online={online} onLogout={onLogout} />
       <div className="shell-main">
-        <TopBar route={route} waiting={mine.length} onOpenTray={openTray} />
+        <TopBar route={route} waiting={mine.length} onOpenTray={openTray} onOpenPalette={openPalette} />
         {changes.error && <p className="problems" role="alert">{changes.error}</p>}
         <main id="content" className="content" tabIndex={-1}>
           {view === "chat" && (
@@ -104,6 +109,7 @@ function Shell({ me, onLogout }: Props) {
           {view === "notfound" && <NotFound path={route.path} onHome={() => navigate({ view: "chat" })} />}
         </main>
       </div>
+      <CommandPalette me={me} open={paletteOpen} onClose={closePalette} navigate={navigate} refreshKey={schemaKey} onLogout={onLogout} />
       <ReviewTray me={me} changes={mine} open={trayOpen} onClose={() => setTrayOpen(false)} onDecide={changes.decide} deciding={deciding} />
     </div>
   );

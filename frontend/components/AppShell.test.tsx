@@ -115,6 +115,24 @@ describe("AppShell navigation and review", () => {
     expect(screen.getByRole("complementary", { name: "Needs review" })).toBeInTheDocument();
   });
 
+  it("opens the command palette with Ctrl+K, even from the message box", async () => {
+    await mount();
+    const box = await screen.findByLabelText("Message");
+    box.focus();
+    fireEvent.keyDown(box, { key: "k", ctrlKey: true });
+    expect(screen.getByRole("dialog", { name: "Command palette" })).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("combobox"), { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
+  });
+
+  it("opens the command palette from the top bar and jumps to a view", async () => {
+    await mount();
+    fireEvent.click(screen.getByRole("button", { name: /Search or jump to/ }));
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "connect" } });
+    fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" });
+    expect(location.pathname).toBe("/connect");
+  });
+
   it("never blocks the whole app with a working overlay", async () => {
     await mount();
     fireEvent.click(nav().getByRole("button", { name: "Data" }));

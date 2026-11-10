@@ -76,3 +76,22 @@
 .ui-tray-body .ui-empty { border: 0; background: none; padding: var(--space-4) var(--space-2); }
 @keyframes ui-tray-in { from { transform: translateX(24px); opacity: 0; } }
 @media (max-width: 720px) { .ui-tray { width: 100vw; border-left: 0; } }
+
+/* ---- Command palette ---- */
+.ui-palette-backdrop { position: fixed; inset: 0; z-index: 90; display: flex; justify-content: center; align-items: flex-start; padding: 12vh var(--space-4) var(--space-4); background: color-mix(in srgb, var(--void) 70%, transparent); }
+.ui-palette { width: min(36rem, 100%); max-height: 70vh; display: flex; flex-direction: column; background: var(--surface-1); border: 1px solid var(--line-strong); border-radius: var(--radius-panel); overflow: hidden; animation: ui-toast-in var(--dur-base) ease-out; }
+.ui-palette-input { display: flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-4); border-bottom: 1px solid var(--line); color: var(--text-faint); }
+.ui-palette-input input { flex: 1; height: 48px; border: 0; background: none; padding: 0; font-size: 15px; }
+.ui-palette-input input:focus-visible { outline: none; }
+.ui-palette-list { list-style: none; margin: 0; padding: var(--space-2); overflow-y: auto; }
+.ui-palette-list:empty { display: none; }
+.ui-palette-list li { display: flex; align-items: center; gap: var(--space-3); padding: 8px var(--space-3); border-radius: var(--radius-control); color: var(--text-dim); cursor: pointer; }
+.ui-palette-list li[data-first-of-group]:not(:first-child) { margin-top: var(--space-2); }
+.ui-palette-list li[data-first-of-group]::before { content: attr(data-first-of-group); order: 3; font-size: 11px; color: var(--text-faint); }
+.ui-palette-list li[aria-selected="true"] { background: var(--surface-3); color: var(--text-bright); box-shadow: inset 2px 0 0 var(--disk); }
+.ui-palette-list li[aria-selected="true"] .ui-icon { color: var(--disk); }
+.ui-palette-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-palette-hint { font-size: var(--size-small); color: var(--text-faint); }
+.ui-palette-none { margin: 0; padding: var(--space-5); color: var(--text-dim); text-align: center; }
+.ui-palette-foot { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); padding: var(--space-2) var(--space-4); border-top: 1px solid var(--line); font-size: var(--size-small); color: var(--text-faint); }
+@media (max-width: 720px) { .ui-palette-backdrop { padding-top: var(--space-4); } .ui-palette-foot { display: none; } }
