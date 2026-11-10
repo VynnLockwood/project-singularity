@@ -246,6 +246,16 @@ async def get_audit_log(action: str | None = None, actor: str | None = None, lim
     return await run("get_audit_log", action=action, actor=actor, limit=limit)
 
 
+@mcp.tool(name="revert_change", description=tools.DESCRIPTIONS["revert_change"])
+async def revert_change(change_id: int) -> dict:
+    return await run("revert_change", change_id=change_id)
+
+
+@mcp.tool(name="recheck_change", description=tools.DESCRIPTIONS["recheck_change"])
+async def recheck_change(change_id: int) -> dict:
+    return await run("recheck_change", change_id=change_id)
+
+
 LINK_PREFIX = "/mcp/t/"
 
 

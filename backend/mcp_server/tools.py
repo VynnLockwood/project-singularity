@@ -34,6 +34,8 @@ TOOL_ROLES = {
     "validate_script": "editor",
     "get_script": "editor",
     "list_changes": "viewer",
+    "revert_change": "approver",
+    "recheck_change": "editor",
     "get_audit_log": "approver",   # audit details can hold other people's prompts and emails
 }
 
@@ -50,6 +52,11 @@ DESCRIPTIONS = {
         "Who did what and when (approvers only): sign-ins, proposals, decisions, exports, settings changes. "
         "Filter by action or by actor email."
     ),
+    "revert_change": (
+        "Undo an applied change by applying its stored reverse (approvers only). Changes that dropped something "
+        "cannot be undone this way; the error says so."
+    ),
+    "recheck_change": "Run the gate again on a stale change, after the schema or the rules moved.",
 }
 
 
@@ -143,7 +150,6 @@ def run_query(user, sql: str, limit: int | None = None, schema: str = "master") 
 
 
 def _next_step(user, change: Change) -> str:
-    again = "propose_config_change" if change.kind == "config" else "propose_change"
     if change.status == "rejected" and change.decided_by_id is None:
         if change.kind == "config":
             return "This configuration change is not valid. Read 'check.errors', fix the operations and call propose_config_change again."
@@ -161,7 +167,7 @@ def _next_step(user, change: Change) -> str:
     if change.status == "applied":
         return "Done. The change was applied."
     if change.status == "stale":
-        return f"The schema or rules changed since this was checked. Call {again} again with the same operations."
+        return f"The schema or rules changed since this was checked. Call recheck_change with change_id={change.pk} to run the gate again."
     if change.status == "failed":
         return "The database refused the change and nothing was changed. See 'error'."
     return ""
@@ -232,6 +238,22 @@ def get_audit_log(user, action: str | None = None, actor: str | None = None, lim
     items, more = entries(action=action if isinstance(action, str) else None,
                           actor=actor if isinstance(actor, str) else None, limit=clamp(limit, 50, 200))
     return {"entries": [as_dict(a) for a in items], "truncated": more}
+
+
+def revert_change(user, change_id: int) -> dict:
+    """Undo an applied change by applying its stored reverse operations."""
+    try:
+        return _result(user, service.revert(user, change_id))
+    except service.ChangeError as exc:
+        raise ToolFailure(exc.message) from exc
+
+
+def recheck_change(user, change_id: int) -> dict:
+    """Run the gate again on a stale change."""
+    try:
+        return _result(user, service.recheck(user, change_id))
+    except service.ChangeError as exc:
+        raise ToolFailure(exc.message) from exc
 
 
 def list_pending(user) -> dict:
@@ -315,4 +337,6 @@ IMPL = {
     "get_script": get_script,
     "list_changes": list_changes,
     "get_audit_log": get_audit_log,
+    "revert_change": revert_change,
+    "recheck_change": recheck_change,
 }

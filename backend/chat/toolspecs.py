@@ -76,6 +76,8 @@ SPECS = {
     "get_audit_log": (D["get_audit_log"],
                       {"action": {"type": "string"}, "actor": {"type": "string", "description": "an email"},
                        "limit": {"type": "integer"}}, []),
+    "revert_change": (D["revert_change"], {"change_id": {"type": "integer"}}, ["change_id"]),
+    "recheck_change": (D["recheck_change"], {"change_id": {"type": "integer"}}, ["change_id"]),
 }
 
 
