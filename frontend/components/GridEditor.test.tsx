@@ -53,6 +53,17 @@ describe("GridEditor", () => {
     expect(within(fk()).getByText("Beta")).toBeInTheDocument();
   });
 
+  it("shows progress on the grid itself and keeps it usable while a page loads", async () => {
+    const { getRows } = await setup();
+    let finish: (p: RowsPage) => void = () => {};
+    getRows.mockReturnValueOnce(new Promise<RowsPage>((r) => { finish = r; }));
+    fireEvent.click(screen.getByRole("button", { name: "note" }));
+    expect(await screen.findByRole("progressbar", { name: "Loading rows" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add row" })).toBeEnabled();
+    finish(page(ROWS));
+    await waitFor(() => expect(screen.queryByRole("progressbar")).toBeNull());
+  });
+
   it("reports busy while a page is loading", async () => {
     const busy: boolean[] = [];
     await setup("editor", page(ROWS), (b) => busy.push(b));

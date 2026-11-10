@@ -1,6 +1,7 @@
 "use client";
 
 import type { Change, Me } from "@/lib/api";
+import { EmptyState } from "@/components/ui";
 import { ChangeCard } from "./ChangeCard";
 
 interface Props {
@@ -12,7 +13,13 @@ interface Props {
 
 export function QueueView({ me, changes, onDecide, busy }: Props) {
   const pending = changes.filter((c) => c.status === "pending");
-  if (pending.length === 0) return <p className="muted">Nothing is waiting for review.</p>;
+  if (pending.length === 0) {
+    return (
+      <EmptyState icon="inbox" title="Nothing is waiting for review.">
+        Changes that need your decision show up here and in the review tray.
+      </EmptyState>
+    );
+  }
   return (
     <div className="queue">
       {pending.map((c) => (
