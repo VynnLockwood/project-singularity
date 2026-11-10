@@ -1,0 +1,61 @@
+/* Every colour, type, space and motion value of the app. Nothing outside this file holds a hex colour.
+   The palette is read off the accretion disk: warm void, orange disk, blue-white for light coming
+   towards you (applied), deep red for light falling away (rejected, failed). */
+:root {
+  /* surfaces, darkest first */
+  --void: #050201;
+  --surface-1: #0d0603;
+  --surface-2: #160a05;
+  --surface-3: #22110a;
+  --line: #2a150a;
+  --line-strong: #5a2c12;
+
+  /* text */
+  --text: #fbe9d0;
+  --text-bright: #ffe2b0;
+  --text-dim: #b8926b;
+  --text-faint: #9a7858;
+
+  /* the disk */
+  --disk: #ff9d2e;
+  --disk-hot: #ffd479;
+  --disk-tint: #3a2408;
+  --on-disk: #2a1203;
+
+  /* status */
+  --blueshift: #9fd0ff;
+  --blueshift-tint: #0b1a26;
+  --redshift: #ff7a5c;
+  --redshift-tint: #2a0d08;
+
+  /* type */
+  --font-title: "Chakra Petch", "IBM Plex Sans Thai", system-ui, sans-serif;
+  --font-text: "IBM Plex Sans", "IBM Plex Sans Thai", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-code: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --size-title-1: 28px;
+  --size-title-2: 20px;
+  --size-title-3: 16px;
+  --size-text: 14px;
+  --size-small: 12px;
+  --size-code: 13px;
+
+  /* space */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* shape and motion */
+  --radius-control: 6px;
+  --radius-panel: 10px;
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+
+  /* layout */
+  --rail-width: 208px;
+  --tray-width: 320px;
+  --prose: 72ch;
+  --shell-bottom: 0px;
+}
