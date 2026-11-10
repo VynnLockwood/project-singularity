@@ -29,7 +29,6 @@ def test_valid_create_table_parses():
         [{"op": "create_table", "name": "a b", "columns": [col("x")]}],        # bad identifier
         [{"op": "create_table", "name": 'a"; drop', "columns": [col("x")]}],   # injection attempt
         [{"op": "create_table", "name": "t", "columns": [col("x", "text; drop table y")]}],
-        [{"op": "create_table", "name": "t", "columns": [col("x", "money")]}],  # type not allowlisted
         [{"op": "create_table", "name": "t", "columns": [col("x"), col("x")]}],  # duplicate column
         [{"op": "create_table", "name": "t", "columns": [col("x", default={"a": 1})]}],     # default must be a scalar
         [{"op": "update_rows", "table": "t", "where": {}, "set": {"a": 1}}],     # no filter
@@ -43,6 +42,12 @@ def test_valid_create_table_parses():
 def test_malformed_ops_rejected(bad):
     with pytest.raises(operations.OpError):
         operations.parse_ops(bad)
+
+
+def test_unknown_type_is_refused_by_the_gate():
+    """A lowercase word may be an enum name, so the shape check lets it through; the state check refuses it."""
+    res = check.run([{"op": "create_table", "name": "t", "columns": [col("x", "money")]}], {}, RULES, skip_rules=True)
+    assert any("unsupported type 'money'" in e for e in res.errors)
 
 
 def test_op_limit():

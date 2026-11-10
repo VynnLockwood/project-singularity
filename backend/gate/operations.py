@@ -18,6 +18,17 @@ TYPE_RE = re.compile(
     r"double precision|numeric|numeric\(\d{1,2},\s?\d{1,2}\)|varchar\(\d{1,4}\))\Z"
 )
 
+# An enum type's name: lowercase snake. A column type is a built-in (TYPE_RE) or the name of an enum of the
+# same schema; the state check (gate.state) decides which, because the shape check has no schema to look at.
+ENUM_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}\Z")
+MAX_ENUM_VALUES = 100
+MAX_ENUM_VALUE_BYTES = 63
+
+
+def type_shape_ok(t) -> bool:
+    return isinstance(t, str) and bool(TYPE_RE.fullmatch(normalize_type(t)) or ENUM_NAME_RE.fullmatch(normalize_type(t)))
+
+
 # Defaults: JSON literals or one of these function calls. Nothing free-form.
 DEFAULT_FUNCS = {"now()", "gen_random_uuid()", "current_date"}
 
@@ -37,7 +48,7 @@ SCHEMA_OPS = {
     "drop_column", "drop_table", "drop_index", "drop_constraint",
     "add_check", "set_table_comment",
     "set_column_default", "drop_column_default", "set_not_null", "drop_not_null",
-    "create_view", "drop_view",
+    "create_view", "drop_view", "create_enum", "add_enum_value", "drop_enum",
 }
 DATA_OPS = {"insert_rows", "update_rows", "deactivate_rows", "bulk_insert"}
 # Produced only by script intake; the normal propose path refuses it (see gate.check.run allow_bulk).
@@ -45,7 +56,7 @@ INTERNAL_OPS = {"bulk_insert"}
 # Database-level ops: one per change, never mixed with table or data ops.
 DATABASE_OPS = {"create_schema", "rename_schema", "drop_schema"}
 ALL_OPS = SCHEMA_OPS | DATA_OPS | DATABASE_OPS
-DESTRUCTIVE_OPS = {"drop_column", "drop_table", "drop_index", "drop_constraint", "drop_schema", "drop_view"}
+DESTRUCTIVE_OPS = {"drop_column", "drop_table", "drop_index", "drop_constraint", "drop_schema", "drop_view", "drop_enum"}
 
 SCHEMA_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}\Z")
 RESERVED_SCHEMAS = frozenset({"singularity", "public", "information_schema"})
@@ -150,7 +161,7 @@ def _check_default(d, errs: list[str], where: str) -> None:
         errs.append(f"{where}: default must be a JSON scalar or one of {sorted(DEFAULT_FUNCS)}")
 
 
-def _check_column(col, errs: list[str], where: str, *, allow_references: bool = True) -> None:
+def _check_column(col, errs: list[str], where: str, *, allow_references: bool = True, allow_enum: bool = True) -> None:
     if not isinstance(col, dict):
         errs.append(f"{where}: column must be an object")
         return
@@ -161,7 +172,7 @@ def _check_column(col, errs: list[str], where: str, *, allow_references: bool = 
         errs.append(f"{where}: unknown column keys {sorted(unknown)}")
     _ident(col.get("name"), "column name", errs, where)
     t = col.get("type")
-    if not isinstance(t, str) or not TYPE_RE.fullmatch(normalize_type(t)):
+    if not (type_shape_ok(t) if allow_enum else isinstance(t, str) and TYPE_RE.fullmatch(normalize_type(t))):
         errs.append(f"{where}: unsupported type {t!r}")
     for flag in ("nullable", "unique", "primary_key", "identity"):
         if flag in col and not isinstance(col[flag], bool):
@@ -357,6 +368,11 @@ def _check_cols_list(cols, errs: list[str], where: str) -> None:
         _ident(c, "column", errs, where)
 
 
+def _enum_value(v, errs: list[str], where: str) -> None:
+    if not isinstance(v, str) or not v or len(v.encode("utf-8")) > MAX_ENUM_VALUE_BYTES:
+        errs.append(f"{where}: each enum value must be non-empty text of at most {MAX_ENUM_VALUE_BYTES} bytes")
+
+
 def _reason(op, errs, where):
     r = op.get("reason")
     if not isinstance(r, str) or len(r.strip()) < 3:
@@ -436,7 +452,7 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
             keys("table", "column", "type")
             _ident(op.get("table"), "table", errs, where)
             _ident(op.get("column"), "column", errs, where)
-            if not isinstance(op.get("type"), str) or not TYPE_RE.fullmatch(normalize_type(op["type"])):
+            if not type_shape_ok(op.get("type")):
                 errs.append(f"{where}: unsupported type {op.get('type')!r}")
         elif kind in ("set_column_default", "drop_column_default", "set_not_null", "drop_not_null"):
             keys("table", "column", *(["default"] if kind == "set_column_default" else []))
@@ -453,6 +469,28 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
             errs.extend(f"{where}: {p}" for p in check_view_query(op.get("query")))
             if "comment" in op and not isinstance(op["comment"], str):
                 errs.append(f"{where}: comment must be text")
+        elif kind == "create_enum":
+            keys("name", "values")
+            if not isinstance(op.get("name"), str) or not ENUM_NAME_RE.match(op["name"]):
+                errs.append(f"{where}: enum name must match ^[a-z][a-z0-9_]{{0,62}}$")
+            vals = op.get("values")
+            if not isinstance(vals, list) or not vals:
+                errs.append(f"{where}: values must be a non-empty list")
+            else:
+                if len(vals) > MAX_ENUM_VALUES:
+                    errs.append(f"{where}: at most {MAX_ENUM_VALUES} values")
+                if len(vals) != len(set(map(str, vals))):
+                    errs.append(f"{where}: values must be unique")
+                for v in vals:
+                    _enum_value(v, errs, where)
+        elif kind == "add_enum_value":
+            keys("name", "value")
+            _ident(op.get("name"), "enum name", errs, where)
+            _enum_value(op.get("value"), errs, where)
+        elif kind == "drop_enum":
+            keys("name", "reason")
+            _ident(op.get("name"), "enum name", errs, where)
+            _reason(op, errs, where)
         elif kind == "drop_view":
             keys("name", "reason")
             _ident(op.get("name"), "view name", errs, where)

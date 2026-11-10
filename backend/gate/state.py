@@ -11,7 +11,7 @@ import copy
 from typing import Iterator
 
 from .conventions import Conventions
-from .operations import check_expression, normalize_type, view_references
+from .operations import TYPE_RE, check_expression, normalize_type, view_references
 
 
 class State(dict):
@@ -122,6 +122,12 @@ def _unlink_all(state: dict, name: str) -> None:
             state[other].get("links", set()).discard(name)
 
 
+def _need_type(t: str, state: dict, err) -> None:
+    nt = normalize_type(t)
+    if not TYPE_RE.fullmatch(nt) and nt not in enums_of(state):
+        err(f"unsupported type {t!r}: not a built-in type or an enum of this schema")
+
+
 def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str = "",
              conv: Conventions | None = None) -> None:
     """Apply one operation to `state` in place; append problems to `errors` if given."""
@@ -149,6 +155,7 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
         pk = None
         new: dict = {}
         for c in op["columns"]:
+            _need_type(c["type"], state, err)
             cols[c["name"]] = _col_entry(c)
             if c.get("primary_key"):
                 pk = c["name"]
@@ -181,6 +188,7 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
         if need_table(t):
             if c["name"] in state[t]["columns"]:
                 err(f"column {t}.{c['name']} already exists")
+            _need_type(c["type"], state, err)
             ref = c.get("references")
             if ref:
                 rt, rc = ref["table"], ref_column(state, ref)
@@ -203,6 +211,33 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
             err(f"{n!r} already exists (a table or view has that name)")
         elif isinstance(state, State):
             state.views[n] = {"query": op["query"], "tables": {r for r in view_references(op["query"]) if r in state}}
+
+    elif kind == "create_enum":
+        n = op["name"]
+        if n in state or n in views_of(state) or n in enums_of(state):
+            err(f"{n!r} already exists (a table, view or enum has that name)")
+        elif isinstance(state, State):
+            state.enums[n] = list(op["values"])
+
+    elif kind == "add_enum_value":
+        n, v = op["name"], op["value"]
+        if n not in enums_of(state):
+            err(f"enum {n!r} does not exist")
+        elif v in state.enums[n]:
+            err(f"enum {n!r} already has the value {v!r}")
+        else:
+            state.enums[n].append(v)
+
+    elif kind == "drop_enum":
+        n = op["name"]
+        if n not in enums_of(state):
+            err(f"enum {n!r} does not exist")
+        else:
+            users = [f"{t}.{c}" for t, v in state.items() for c, e in v["columns"].items() if e["type"] == n]
+            if users:
+                err(f"enum {n!r} is still used by {', '.join(sorted(users))}")
+            else:
+                del state.enums[n]
 
     elif kind == "drop_view":
         n = op["name"]
@@ -240,6 +275,7 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
     elif kind == "alter_column_type":
         t, c = op["table"], op["column"]
         if need_col(t, c):
+            _need_type(op["type"], state, err)
             state[t]["columns"][c]["type"] = normalize_type(op["type"])
 
     elif kind == "set_column_comment":

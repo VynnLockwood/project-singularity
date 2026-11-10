@@ -31,9 +31,15 @@ _PG_TO_ALLOWED = {
 }
 
 
-def pg_type_to_allowed(t: str) -> str | None:
-    """Map a Postgres type name (format_type output) to a type our operations accept."""
+def pg_type_to_allowed(t: str, enums=(), schema: str | None = None) -> str | None:
+    """Map a Postgres type name (format_type output) to a type our operations accept.
+
+    `enums` are the enum type names of the schema; an enum maps to its own name (with or without the schema prefix).
+    """
     t = t.strip().lower()
+    bare = t.removeprefix(f"{schema}.") if schema else t
+    if bare in enums:
+        return bare
     if t in _PG_TO_ALLOWED:
         return _PG_TO_ALLOWED[t]
     if t.startswith("character varying(") and t.endswith(")"):

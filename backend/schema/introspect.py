@@ -205,6 +205,11 @@ def snapshot(schema: str = "master") -> State:
                 st[b]["links"].add(a)
         for r in conn.execute(ENUMS_SQL, {"schema": schema}):
             st.enums.setdefault(r["name"], []).append(r["label"])
+        for t in st.values():       # format_type qualifies enum names that are not on the search path
+            for c in t["columns"].values():
+                bare = c["type"].removeprefix(f"{schema}.")
+                if bare in st.enums:
+                    c["type"] = bare
         for r in conn.execute(VIEWS_SQL, {"schema": schema}):
             st.views[r["name"]] = {"query": r["query"], "tables": set()}
         for r in conn.execute(VIEW_TABLES_SQL, {"schema": schema}):

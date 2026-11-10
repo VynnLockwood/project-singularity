@@ -14,7 +14,7 @@ from psycopg import sql
 
 from gate import sqlgen
 from gate.conventions import Conventions
-from gate.state import fk_name, index_name, pk_of, role_of, unique_name
+from gate.state import enums_of, fk_name, index_name, pk_of, role_of, unique_name
 
 from .conn import rw_connection
 from .util import jsonable, pg_default_to_allowed, pg_type_to_allowed
@@ -267,7 +267,7 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_
     if k == "rename_column":
         return [{"op": "rename_column", "table": t, "column": op["new_name"], "new_name": op["column"]}]
     if k == "alter_column_type":
-        allowed = pg_type_to_allowed(prev_type or "")
+        allowed = pg_type_to_allowed(prev_type or "", enums_of(before), schema)
         return [{"op": "alter_column_type", "table": t, "column": op["column"], "type": allowed}] if allowed else None
     if k == "set_column_comment":
         return [{"op": "set_column_comment", "table": t, "column": op["column"], "comment": prev_comment}]
@@ -280,6 +280,10 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_
         if value is None:
             return [{"op": "drop_column_default", "table": t, "column": op["column"]}] if k == "set_column_default" else []
         return [{"op": "set_column_default", "table": t, "column": op["column"], "default": value}]
+    if k == "create_enum":
+        return [{"op": "drop_enum", "name": op["name"], "reason": why}]
+    if k in ("add_enum_value", "drop_enum"):
+        return None
     if k == "create_view":
         return [{"op": "drop_view", "name": op["name"], "reason": why}]
     if k == "drop_view":
