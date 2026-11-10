@@ -34,6 +34,7 @@ TOOL_ROLES = {
     "validate_script": "editor",
     "get_script": "editor",
     "list_changes": "viewer",
+    "read_rows": "viewer",
     "revert_change": "approver",
     "recheck_change": "editor",
     "get_audit_log": "approver",   # audit details can hold other people's prompts and emails
@@ -51,6 +52,11 @@ DESCRIPTIONS = {
     "get_audit_log": (
         "Who did what and when (approvers only): sign-ins, proposals, decisions, exports, settings changes. "
         "Filter by action or by actor email."
+    ),
+    "read_rows": (
+        "Read rows of one table, a page at a time, without writing SQL: offset, limit (max 200), sort, direction "
+        "(asc or desc), filters {column: text contained}, include_inactive. Returns the total and whether more "
+        "rows remain. For joins or aggregates use query."
     ),
     "revert_change": (
         "Undo an applied change by applying its stored reverse (approvers only). Changes that dropped something "
@@ -147,6 +153,29 @@ def run_query(user, sql: str, limit: int | None = None, schema: str = "master") 
         return query.run_select(sql, limit=min(limit or cap, cap), timeout_ms=limits["queryTimeoutMs"], schema=schema)
     except (query.QueryError, introspect.UnknownSchema) as exc:
         raise ToolFailure(str(exc)) from exc
+
+
+def read_rows(user, table: str, schema: str = "master", offset: int = 0, limit: int | None = None,
+              sort: str | None = None, direction: str = "asc", filters: dict | None = None,
+              include_inactive: bool = False) -> dict:
+    """One page of one table. `truncated` says whether rows remain after this page."""
+    from schema import rows as rows_mod
+
+    if filters is not None and not isinstance(filters, dict):
+        raise ToolFailure("filters must be an object of {column: text to look for}, for example {\"name_en\": \"buri\"}.")
+    start = offset if isinstance(offset, int) and not isinstance(offset, bool) and offset > 0 else 0
+    try:
+        out = rows_mod.read_rows(table, offset=start, limit=clamp(limit, 50, rows_mod.MAX_PAGE), sort=sort or None,
+                                 direction=direction, filters=filters, include_inactive=bool(include_inactive),
+                                 schema=schema)
+    except introspect.UnknownSchema as exc:
+        raise ToolFailure(f"{exc} Call list_schemas to see the databases.") from exc
+    except rows_mod.RowsError as exc:
+        if exc.status == 404:
+            raise ToolFailure(f"table {table!r} does not exist in {schema!r}. Call list_tables to see what exists.") from exc
+        hint = " Call describe_table to see the columns." if "unknown column" in str(exc) else ""
+        raise ToolFailure(f"{exc}.{hint}") from exc
+    return {**out, "truncated": out["offset"] + len(out["rows"]) < out["total"]}
 
 
 def _next_step(user, change: Change) -> str:
@@ -337,6 +366,7 @@ IMPL = {
     "get_script": get_script,
     "list_changes": list_changes,
     "get_audit_log": get_audit_log,
+    "read_rows": read_rows,
     "revert_change": revert_change,
     "recheck_change": recheck_change,
 }

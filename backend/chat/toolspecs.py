@@ -78,6 +78,12 @@ SPECS = {
                        "limit": {"type": "integer"}}, []),
     "revert_change": (D["revert_change"], {"change_id": {"type": "integer"}}, ["change_id"]),
     "recheck_change": (D["recheck_change"], {"change_id": {"type": "integer"}}, ["change_id"]),
+    "read_rows": (D["read_rows"],
+                  {"table": {"type": "string"}, **SCHEMA, "offset": {"type": "integer"}, "limit": {"type": "integer"},
+                   "sort": {"type": "string", "description": "a column name"},
+                   "direction": {"type": "string", "enum": ["asc", "desc"]},
+                   "filters": {"type": "object", "description": "{column: text contained}"},
+                   "include_inactive": {"type": "boolean"}}, ["table"]),
 }
 
 

@@ -256,6 +256,14 @@ async def recheck_change(change_id: int) -> dict:
     return await run("recheck_change", change_id=change_id)
 
 
+@mcp.tool(name="read_rows", description=tools.DESCRIPTIONS["read_rows"] + " " + DB_NOTE)
+async def read_rows(table: str, schema: str = "master", offset: int = 0, limit: int | None = None,
+                    sort: str | None = None, direction: str = "asc", filters: dict | None = None,
+                    include_inactive: bool = False) -> dict:
+    return await run("read_rows", table=table, schema=schema, offset=offset, limit=limit, sort=sort,
+                     direction=direction, filters=filters, include_inactive=include_inactive)
+
+
 LINK_PREFIX = "/mcp/t/"
 
 
