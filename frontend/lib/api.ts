@@ -87,7 +87,7 @@ export interface Violation {
 export interface Change {
   id: number;
   status: ChangeStatus;
-  kind: "schema" | "data" | "config";
+  kind: "schema" | "data" | "config" | "sql";
   source: string;
   requester: string;
   prompt: string;
@@ -100,6 +100,8 @@ export interface Change {
   schema?: string;
   diff: string[];
   sql?: string[];
+  /** the stored operations; a raw SQL change holds one {op: "raw_sql", sql, reason} */
+  operations?: { op: string; sql?: string; reason?: string }[];
   check: { violations?: Violation[]; errors?: string[] };
 }
 
