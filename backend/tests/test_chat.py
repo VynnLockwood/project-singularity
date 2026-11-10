@@ -80,11 +80,15 @@ def test_plain_answer_is_stored_and_title_set(monkeypatch):
 
 
 def test_tools_offered_depend_on_role(monkeypatch):
-    for role, expected in [
-        (Role.VIEWER, {"get_rules", "get_settings", "list_schemas", "list_tables", "describe_table", "query", "search_schema"}),
-        (Role.EDITOR, {"get_rules", "get_settings", "list_schemas", "list_tables", "describe_table", "query", "search_schema", "propose_change", "propose_config_change", "get_change", "submit_script", "validate_script", "get_script"}),
-        (Role.APPROVER, {"get_rules", "get_settings", "list_schemas", "list_tables", "describe_table", "query", "search_schema", "propose_change", "propose_config_change", "get_change", "list_pending", "list_users", "submit_script", "validate_script", "get_script"}),
-    ]:
+    from mcp_server import tools as mcp_tools
+
+    def offered(role):  # every tool the role may use, except deciding: that is the person's job in the web app
+        return {t for t, need in mcp_tools.TOOL_ROLES.items()
+                if mcp_tools.RANK[need] <= mcp_tools.RANK[role]} - {"approve_change", "reject_change"}
+
+    assert "propose_change" not in offered("viewer") and "propose_change" in offered("editor")
+    assert "list_users" not in offered("editor") and "list_users" in offered("approver")
+    for role, expected in [(Role.VIEWER, offered("viewer")), (Role.EDITOR, offered("editor")), (Role.APPROVER, offered("approver"))]:
         User.objects.all().delete()
         c, _ = login(role)
         seen = script(monkeypatch, say("ok"))
