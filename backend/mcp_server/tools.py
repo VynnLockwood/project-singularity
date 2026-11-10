@@ -35,6 +35,7 @@ TOOL_ROLES = {
     "get_script": "editor",
     "list_changes": "viewer",
     "read_rows": "viewer",
+    "export_schema": "viewer",     # with data: editor, checked in the tool like the REST endpoint
     "find_duplicates": "editor",
     "list_duplicates": "viewer",
     "get_duplicate": "viewer",
@@ -62,6 +63,11 @@ DESCRIPTIONS = {
         "Read rows of one table, a page at a time, without writing SQL: offset, limit (max 200), sort, direction "
         "(asc or desc), filters {column: text contained}, include_inactive. Returns the total and whether more "
         "rows remain. For joins or aggregates use query."
+    ),
+    "export_schema": (
+        "A database (schema) as Postgres SQL: the structure, and the data too with include_data=true (editors). "
+        "Returned inline up to a size limit; when 'truncated' is true, tell the user to download the full file in "
+        "the web app."
     ),
     "find_duplicates": (
         "Scan one table for records that look like the same thing (fuzzy match on its text columns, or on the "
@@ -196,6 +202,64 @@ def read_rows(user, table: str, schema: str = "master", offset: int = 0, limit: 
         hint = " Call describe_table to see the columns." if "unknown column" in str(exc) else ""
         raise ToolFailure(f"{exc}.{hint}") from exc
     return {**out, "truncated": out["offset"] + len(out["rows"]) < out["total"]}
+
+
+def cut_sql(text: bytes, cap: int) -> tuple[bytes, bool]:
+    """Fit exported SQL under `cap` bytes without ever returning half a statement.
+
+    Returns the text and whether it was cut. A cut lands after the last complete statement at or
+    before the cap: a line ending in `;` outside a COPY block, or the `\\.` line that closes one.
+    A COPY header and its rows count as one statement, so data is never cut in the middle.
+    """
+    if len(text) <= cap:
+        return text, False
+    safe = pos = 0
+    in_copy = False
+    for line in text[:cap].splitlines(keepends=True):
+        pos += len(line)
+        if not line.endswith(b"\n"):
+            break                                   # the cap fell inside this line
+        body = line.rstrip(b"\r\n")
+        if in_copy:
+            if body == b"\\.":
+                in_copy, safe = False, pos
+        elif body.startswith(b"COPY ") and body.endswith(b"FROM stdin;"):
+            in_copy = True
+        elif body.endswith(b";"):
+            safe = pos
+    return text[:safe], True
+
+
+def export_schema(user, schema: str = "master", include_data: bool = False) -> dict:
+    """A database as Postgres SQL, inline up to limits.maxInlineExportBytes."""
+    from audit.models import record
+    from schema.dump_model import ExportError
+    from schema.export import open_export
+
+    if include_data and not user.can_edit:
+        raise ToolFailure("exporting data needs the editor role. Call export_schema without include_data for the structure only.")
+    limits = get_config()["limits"]
+    cap = int(limits["maxInlineExportBytes"])
+    try:
+        ex = open_export(schema if isinstance(schema, str) else "", data=bool(include_data), cap=limits["maxExportRows"])
+    except ExportError as exc:
+        hint = " Call list_schemas to see the databases." if str(exc).lower().startswith("unknown schema") else ""
+        raise ToolFailure(f"{exc}{hint}") from exc
+    try:
+        buf = bytearray()
+        for chunk in ex.chunks():
+            buf += chunk
+            if len(buf) > cap:      # one byte over is enough to know it must be cut
+                break
+        name, counts = ex.filename(), ex.counts
+    finally:
+        ex.close()
+    text, truncated = cut_sql(bytes(buf), cap)
+    record(user, "schema.export", schema, {"schema": schema, "data": bool(include_data), "counts": counts,
+                                           "via": "mcp", "truncated": truncated})
+    sql_text = text.decode("utf-8", errors="replace")
+    note = "Cut at the inline limit. Download the full file in the web app: Database, then Download SQL." if truncated else ""
+    return {"filename": name, "sql": sql_text, "bytes": len(text), "truncated": truncated, "note": note}
 
 
 def _dup(fn):
@@ -454,6 +518,7 @@ IMPL = {
     "list_changes": list_changes,
     "get_audit_log": get_audit_log,
     "read_rows": read_rows,
+    "export_schema": export_schema,
     "find_duplicates": find_duplicates,
     "list_duplicates": list_duplicates,
     "get_duplicate": get_duplicate,

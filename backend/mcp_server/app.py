@@ -291,6 +291,11 @@ async def dismiss_duplicate(group_id: int) -> dict:
     return await run("dismiss_duplicate", group_id=group_id)
 
 
+@mcp.tool(name="export_schema", description=tools.DESCRIPTIONS["export_schema"] + " " + DB_NOTE)
+async def export_schema(schema: str = "master", include_data: bool = False) -> dict:
+    return await run("export_schema", schema=schema, include_data=include_data)
+
+
 LINK_PREFIX = "/mcp/t/"
 
 

@@ -23,6 +23,7 @@ TUNABLES = {
     "limits.maxScriptBytes": ("Script file size (bytes)", "The largest SQL script file that may be uploaded for intake.", "int", 1024, 209715200),
     "limits.maxScriptRows": ("Script rows", "The most rows one script intake may contain.", "int", 1, 2000000),
     "limits.maxExportRows": ("Export row cap", "The most rows one data export may contain.", "int", 1000, 20000000),
+    "limits.maxInlineExportBytes": ("Inline export size (bytes)", "The largest schema export an AI client receives inline. Bigger exports are downloaded in the web app.", "int", 1024, 5000000),
     "limits.maxSchemas": ("Managed schemas", "The most managed schemas (including master) the database may hold.", "int", 1, 200),
     "limits.maxOpsPerScript": ("Operations per script", "The most operations one validated script may produce.", "int", 1, 100000),
     "limits.maxInlineScriptBytes": ("Inline script size (bytes)", "The largest script that may be pasted inline rather than uploaded.", "int", 1024, 1048576),
