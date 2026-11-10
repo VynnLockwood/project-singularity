@@ -50,7 +50,7 @@ def pg_type_to_allowed(t: str, enums=(), schema: str | None = None) -> str | Non
 
 
 _DEFAULT_FUNCS = {"now()": "now()", "gen_random_uuid()": "gen_random_uuid()", "current_date": "current_date"}
-_STR_DEFAULT = re.compile(r"^'((?:[^']|'')*)'(?:::[a-z ]+(?:\(\d+(?:,\d+)?\))?)?$", re.IGNORECASE)
+_STR_DEFAULT = re.compile(r"^'((?:[^']|'')*)'(?:::[\w. ""]+(?:\(\d+(?:,\d+)?\))?)?$", re.IGNORECASE)
 
 
 def pg_default_to_allowed(expr: str | None, pg_type: str) -> tuple[bool, object]:

@@ -108,3 +108,9 @@ def test_diff_lines():
 ])
 def test_pg_default_to_allowed(expr, typ, want):
     assert pg_default_to_allowed(expr, typ) == want
+
+
+def test_enum_cast_defaults_map_back_to_a_plain_value():
+    from schema.util import pg_default_to_allowed
+    assert pg_default_to_allowed("'new'::master.status", "status") == (True, "new")
+    assert pg_default_to_allowed("'new'::status", "status") == (True, "new")
