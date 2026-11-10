@@ -26,6 +26,17 @@ def test_cut_sql_cuts_at_the_end_of_a_statement():
     assert tools.cut_sql(tricky, len(tricky) - 3) == (b"", True)      # never inside a COPY block
 
 
+def test_cut_sql_does_not_cut_inside_a_quoted_comment():
+    text = (b"CREATE TABLE a ();\n"
+            b"COMMENT ON TABLE a IS 'first line;\nsecond line; it''s still the comment;\nthird';\n"
+            b"CREATE TABLE b ();\n")
+    for cap in range(len(b"CREATE TABLE a ();\n") + 1, len(text) - len(b"CREATE TABLE b ();\n")):
+        cut, truncated = tools.cut_sql(text, cap)
+        assert truncated is True and cut == b"CREATE TABLE a ();\n", cap      # never ends inside the string
+    whole_comment = len(text) - len(b"CREATE TABLE b ();\n")
+    assert tools.cut_sql(text, whole_comment)[0].endswith(b"third';\n")
+
+
 def test_cut_sql_never_returns_half_a_statement():
     assert tools.cut_sql(b"CREATE TABLE a_very_long_name ();\n", 10) == (b"", True)
 

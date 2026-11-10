@@ -28,6 +28,10 @@ Reply in the language the user writes in. Be brief.
 """
 
 MAX_TOOL_OUTPUT = 20_000
+# One tool result must fit in MAX_TOOL_OUTPUT once it is JSON, so in chat the big readers return less
+# than they do for an MCP client: a short page of rows, and an export cut well under the limit.
+CHAT_PAGE = 25
+CHAT_EXPORT_BYTES = 12_000
 
 
 def check_rate_limit(user) -> None:
@@ -84,6 +88,19 @@ def run_tool(user, conv, name: str, raw_args: str) -> dict:
                     "Summarise the diff and say it is waiting. Do not say it is applied."
                 )
             return result
+        if name == "merge_duplicates":
+            result = mcp_tools.merge_duplicates(user, **args, source="web", conversation_id=conv.pk)
+            if result["change"].get("status") == "pending":
+                result["change"]["next"] = (
+                    "The user sees this merge in the review tray and decides it there. Say which record is kept and "
+                    f"that it is waiting for their decision (change #{result['change']['id']}). Do not say it is applied."
+                )
+            return result
+        if name == "export_schema":
+            return mcp_tools.export_schema(user, **args, max_bytes=CHAT_EXPORT_BYTES)
+        if name == "read_rows":
+            asked = args.get("limit")
+            args["limit"] = min(asked, CHAT_PAGE) if isinstance(asked, int) and not isinstance(asked, bool) and asked > 0 else CHAT_PAGE
         return mcp_tools.IMPL[name](user, **args)
     except mcp_tools.ToolFailure as exc:
         return {"error": str(exc)}

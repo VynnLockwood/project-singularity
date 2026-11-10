@@ -227,13 +227,14 @@ def cut_sql(text: bytes, cap: int) -> tuple[bytes, bool]:
     """Fit exported SQL under `cap` bytes without ever returning half a statement.
 
     Returns the text and whether it was cut. A cut lands after the last complete statement at or
-    before the cap: a line ending in `;` outside a COPY block, or the `\\.` line that closes one.
-    A COPY header and its rows count as one statement, so data is never cut in the middle.
+    before the cap: a line ending in `;` outside a COPY block and outside a quoted string (a table
+    comment may hold `;` and line breaks), or the `\\.` line that closes a COPY block. A COPY header
+    and its rows count as one statement, so data is never cut in the middle.
     """
     if len(text) <= cap:
         return text, False
     safe = pos = 0
-    in_copy = False
+    in_copy = in_string = False
     for line in text[:cap].splitlines(keepends=True):
         pos += len(line)
         if not line.endswith(b"\n"):
@@ -242,15 +243,21 @@ def cut_sql(text: bytes, cap: int) -> tuple[bytes, bool]:
         if in_copy:
             if body == b"\\.":
                 in_copy, safe = False, pos
-        elif body.startswith(b"COPY ") and body.endswith(b"FROM stdin;"):
+            continue
+        opened_in_string = in_string
+        if body.count(b"'") % 2:                    # a doubled '' inside a string keeps the count even
+            in_string = not in_string
+        if in_string:
+            continue
+        if not opened_in_string and body.startswith(b"COPY ") and body.endswith(b"FROM stdin;"):
             in_copy = True
         elif body.endswith(b";"):
             safe = pos
     return text[:safe], True
 
 
-def export_schema(user, schema: str = "master", include_data: bool = False) -> dict:
-    """A database as Postgres SQL, inline up to limits.maxInlineExportBytes."""
+def export_schema(user, schema: str = "master", include_data: bool = False, *, max_bytes: int | None = None) -> dict:
+    """A database as Postgres SQL, inline up to limits.maxInlineExportBytes (or `max_bytes`, if that is smaller)."""
     from audit.models import record
     from schema.dump_model import ExportError
     from schema.export import open_export
@@ -259,6 +266,8 @@ def export_schema(user, schema: str = "master", include_data: bool = False) -> d
         raise ToolFailure("exporting data needs the editor role. Call export_schema without include_data for the structure only.")
     limits = get_config()["limits"]
     cap = int(limits["maxInlineExportBytes"])
+    if max_bytes is not None:
+        cap = max(0, min(cap, int(max_bytes)))
     try:
         ex = open_export(schema if isinstance(schema, str) else "", data=bool(include_data), cap=limits["maxExportRows"])
     except ExportError as exc:
@@ -334,13 +343,25 @@ def get_duplicate(user, group_id: int) -> dict:
             f"Call dismiss_duplicate with group_id={g.pk}, or find_duplicates to scan again.") from exc
 
 
-def merge_duplicates(user, group_id: int, survivor_id: int) -> dict:
+def merge_duplicates(user, group_id: int, survivor_id: int, *, source: str = "mcp",
+                     conversation_id: int | None = None) -> dict:
     from duplicates import service as dup
 
     if not isinstance(survivor_id, int) or isinstance(survivor_id, bool):
         raise ToolFailure("survivor_id must be the id of the record to keep (one of the group's memberIds).")
     g = _dup(lambda d: d.get_group(group_id))
-    change = _dup(lambda d: d.propose_merge(g, survivor_id, user, source="mcp"))
+    if dup.state(g) == "dismissed":
+        raise ToolFailure(
+            f"group #{g.pk} was dismissed as not duplicates, so it cannot be merged. If that was a mistake, the "
+            "user can reopen it in the web app (Duplicates); find_duplicates will not bring a dismissed group back.")
+    try:
+        change = dup.propose_merge(g, survivor_id, user, source=source, conversation_id=conversation_id)
+    except dup.DuplicateError as exc:
+        if exc.status == 404:   # the table or its key is gone since the scan
+            raise ToolFailure(
+                f"the records of group #{g.pk} can no longer be read (table {g.table_name!r} changed or is gone). "
+                f"Call dismiss_duplicate with group_id={g.pk}, or find_duplicates to scan again.") from exc
+        raise ToolFailure(f"{str(exc).rstrip('.')}.") from exc
     return {"group": dup.summary(g), "change": _result(user, change)}
 
 

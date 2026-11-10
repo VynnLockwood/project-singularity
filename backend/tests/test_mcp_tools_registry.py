@@ -4,7 +4,9 @@ import asyncio
 from chat import toolspecs
 from mcp_server import tools
 
-NOT_IN_CHAT = {"approve_change", "reject_change"}   # the person decides in the web app, never the model
+# Not offered to the web chat assistant: these apply or decide a change, and in the web app a person does that.
+# revert_change proposes and approves its own reverse in one call, so it belongs here too.
+NOT_IN_CHAT = {"approve_change", "reject_change", "revert_change"}
 
 
 def test_every_tool_has_a_role_and_an_implementation():
@@ -29,3 +31,16 @@ def test_clamp():
     assert tools.clamp(True, 20, 100) == 20
     assert tools.clamp(7, 20, 100) == 7
     assert tools.clamp(10**9, 20, 100) == 100
+
+
+def test_minimum_roles_of_the_reach_tools_are_pinned():
+    """Spelled out on purpose: a wrong role here is an authorisation bug the registry tests cannot see."""
+    assert {t: tools.TOOL_ROLES[t] for t in (
+        "list_changes", "get_audit_log", "revert_change", "recheck_change", "read_rows", "find_duplicates",
+        "list_duplicates", "get_duplicate", "merge_duplicates", "dismiss_duplicate", "export_schema", "reindex_search",
+    )} == {
+        "list_changes": "viewer", "get_audit_log": "approver", "revert_change": "approver", "recheck_change": "editor",
+        "read_rows": "viewer", "find_duplicates": "editor", "list_duplicates": "viewer", "get_duplicate": "viewer",
+        "merge_duplicates": "editor", "dismiss_duplicate": "editor", "export_schema": "viewer",
+        "reindex_search": "approver",
+    }

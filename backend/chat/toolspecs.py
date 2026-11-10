@@ -1,7 +1,8 @@
 """Tool definitions the model sees in the web chat (OpenAI function format).
 
-Approval is not a tool here: the app shows an Approve / Reject popup, so the model cannot approve
-its own proposals.
+Approval is not a tool here: the person approves or rejects in the web app's review tray, so the model
+cannot approve its own proposals. For the same reason there is no revert_change: a revert proposes and
+approves its own reverse in one call.
 """
 from mcp_server import tools as mcp_tools
 
@@ -76,7 +77,6 @@ SPECS = {
     "get_audit_log": (D["get_audit_log"],
                       {"action": {"type": "string"}, "actor": {"type": "string", "description": "an email"},
                        "limit": {"type": "integer"}}, []),
-    "revert_change": (D["revert_change"], {"change_id": {"type": "integer"}}, ["change_id"]),
     "recheck_change": (D["recheck_change"], {"change_id": {"type": "integer"}}, ["change_id"]),
     "read_rows": (D["read_rows"],
                   {"table": {"type": "string"}, **SCHEMA, "offset": {"type": "integer"}, "limit": {"type": "integer"},

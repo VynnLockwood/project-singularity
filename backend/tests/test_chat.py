@@ -84,7 +84,7 @@ def test_tools_offered_depend_on_role(monkeypatch):
 
     def offered(role):  # every tool the role may use, except deciding: that is the person's job in the web app
         return {t for t, need in mcp_tools.TOOL_ROLES.items()
-                if mcp_tools.RANK[need] <= mcp_tools.RANK[role]} - {"approve_change", "reject_change"}
+                if mcp_tools.RANK[need] <= mcp_tools.RANK[role]} - {"approve_change", "reject_change", "revert_change"}
 
     assert "propose_change" not in offered("viewer") and "propose_change" in offered("editor")
     assert "list_users" not in offered("editor") and "list_users" in offered("approver")

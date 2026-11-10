@@ -78,6 +78,24 @@ def test_merge_refuses_bad_input(users):
         tools.merge_duplicates(ed, g["id"], 1)
 
 
+def test_merge_refuses_a_dismissed_group(users):
+    ed = users[Role.EDITOR]
+    g = found(users)
+    tools.dismiss_duplicate(ed, g["id"])
+    with pytest.raises(tools.ToolFailure, match="dismissed.*find_duplicates"):
+        tools.merge_duplicates(ed, g["id"], 1)
+    assert tools.list_changes(ed, kind="data", status="pending")["changes"] == []     # nothing was proposed
+
+
+def test_merge_of_a_group_whose_table_was_dropped_says_what_to_do(users):
+    ap = users[Role.APPROVER]
+    g = found(users)
+    applied(ap, [{"op": "drop_table", "table": "purchase", "reason": "test"}])
+    applied(ap, [{"op": "drop_table", "table": "supplier", "reason": "test"}])
+    with pytest.raises(tools.ToolFailure, match="dismiss_duplicate"):
+        tools.merge_duplicates(ap, g["id"], 1)
+
+
 def test_dismiss_and_list_by_status(users):
     ed = users[Role.EDITOR]
     g = found(users)

@@ -167,12 +167,13 @@ def merge_operations(g: DuplicateGroup, survivor_id: int) -> list[dict]:
     return ops
 
 
-def propose_merge(g: DuplicateGroup, survivor_id: int, user, *, source: str = "web") -> Change:
+def propose_merge(g: DuplicateGroup, survivor_id: int, user, *, source: str = "web",
+                  conversation_id: int | None = None) -> Change:
     if state(g) in ("merged", "merge_pending"):
         raise DuplicateError("this group already has a merge in progress", 409)
     ops = merge_operations(g, survivor_id)
     try:
-        change = changes.propose(user, ops, source=source,
+        change = changes.propose(user, ops, source=source, conversation_id=conversation_id,
                                  prompt=f"Merge duplicates in {g.table_name}: keep #{survivor_id}", schema=g.schema)
     except changes.ChangeError as exc:
         raise DuplicateError(exc.message, 403 if exc.code == "forbidden" else 400) from exc

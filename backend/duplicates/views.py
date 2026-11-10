@@ -4,7 +4,6 @@ from django.http import JsonResponse
 from accounts.api import endpoint, error
 from approvals import service as changes
 from audit.models import record
-from schema import introspect
 from schema.http import schema_param, unknown_schema_is_400
 
 from . import service
