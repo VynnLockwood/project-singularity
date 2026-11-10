@@ -65,3 +65,14 @@
 .ui-toast-close { background: none; border: 0; color: var(--text-faint); padding: 4px; border-radius: 4px; display: inline-flex; }
 .ui-toast-close:hover { color: var(--text-bright); background: var(--surface-2); }
 @keyframes ui-toast-in { from { opacity: 0; transform: translateY(8px); } }
+
+/* ---- Tray ---- */
+.ui-tray { position: fixed; top: 0; right: 0; bottom: var(--shell-bottom); width: min(var(--tray-width), 100vw); z-index: 40; display: flex; flex-direction: column; background: var(--surface-1); border-left: 1px solid var(--line-strong); animation: ui-tray-in var(--dur-base) ease-out; }
+.ui-tray:focus-visible { outline-offset: -2px; }
+.ui-tray-head { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4); border-bottom: 1px solid var(--line); }
+.ui-tray-head h2 { margin: 0; font-size: var(--size-title-3); flex: 1; }
+.ui-tray-body { flex: 1; overflow: auto; padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); }
+.ui-tray-body .change { max-width: none; }
+.ui-tray-body .ui-empty { border: 0; background: none; padding: var(--space-4) var(--space-2); }
+@keyframes ui-tray-in { from { transform: translateX(24px); opacity: 0; } }
+@media (max-width: 720px) { .ui-tray { width: 100vw; border-left: 0; } }

@@ -3,16 +3,21 @@
 import { useState } from "react";
 import type { Change, Me } from "@/lib/api";
 import { canDecide, diffKind, warnings } from "@/lib/changes";
+import { Badge, Button } from "@/components/ui";
 
 interface Props {
   change: Change;
   me: Me;
   onDecide?: (change: Change, action: "approve" | "reject") => Promise<void> | void;
+  /** A decision on this change is in flight: its two buttons wait. */
+  deciding?: boolean;
+  /** Older name for `deciding`. */
   busy?: boolean;
 }
 
 /** One proposed change: diff (green added, red removed), warnings, collapsible SQL, Approve / Reject. */
-export function ChangeCard({ change, me, onDecide, busy }: Props) {
+export function ChangeCard({ change, me, onDecide, deciding, busy }: Props) {
+  const waiting = deciding || busy;
   const [showSql, setShowSql] = useState(false);
   const warns = warnings(change);
   const blockers = (change.check.violations ?? []).filter((v) => v.severity === "block");
@@ -24,9 +29,7 @@ export function ChangeCard({ change, me, onDecide, busy }: Props) {
         <strong>
           #{change.id} · {change.kind === "schema" ? "Schema change" : change.kind === "config" ? "Settings change" : "Data change"}
         </strong>
-        <span className="badge" data-status={change.status}>
-          {change.status}
-        </span>
+        <Badge status={change.status} className="badge" />
       </header>
       <p className="muted small">
         {change.requester} · {change.source}
@@ -72,12 +75,12 @@ export function ChangeCard({ change, me, onDecide, busy }: Props) {
 
       {decidable && (
         <div className="actions">
-          <button className="button" disabled={busy} onClick={() => onDecide!(change, "approve")}>
-            Approve
-          </button>
-          <button className="button ghost" disabled={busy} onClick={() => onDecide!(change, "reject")}>
+          <Button variant="primary" icon="check" disabled={waiting} onClick={() => onDecide!(change, "approve")}>
+            {deciding ? "Applying…" : "Approve"}
+          </Button>
+          <Button variant="danger" disabled={waiting} onClick={() => onDecide!(change, "reject")}>
             Reject
-          </button>
+          </Button>
         </div>
       )}
       {change.status === "pending" && !decidable && (

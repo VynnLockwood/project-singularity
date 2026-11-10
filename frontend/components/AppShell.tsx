@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { decide, getQueue, ApiError, type Change, type Me } from "@/lib/api";
 import { canDecide, upsert } from "@/lib/changes";
 import { connectEvents } from "@/lib/events";
-import { ApprovalPopup } from "./ApprovalPopup";
+import { ReviewTray } from "./ReviewTray";
 import { ChatView } from "./ChatView";
 import { DataView } from "./DataView";
 import { DuplicatesView } from "./DuplicatesView";
@@ -107,12 +107,13 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
           </div>
         </div>
       )}
-      <ApprovalPopup
+      <ReviewTray
         me={me}
         changes={popupChanges}
+        open={popupChanges.length > 0}
+        onClose={() => setSnoozed((s) => new Set([...s, ...popupChanges.map((c) => c.id)]))}
         onDecide={onDecide}
-        busy={busy}
-        onSnooze={(id) => setSnoozed((s) => new Set(s).add(id))}
+        deciding={null}
       />
     </div>
   );
