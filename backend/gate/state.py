@@ -231,6 +231,21 @@ def apply_op(op: dict, state: dict, errors: list[str] | None = None, label: str 
     elif kind == "set_column_comment":
         need_col(op["table"], op["column"])
 
+    elif kind in ("set_column_default", "drop_column_default", "set_not_null", "drop_not_null"):
+        t, c = op["table"], op["column"]
+        if need_col(t, c):
+            entry = state[t]["columns"][c]
+            if kind == "set_column_default":
+                entry["default"] = op["default"]
+            elif kind == "drop_column_default":
+                entry["default"] = None
+            elif kind == "set_not_null":
+                entry["nullable"] = False
+            elif pk_of(state, t) == c:
+                err(f"column {t}.{c} is the primary key and cannot be made nullable")
+            else:
+                entry["nullable"] = True
+
     elif kind in ("add_index", "add_unique"):
         t = op["table"]
         if need_table(t):

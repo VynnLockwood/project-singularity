@@ -36,6 +36,7 @@ SCHEMA_OPS = {
     "set_column_comment", "add_index", "add_foreign_key", "add_unique",
     "drop_column", "drop_table", "drop_index", "drop_constraint",
     "add_check", "set_table_comment",
+    "set_column_default", "drop_column_default", "set_not_null", "drop_not_null",
 }
 DATA_OPS = {"insert_rows", "update_rows", "deactivate_rows", "bulk_insert"}
 # Produced only by script intake; the normal propose path refuses it (see gate.check.run allow_bulk).
@@ -78,6 +79,13 @@ def _ident(v, what: str, errs: list[str], where: str) -> None:
         errs.append(f"{where}: {what} must be an identifier (letters, digits, underscore or hyphen; max 63 chars)")
 
 
+def _check_default(d, errs: list[str], where: str) -> None:
+    if isinstance(d, str) and d in DEFAULT_FUNCS:
+        return
+    if not isinstance(d, SCALAR):
+        errs.append(f"{where}: default must be a JSON scalar or one of {sorted(DEFAULT_FUNCS)}")
+
+
 def _check_column(col, errs: list[str], where: str, *, allow_references: bool = True) -> None:
     if not isinstance(col, dict):
         errs.append(f"{where}: column must be an object")
@@ -95,11 +103,7 @@ def _check_column(col, errs: list[str], where: str, *, allow_references: bool = 
         if flag in col and not isinstance(col[flag], bool):
             errs.append(f"{where}: {flag} must be true or false")
     if "default" in col:
-        d = col["default"]
-        if isinstance(d, str) and d in DEFAULT_FUNCS:
-            pass
-        elif not isinstance(d, SCALAR):
-            errs.append(f"{where}: default must be a JSON scalar or one of {sorted(DEFAULT_FUNCS)}")
+        _check_default(col["default"], errs, where)
     if "comment" in col and not isinstance(col["comment"], str):
         errs.append(f"{where}: comment must be text")
     ref = col.get("references")
@@ -370,6 +374,15 @@ def parse_ops(raw, *, max_ops: int = 50) -> list[dict]:
             _ident(op.get("column"), "column", errs, where)
             if not isinstance(op.get("type"), str) or not TYPE_RE.fullmatch(normalize_type(op["type"])):
                 errs.append(f"{where}: unsupported type {op.get('type')!r}")
+        elif kind in ("set_column_default", "drop_column_default", "set_not_null", "drop_not_null"):
+            keys("table", "column", *(["default"] if kind == "set_column_default" else []))
+            _ident(op.get("table"), "table", errs, where)
+            _ident(op.get("column"), "column", errs, where)
+            if kind == "set_column_default":
+                if "default" not in op:
+                    errs.append(f"{where}: default is required")
+                else:
+                    _check_default(op["default"], errs, where)
         elif kind == "set_column_comment":
             keys("table", "column", "comment")
             _ident(op.get("table"), "table", errs, where)

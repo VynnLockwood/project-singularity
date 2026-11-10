@@ -179,6 +179,14 @@ def statements_for(op: dict, state_before: dict, actor: str | None, conv: Conven
     if k == "set_column_comment":
         return [_comment_col(op["table"], op["column"], op["comment"], schema)]
 
+    if k in ("set_column_default", "drop_column_default", "set_not_null", "drop_not_null"):
+        head = S("ALTER TABLE {} ALTER COLUMN {} ").format(tbl(op["table"], schema), I(op["column"]))
+        if k == "set_column_default":
+            d = op["default"]
+            return [Stmt(head + S("SET DEFAULT ") + (S(d) if isinstance(d, str) and d in DEFAULT_FUNCS else lit(d)))]
+        tail = {"drop_column_default": "DROP DEFAULT", "set_not_null": "SET NOT NULL", "drop_not_null": "DROP NOT NULL"}[k]
+        return [Stmt(head + S(tail))]
+
     if k == "add_index":
         name = op.get("name") or index_name(op["table"], op["columns"])
         return [
@@ -325,6 +333,14 @@ def describe(op: dict) -> str:
         return f"~ change type of {op['table']}.{op['column']} to {normalize_type(op['type'])}"
     if k == "set_column_comment":
         return f"~ set comment on {op['table']}.{op['column']}"
+    if k == "set_column_default":
+        return f"~ set default of {op['table']}.{op['column']}"
+    if k == "drop_column_default":
+        return f"~ drop default of {op['table']}.{op['column']}"
+    if k == "set_not_null":
+        return f"~ set {op['table']}.{op['column']} not null"
+    if k == "drop_not_null":
+        return f"~ allow nulls in {op['table']}.{op['column']}"
     if k == "add_index":
         u = "unique " if op.get("unique") else ""
         return f"+ add {u}index on {op['table']} ({', '.join(op['columns'])})"

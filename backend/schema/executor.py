@@ -17,7 +17,7 @@ from gate.conventions import Conventions
 from gate.state import fk_name, index_name, pk_of, role_of, unique_name
 
 from .conn import rw_connection
-from .util import jsonable, pg_type_to_allowed
+from .util import jsonable, pg_default_to_allowed, pg_type_to_allowed
 
 
 class ApplyError(Exception):
@@ -78,6 +78,17 @@ def _col_comment(conn, table: str, column: str, schema: str) -> str:
         (schema, table, column),
     ).fetchone()
     return (row["c"] if row else None) or ""
+
+
+def _col_default(conn, table: str, column: str, schema: str) -> tuple[str | None, str]:
+    """(default expression or None, column type) as the database has them."""
+    row = conn.execute(
+        "SELECT pg_get_expr(d.adbin, d.adrelid) AS e, format_type(a.atttypid, a.atttypmod) AS t FROM pg_attribute a "
+        "LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum "
+        "WHERE a.attrelid = format('%%I.%%I', %s::text, %s::text)::regclass AND a.attname = %s AND NOT a.attisdropped",
+        (schema, table, column),
+    ).fetchone()
+    return (row["e"], row["t"]) if row else (None, "")
 
 
 def _table_comment(conn, table: str, schema: str) -> str:
@@ -201,13 +212,20 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_
         return _bulk_insert(conn, op, before, actor, row_source, schema=schema)
 
     # --- capture what we need before changing anything
-    prev_type = prev_comment = rows_before = None
+    prev_type = prev_comment = rows_before = prev_default = None
     if k == "alter_column_type":
         prev_type = _col_type(conn, t, op["column"], schema)
     elif k == "set_column_comment":
         prev_comment = _col_comment(conn, t, op["column"], schema)
     elif k == "set_table_comment":
         prev_comment = _table_comment(conn, t, schema)
+    elif k in ("set_column_default", "drop_column_default"):
+        prev_default = _col_default(conn, t, op["column"], schema)
+    elif k == "set_not_null":
+        n = conn.execute(sql.SQL("SELECT count(*) AS n FROM {} WHERE {} IS NULL").format(
+            sqlgen.tbl(t, schema), sql.Identifier(op["column"]))).fetchone()["n"]
+        if n:
+            raise ApplyError(f"{n} row(s) in {t}.{op['column']} are NULL; fix or remove them first")
     elif k == "update_rows" and pk_of(before, t):
         rows_before = _before_rows(conn, t, op["where"], list(op["set"]), max_rows, pk_of(before, t), schema)
     elif k == "deactivate_rows" and pk_of(before, t):
@@ -251,6 +269,17 @@ def _run_op(conn, op: dict, before: dict, stmts, max_rows: int, actor=None, row_
         return [{"op": "set_column_comment", "table": t, "column": op["column"], "comment": prev_comment}]
     if k == "set_table_comment":
         return [{"op": "set_table_comment", "table": t, "comment": prev_comment}]
+    if k in ("set_column_default", "drop_column_default"):
+        ok, value = pg_default_to_allowed(*prev_default)
+        if not ok:
+            return None
+        if value is None:
+            return [{"op": "drop_column_default", "table": t, "column": op["column"]}] if k == "set_column_default" else []
+        return [{"op": "set_column_default", "table": t, "column": op["column"], "default": value}]
+    if k == "set_not_null":
+        return [{"op": "drop_not_null", "table": t, "column": op["column"]}]
+    if k == "drop_not_null":
+        return [{"op": "set_not_null", "table": t, "column": op["column"]}]
     if k == "add_check":
         return [{"op": "drop_constraint", "table": t, "name": op["name"], "reason": why}]
     if k == "add_index":
