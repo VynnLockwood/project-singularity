@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { ToastProvider } from "@/components/ui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "@/lib/api";
 import type { Change, Me } from "@/lib/api";
@@ -9,10 +10,12 @@ vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
   listChanges: vi.fn(),
   revertChange: vi.fn(),
+  getChange: vi.fn(),
   getSchemas: vi.fn(async () => [{ name: "master", tables: 1, comment: null }, { name: "sales", tables: 1, comment: null }]),
 }));
 const listChanges = vi.mocked(api.listChanges);
 const revertChange = vi.mocked(api.revertChange);
+const getChange = vi.mocked(api.getChange);
 
 const me = (role: Me["role"] = "approver"): Me => ({ id: 1, email: "ap@x.com", name: "", role });
 const applied = (id: number, over: Partial<Change> = {}) => change({ id, status: "applied", kind: "data", schema: "master", requester: "ed@x.com", prompt: `prompt ${id}`, reversible: true, ...over });
@@ -22,6 +25,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   history.replaceState(null, "", "/activity/history");
   listChanges.mockResolvedValue(page([applied(3), applied(2)]));
+  getChange.mockRejectedValue(new Error("no detail"));
 });
 
 describe("HistoryView list", () => {
@@ -214,5 +218,57 @@ describe("HistoryView revert", () => {
     fireEvent.click(screen.getByRole("button", { name: "Yes, revert" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("already reverted");
     expect(screen.getByText("prompt 3")).toBeInTheDocument();
+  });
+});
+
+describe("HistoryView review fixes", () => {
+  it("a fetched row beats a live copy that was recorded before the fetch", async () => {
+    listChanges.mockResolvedValue(page([applied(5)]));
+    const { rerender } = render(<HistoryView me={me()} live={[change({ id: 5, status: "pending", kind: "data" })]} />);
+    await screen.findByText("prompt 5");
+    expect(screen.getByText("prompt 5").closest("button")).toHaveTextContent("Applied");
+    rerender(<HistoryView me={me()} live={[change({ id: 5, status: "failed", kind: "data", prompt: "prompt 5" })]} />);
+    expect(screen.getByText("prompt 5").closest("button")).toHaveTextContent("Failed");
+  });
+
+  it("does not claim a revert worked when the revert change was rejected", async () => {
+    listChanges.mockResolvedValue(page([applied(3)]));
+    render(<ToastProvider><HistoryView me={me()} live={[]} /></ToastProvider>);
+    fireEvent.click((await screen.findByText("prompt 3")).closest("button")!);
+    revertChange.mockResolvedValue(applied(4, { status: "rejected", error: "blocked by a rule", reverts: 3 }));
+    fireEvent.click(screen.getByRole("button", { name: /Revert/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, revert" }));
+    expect(await screen.findByText(/blocked by a rule/)).toBeInTheDocument();
+    expect(screen.queryByText("Change #3 reverted")).toBeNull();
+  });
+
+  it("loads the SQL of a row when it is opened", async () => {
+    listChanges.mockResolvedValue(page([applied(3, { kind: "sql", sql: undefined, operations: undefined })]));
+    getChange.mockResolvedValue(applied(3, { kind: "sql", sql: ["UPDATE master.t SET a = 1"], operations: [{ op: "raw_sql", sql: "UPDATE master.t SET a = 1", reason: "fix it up" }] }));
+    render(<HistoryView me={me()} live={[]} />);
+    fireEvent.click((await screen.findByText("prompt 3")).closest("button")!);
+    expect(await screen.findByText("UPDATE master.t SET a = 1")).toBeInTheDocument();
+    expect(getChange).toHaveBeenCalledWith(3);
+  });
+
+  it("after a failed Show more, says nothing false about the cap and retries the same step", async () => {
+    listChanges.mockResolvedValueOnce(page([applied(3)], true));
+    render(<HistoryView me={me()} live={[]} />);
+    await screen.findByText("prompt 3");
+    for (const want of [100, 150]) {
+      listChanges.mockResolvedValueOnce(page([applied(3)], true));
+      fireEvent.click(await screen.findByRole("button", { name: "Show more" }));
+      await waitFor(() => expect(listChanges).toHaveBeenLastCalledWith({}, want));
+    }
+    listChanges.mockRejectedValueOnce(new api.ApiError(500, "no luck"));
+    fireEvent.click(await screen.findByRole("button", { name: "Show more" }));
+    await waitFor(() => expect(listChanges).toHaveBeenLastCalledWith({}, 200));
+    expect(await screen.findByRole("alert")).toHaveTextContent("no luck");
+    expect(screen.queryByText(/Showing the latest 200/)).toBeNull();
+    listChanges.mockResolvedValueOnce(page([applied(3)], true));
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+    await waitFor(() => expect(listChanges).toHaveBeenCalledTimes(5));
+    expect(listChanges).toHaveBeenLastCalledWith({}, 200);
+    expect(await screen.findByText(/Showing the latest 200/)).toBeInTheDocument();
   });
 });

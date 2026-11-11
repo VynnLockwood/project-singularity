@@ -122,6 +122,8 @@ export const listChanges = (f: ChangeFilters, limit: number) => {
   q.set("limit", String(limit));
   return call<{ changes: Change[]; more?: boolean }>("GET", `/changes?${q}`).then((r) => ({ changes: r.changes ?? [], more: r.more === true }));
 };
+/** One change with its operations and SQL (the list leaves them out). */
+export const getChange = (id: number) => call<Change>("GET", `/changes/${id}`);
 export const revertChange = (id: number) => call<Change>("POST", `/changes/${id}/revert`, {});
 export const decide = (id: number, action: "approve" | "reject", note = "") =>
   call<Change>("POST", `/changes/${id}/${action}`, note ? { note } : {});

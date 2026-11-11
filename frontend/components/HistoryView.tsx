@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, getSchemas, listChanges, revertChange, type Change, type Me } from "@/lib/api";
+import { ApiError, getChange, getSchemas, listChanges, revertChange, type Change, type Me } from "@/lib/api";
 import { DEFAULT_FILTERS, filtersToSearch, mergeLive, parseFilters, toApiFilters, type HistoryFilters } from "@/lib/historyFilters";
 import { Badge, Button, EmptyState, Skeleton, statusMeta, useToast } from "@/components/ui";
 import { ChangeCard } from "./ChangeCard";
@@ -47,6 +47,13 @@ export function HistoryView({ me, live, busy }: Props) {
   const [confirming, setConfirming] = useState<number | null>(null);
   const [revertError, setRevertError] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
+  /** The limit of the last request that succeeded: the one the list on screen was loaded with. */
+  const [loadedLimit, setLoadedLimit] = useState(PAGE);
+  const [details, setDetails] = useState<Record<number, Change>>({});
+  /** Live copies that already existed when the list was fetched: the fetch is newer than those. */
+  const seenLive = useRef<Set<Change>>(new Set());
+  const liveNow = useRef(live);
+  liveNow.current = live;
   const [dbs, setDbs] = useState<string[]>([]);
   const request = useRef(0);
   const reverting = useRef(false);
@@ -60,8 +67,10 @@ export function HistoryView({ me, live, busy }: Props) {
     listChanges(toApiFilters(filters), limit)
       .then((r) => {
         if (id !== request.current) return; // a newer request owns the list now
+        seenLive.current = new Set(liveNow.current);
         setRows(r.changes);
         setMore(r.more);
+        setLoadedLimit(limit);
         setError("");
         setState("ready");
       })
@@ -79,7 +88,7 @@ export function HistoryView({ me, live, busy }: Props) {
     history.replaceState(null, "", location.pathname + filtersToSearch(next));
   }, []);
 
-  const visible = mergeLive(rows, live, filters, me);
+  const visible = mergeLive(rows, live.filter((c) => !seenLive.current.has(c)), filters, me);
   const dbOptions = filters.db && !dbs.includes(filters.db) ? [...dbs, filters.db] : dbs; // a dropped database still has history
 
   const doRevert = async (c: Change) => {
@@ -87,8 +96,9 @@ export function HistoryView({ me, live, busy }: Props) {
     reverting.current = true;
     setRevertError("");
     try {
-      await revertChange(c.id);
-      toast.success(`Change #${c.id} reverted`);
+      const r = await revertChange(c.id);
+      if (r.status === "applied") toast.success(`Change #${c.id} reverted`);
+      else setRevertError(r.error || `The revert of change #${c.id} was ${r.status}, so nothing was undone.`);
       setConfirming(null);
       setReloadKey((k) => k + 1);
     } catch (e) {
@@ -97,6 +107,12 @@ export function HistoryView({ me, live, busy }: Props) {
     } finally {
       reverting.current = false;
     }
+  };
+
+  /** The list leaves out each change's SQL; fetch it when a row is opened. */
+  const loadDetail = (c: Change) => {
+    if (c.sql !== undefined || details[c.id]) return;
+    getChange(c.id).then((d) => setDetails((m) => ({ ...m, [c.id]: d }))).catch(() => {});
   };
 
   return (
@@ -138,7 +154,7 @@ export function HistoryView({ me, live, busy }: Props) {
             const expanded = open === c.id;
             return (
               <li key={c.id} className="history-item">
-                <button className="history-row" aria-expanded={expanded} onClick={() => { setOpen(expanded ? null : c.id); setConfirming(null); setRevertError(""); }}>
+                <button className="history-row" aria-expanded={expanded} onClick={() => { setOpen(expanded ? null : c.id); setConfirming(null); setRevertError(""); if (!expanded) loadDetail(c); }}>
                   <strong>#{c.id}</strong>
                   <Badge status={c.status} />
                   <span>{KIND_LABEL[c.kind] ?? c.kind}</span>
@@ -150,7 +166,7 @@ export function HistoryView({ me, live, busy }: Props) {
                 </button>
                 {expanded && (
                   <div className="history-detail">
-                    <ChangeCard change={c} me={me} busy={busy} />
+                    <ChangeCard change={{ ...c, sql: c.sql ?? details[c.id]?.sql, operations: c.operations ?? details[c.id]?.operations }} me={me} busy={busy} />
                     {canRevert(c, visible, me) && (confirming === c.id ? (
                       <p className="actions">
                         <span>Revert change #{c.id}?</span>
@@ -169,8 +185,10 @@ export function HistoryView({ me, live, busy }: Props) {
         </ul>
       )}
       {state === "ready" && error && <p className="problems" role="alert">{error}</p>}
-      {state === "ready" && more && limit < CAP && <Button onClick={() => setLimit((l) => Math.min(l + PAGE, CAP))}>Show more</Button>}
-      {state === "ready" && more && limit >= CAP && (
+      {state === "ready" && more && loadedLimit < CAP && (
+        <Button onClick={() => { setLimit(Math.min(loadedLimit + PAGE, CAP)); setReloadKey((k) => k + 1); }}>Show more</Button>
+      )}
+      {state === "ready" && more && loadedLimit >= CAP && (
         <p className="muted">Showing the latest {CAP}. Narrow the filters to see older changes.</p>
       )}
     </div>

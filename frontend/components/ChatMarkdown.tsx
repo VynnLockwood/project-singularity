@@ -40,6 +40,8 @@ const components: Components = {
   h1: heading("h3"), h2: heading("h4"), h3: heading("h5"), h4: heading("h6"), h5: heading("h6"), h6: heading("h6"),
   a: ({ href, children }) =>
     href && SAFE_URL.test(href) ? <a href={href} target="_blank" rel="noopener noreferrer">{children}</a> : <span>{children}</span>,
+  // A remote image loads by itself the moment the reply is shown: a tracking channel that can carry data out.
+  img: ({ alt }) => <span className="md-image">{alt ? `[image: ${alt}]` : "[image]"}</span>,
   table: ({ children }) => <div className="md-scroll"><table>{children}</table></div>,
   pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
 };
