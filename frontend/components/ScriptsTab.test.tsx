@@ -32,6 +32,15 @@ describe("ScriptsTab destination picker", () => {
     fireEvent.change(screen.getByLabelText(label), { target: { value } });
   }
 
+  it("loads into the existing table when the source name matches one", async () => {
+    render(<ScriptsTab canEdit />);
+    await waitFor(() => expect(screen.getByLabelText("Table 1: load into an existing table")).toBeEnabled());   // tables loaded
+    fireEvent.change(screen.getByLabelText("Table 1 source table"), { target: { value: "subdistrict" } });
+    const select = await screen.findByLabelText("Table 1 existing table");
+    expect((select as HTMLSelectElement).value).toBe("subdistrict");
+    expect((screen.getByLabelText("Table 1: load into an existing table") as HTMLInputElement).checked).toBe(true);
+  });
+
   it("writes an external ref when resolving against an existing table", async () => {
     render(<ScriptsTab canEdit />);
 
@@ -132,6 +141,7 @@ async function setup(over: Partial<Api> = {}, listed: unknown[] = []) {
   vi.resetModules();
   const api: Api = {
     getGraph: vi.fn(async () => ({ tables: [], relations: [] })),
+    getSchemas: vi.fn(async () => [{ name: "master", tables: 3, comment: null }, { name: "master_thach", tables: 113, comment: null }]),
     listScripts: vi.fn(async () => listed),
     getScriptLimits: vi.fn(async () => ({ max_bytes: 1000, chunk_bytes: 100 })),
     uploadScriptChunked: vi.fn(async (_f: File, progress: (a: number, b: number) => void) => {
@@ -174,8 +184,48 @@ describe("ScriptsTab one-click flow", () => {
     await tick();
     expect(await screen.findByText("Ready: 2 tables, 15 rows")).toBeInTheDocument();
     expect(api.uploadScriptChunked).toHaveBeenCalledTimes(1);
-    expect(api.validateScriptAsync).toHaveBeenCalledWith(5, undefined);
+    expect(api.validateScriptAsync).toHaveBeenCalledWith(5, undefined, undefined);
     expect(screen.getByRole("button", { name: /submit for approval/i })).toBeEnabled();
+  });
+
+  it("shows the script id", async () => {
+    await setup();
+    pick();
+    await tick();
+    expect(await screen.findByText("#5")).toBeInTheDocument();
+  });
+
+  it("says which database was checked and why, and loads that database's tables", async () => {
+    const getScript = vi.fn(async () => ({ id: 5, name: "d.sql", size: 100, status: "validated", change_id: null,
+      report: doneReport({ schema: "master_thach", schema_source: "detected", detected_schema: "master_thach" }) }));
+    const { api } = await setup({ getScript });
+    pick();
+    await tick();
+    expect(await screen.findByText(/Checked against/)).toHaveTextContent("Checked against master_thach (named in the file)");
+    await waitFor(() => expect(api.getGraph).toHaveBeenCalledWith("master_thach"));
+    expect((screen.getByLabelText("Database") as HTMLSelectElement).value).toBe("");   // still "detect from the file"
+  });
+
+  it("choosing a database re-checks the script against it", async () => {
+    const { api } = await setup();
+    pick();
+    await tick();
+    await screen.findByText("Ready: 2 tables, 15 rows");
+    fireEvent.change(screen.getByLabelText("Database"), { target: { value: "master" } });
+    await tick();
+    expect(api.validateScriptAsync).toHaveBeenLastCalledWith(5, undefined, "master");
+    expect(api.validateScriptAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it("offers the database the file names when another one was chosen", async () => {
+    const getScript = vi.fn(async () => ({ id: 5, name: "d.sql", size: 100, status: "uploaded", change_id: null,
+      report: doneReport({ ok: false, errors: [], schema: "master", schema_source: "chosen", detected_schema: "master_thach" }) }));
+    const { api } = await setup({ getScript });
+    pick();
+    await tick();
+    fireEvent.click(await screen.findByRole("button", { name: "Use master_thach instead" }));
+    await tick();
+    expect(api.validateScriptAsync).toHaveBeenLastCalledWith(5, undefined, "master_thach");
   });
 
   it("validate runs once per upload", async () => {
@@ -245,7 +295,7 @@ describe("ScriptsTab one-click flow", () => {
       { target: { value: '{"tables":{"a":{"target":"a","columns":{"x":"x"}}}}' } });
     await tick(1200); await tick(); await tick();
     expect(api.validateScriptAsync).toHaveBeenCalledTimes(2);
-    expect(api.validateScriptAsync).toHaveBeenLastCalledWith(5, { tables: { a: { target: "a", columns: { x: "x" } } } });
+    expect(api.validateScriptAsync).toHaveBeenLastCalledWith(5, { tables: { a: { target: "a", columns: { x: "x" } } } }, undefined);
   });
 
   it("a failed job shows the message and a Try again", async () => {

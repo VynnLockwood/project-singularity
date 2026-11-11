@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiError,
   getGraph,
+  getSchemas,
   getScript,
   getScriptLimits,
   listScripts,
@@ -27,6 +28,7 @@ const KIND_LABEL: Record<string, string> = {
   logic: "Functions, triggers and policies", extension: "Extensions", sequence: "Sequences",
   default: "Sequence defaults", permission: "Permissions",
 };
+const SOURCE_LABEL: Record<string, string> = { detected: "named in the file", chosen: "your choice", default: "default" };
 const KIND_ORDER = ["logic", "extension", "sequence", "default", "permission"];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -52,7 +54,7 @@ type Entry = {
   source: string;                 // table as the script writes it
   mode: "new" | "existing";
   target: string;                 // create-new: the destination table name
-  existing: string;               // existing: table of schema `master`
+  existing: string;               // existing: table of the database the script is checked against
   fields: Field[];
   refs: Ref[];
 };
@@ -73,7 +75,7 @@ const identProblem = (name: string) =>
 /** The JSON `POST /scripts/:id/validate` already takes: `columns` is destination -> source, and a ref
  * whose parent is not a table of the script carries `external: true`. Empty while anything is invalid,
  * so an incomplete picker never replaces the server's own suggestion. */
-function emit(entries: Entry[]): string {
+function emit(entries: Entry[], schema: string): string {
   const tables: Record<string, { target: string; columns: Record<string, string>; refs?: object[] }> = {};
   for (const e of entries) {
     const source = e.source.trim();
@@ -89,7 +91,7 @@ function emit(entries: Entry[]): string {
       .filter((r) => r.column.trim() && r.source.trim() && r.parent && r.parentKey)
       .map((r) => ({
         column: r.column.trim(),
-        parent: `master.${r.parent}`,
+        parent: `${schema}.${r.parent}`,
         parent_key: r.parentKey,
         source_column: r.source.trim(),
         external: true,
@@ -100,7 +102,7 @@ function emit(entries: Entry[]): string {
 }
 
 /** Readable reasons nothing will be sent — the same names the backend would reject. */
-function problemsOf(entries: Entry[]): string[] {
+function problemsOf(entries: Entry[], schema: string): string[] {
   const out: string[] = [];
   const targets = new Map<string, number>();
   entries.forEach((e, i) => {
@@ -137,14 +139,14 @@ function problemsOf(entries: Entry[]): string[] {
       seenTarget.add(column);
       if (!r.source.trim()) out.push(`Table ${n} ref ${k + 1}: which source column holds the parent's key?`);
       if (!r.parent) out.push(`Table ${n} ref ${k + 1}: choose the existing table this ref points at.`);
-      else if (!r.parentKey) out.push(`Table ${n} ref ${k + 1}: choose the column of master.${r.parent} it matches on.`);
+      else if (!r.parentKey) out.push(`Table ${n} ref ${k + 1}: choose the column of ${schema}.${r.parent} it matches on.`);
     });
   });
   return out;
 }
 
 /** Pick where each table of the script lands and write the mapping JSON the backend already accepts. */
-function DestinationPicker({ tables, onJson }: { tables: GraphTable[]; onJson: (json: string) => void }) {
+function DestinationPicker({ tables, schema, onJson }: { tables: GraphTable[]; schema: string; onJson: (json: string) => void }) {
   const [entries, setEntries] = useState<Entry[]>([emptyEntry()]);
 
   const patch = (i: number, part: Partial<Entry>) =>
@@ -156,8 +158,8 @@ function DestinationPicker({ tables, onJson }: { tables: GraphTable[]; onJson: (
     setEntries((prev) => prev.map((e, j) => (j === i
       ? { ...e, refs: e.refs.map((r, m) => (m === k ? { ...r, ...part } : r)) } : e)));
 
-  const issues = problemsOf(entries);
-  const json = issues.length ? "" : emit(entries);
+  const issues = problemsOf(entries, schema);
+  const json = issues.length ? "" : emit(entries, schema);
   useEffect(() => { onJson(json); }, [json, onJson]);
 
   const tableOptions = (value: string, onChange: (v: string) => void, label: (n: string) => string, blank: string, aria: string) => (
@@ -181,7 +183,13 @@ function DestinationPicker({ tables, onJson }: { tables: GraphTable[]; onJson: (
               <input
                 aria-label={`Table ${n} source table`}
                 value={e.source}
-                onChange={(ev) => patch(i, { source: ev.target.value })}
+                onChange={(ev) => {
+                  const v = ev.target.value;
+                  // a source named like a table that already exists loads into it, instead of creating a second one
+                  if (e.mode === "new" && !e.target.trim() && tables.some((t) => t.name === v.trim())) {
+                    patch(i, { source: v, mode: "existing", existing: v.trim() });
+                  } else patch(i, { source: v });
+                }}
                 placeholder="subdistrict_src"
               />
             </label>
@@ -218,7 +226,7 @@ function DestinationPicker({ tables, onJson }: { tables: GraphTable[]; onJson: (
                 Load into an existing table
               </label>
               {e.mode === "existing" && tableOptions(
-                e.existing, (v) => patch(i, { existing: v }), (t) => `master.${t}`, "Choose a table…",
+                e.existing, (v) => patch(i, { existing: v }), (t) => `${schema}.${t}`, "Choose a table…",
                 `Table ${n} existing table`)}
 
               {e.fields.map((f, k) => (
@@ -280,7 +288,7 @@ function DestinationPicker({ tables, onJson }: { tables: GraphTable[]; onJson: (
                     />
                     {" resolved against "}
                     {tableOptions(r.parent, (v) => patchRef(i, k, { parent: v, parentKey: "" }),
-                      (t) => `master.${t}`, "Choose a parent table…", `Table ${n} ref ${k + 1} parent table`)}
+                      (t) => `${schema}.${t}`, "Choose a parent table…", `Table ${n} ref ${k + 1} parent table`)}
                     {" matching its "}
                     <select
                       aria-label={`Table ${n} ref ${k + 1} parent key`}
@@ -346,6 +354,8 @@ export function ScriptsTab({ canEdit }: { canEdit: boolean }) {
   const [busy, setBusy] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [tables, setTables] = useState<GraphTable[]>([]);
+  const [schemas, setSchemas] = useState<string[]>([]);
+  const [chosen, setChosen] = useState("");           // "" = detect from the file
   const [limits, setLimits] = useState<{ max_bytes?: number } | null>(null);
 
   const token = useRef(0);                         // a newer run cancels the polling of an older one
@@ -353,8 +363,12 @@ export function ScriptsTab({ canEdit }: { canEdit: boolean }) {
   const lastMapped = useRef<string | null>(null);  // mapping text of the last run; null until one ran
   const mappingRef = useRef("");
   mappingRef.current = mapping;
+  const chosenRef = useRef("");
+  chosenRef.current = chosen;
 
-  useEffect(() => { if (canEdit) getGraph().then((g) => setTables(g.tables ?? [])).catch(() => {}); }, [canEdit]);
+  const dbSchema = report?.schema || chosen || "master";   // the tables offered are the ones of the database being checked
+  useEffect(() => { if (canEdit) getGraph(dbSchema).then((g) => setTables(g.tables ?? [])).catch(() => {}); }, [canEdit, dbSchema]);
+  useEffect(() => { if (canEdit) getSchemas().then((l) => setSchemas((l ?? []).map((s) => s.name))).catch(() => {}); }, [canEdit]);
   useEffect(() => { if (canEdit) getScriptLimits().then(setLimits).catch(() => {}); }, [canEdit]);
   useEffect(() => () => { token.current += 1; }, []);
 
@@ -382,12 +396,12 @@ export function ScriptsTab({ canEdit }: { canEdit: boolean }) {
   }, []);
 
   /** Start the background check and follow it until it is done or failed. */
-  const check = useCallback(async (id: number, mappingText: string) => {
+  const check = useCallback(async (id: number, mappingText: string, schema: string = chosenRef.current) => {
     const mine = ++token.current;
     setBusy(true); setError(""); setRetry(null); setReport(null); setStep("Starting");
     lastMapped.current = mappingText;
     try {
-      await validateScriptAsync(id, parseMapping(mappingText));
+      await validateScriptAsync(id, parseMapping(mappingText), schema || undefined);
       await follow(id, mine);
     } catch (e) {
       if (mine !== token.current) return;
@@ -472,6 +486,12 @@ export function ScriptsTab({ canEdit }: { canEdit: boolean }) {
     else if (script) void check(script.id, mapping);
   };
 
+  const useDatabase = (name: string) => {
+    setChosen(name);
+    chosenRef.current = name;
+    if (script && !busy && !submitted) void check(script.id, mappingRef.current, name);
+  };
+
   const doSubmit = async () => {
     if (!script || !report?.ok) return;
     setBusy(true); setError("");
@@ -512,9 +532,17 @@ export function ScriptsTab({ canEdit }: { canEdit: boolean }) {
       </label>
       {typeof max === "number" && <p className="muted">Largest file: {fmtBytes(max)}.</p>}
 
+      <label>
+        Load into database{" "}
+        <select aria-label="Database" value={chosen} disabled={busy} onChange={(e) => useDatabase(e.target.value)}>
+          <option value="">Detect from the file</option>
+          {schemas.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+      </label>
+
       {script && (
         <p>
-          <code>{script.name}</code> · {script.size.toLocaleString()} bytes · status: {script.status}
+          <code>{script.name}</code> · script <code>#{script.id}</code> · {script.size.toLocaleString()} bytes · status: {script.status}
           {script.change_id != null && <> · change <code>#{script.change_id}</code></>}
         </p>
       )}
@@ -525,6 +553,26 @@ export function ScriptsTab({ canEdit }: { canEdit: boolean }) {
           {error}{" "}
           {retry && <button onClick={tryAgain} disabled={busy}>Try again</button>}
         </p>
+      )}
+
+      {report?.schema && (
+        <>
+          <p className="muted">
+            Checked against <code>{report.schema}</code> ({SOURCE_LABEL[report.schema_source ?? "default"]})
+          </p>
+          {report.detected_schema && report.detected_schema !== report.schema && (
+            schemas.includes(report.detected_schema) ? (
+              <p>
+                The file names <code>{report.detected_schema}</code>.{" "}
+                <button onClick={() => useDatabase(report.detected_schema!)} disabled={busy || submitted}>
+                  Use {report.detected_schema} instead
+                </button>
+              </p>
+            ) : (
+              <p className="muted">The file names <code>{report.detected_schema}</code>, which is not a database here.</p>
+            )
+          )}
+        </>
       )}
 
       {report?.ok && (
@@ -583,7 +631,7 @@ export function ScriptsTab({ canEdit }: { canEdit: boolean }) {
       <details className="customize">
         <summary>Customize (optional)</summary>
         <h3>Destination</h3>
-        <DestinationPicker tables={tables} onJson={setMapping} />
+        <DestinationPicker tables={tables} schema={dbSchema} onJson={setMapping} />
         <details>
           <summary>Advanced: edit the mapping JSON</summary>
           <textarea

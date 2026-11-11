@@ -190,11 +190,17 @@ def _orphans(report: dict, ops: list[dict], parsed, state: dict, schema: str = "
 
 # ---------------------------------------------------------------- main
 
-def validate(script: Script, mapping: dict | None, schema: str = "master", progress=None) -> dict:
-    """`progress(phase)` is called with reading, parsing, checking, dry_run as a run reaches each one."""
-    introspect.require_managed(schema)
+def validate(script: Script, mapping: dict | None, schema: str | None = None, progress=None) -> dict:
+    """`progress(phase)` is called with reading, parsing, checking, dry_run as a run reaches each one.
+
+    `schema=None` means "the one the file names, if it is a database here, else master" (see `_resolve_schema`);
+    a schema the person gave always wins. The report says which was used and why (`schema_source`)."""
+    if schema is not None:
+        introspect.require_managed(schema)
     report = _new_report(script)
-    report["schema"] = schema
+    report["schema"] = schema or "master"
+    report["schema_source"] = "chosen" if schema is not None else "default"
+    report["detected_schema"] = None
     kept = (script.mapping, (script.report or {}).get("validated_schema", "master"))
     if script.status in (Script.Status.SUBMITTED, Script.Status.EXPIRED):
         _add_error(report, "storage", 0, "",
@@ -230,7 +236,18 @@ def _save(script: Script, report: dict, kept: tuple) -> None:
     script.save(update_fields=fields)
 
 
-def _run(report: dict, script: Script, mapping: dict | None, schema: str = "master", progress=lambda p: None) -> None:
+def _resolve_schema(report: dict, parsed, requested: str | None) -> str:
+    """Which database to check against: the person's choice, else the one the file names (when it is managed)."""
+    report["detected_schema"] = parsed.schema
+    if requested is not None:
+        return requested
+    if parsed.schema and parsed.schema in {m["name"] for m in introspect.managed_schemas()}:
+        report["schema"], report["schema_source"] = parsed.schema, "detected"
+        return parsed.schema
+    return "master"
+
+
+def _run(report: dict, script: Script, mapping: dict | None, schema: str | None = None, progress=lambda p: None) -> None:
     if mapping is not None:
         script.mapping = mapping
         report["mapping_used"] = "given"
@@ -255,6 +272,7 @@ def _run(report: dict, script: Script, mapping: dict | None, schema: str = "mast
             _add_error(report, "parse", e.line, e.statement, e.message)
         return
 
+    schema = _resolve_schema(report, parsed, schema)
     progress("checking")
     state = introspect.snapshot(schema)
     external = introspect.external_state(state, schema)  # tables the script does not create (external refs)

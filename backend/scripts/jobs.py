@@ -50,7 +50,7 @@ def _carry(report: dict | None) -> dict:
     return {"validated_schema": v} if v else {}
 
 
-def start(user, script_id: int, mapping: dict | None, schema: str = "master") -> dict:
+def start(user, script_id: int, mapping: dict | None, schema: str | None = None) -> dict:
     if not user.can_edit:
         raise Forbidden("your role cannot manage scripts")
     with transaction.atomic():
@@ -122,7 +122,7 @@ def run(script_id: int, beat_seconds: float = BEAT_SECONDS) -> None:
     t = threading.Thread(target=beater, daemon=True)
     t.start()
     try:
-        report = validate_mod.validate(script, job.get("mapping"), job.get("schema") or "master", progress=progress)
+        report = validate_mod.validate(script, job.get("mapping"), job.get("schema") or None, progress=progress)
         stop.set()
         t.join()
         report["state"] = "done"

@@ -25,7 +25,7 @@ def upload(user, name: str, data: bytes) -> Script:
     return storage.save(user, name, data)
 
 
-def validate(user, script_id: int, mapping: dict | None, schema: str = "master") -> dict:
+def validate(user, script_id: int, mapping: dict | None, schema: str | None = None) -> dict:
     _require_edit(user)
     script = Script.objects.filter(pk=script_id).first()
     if script is None:

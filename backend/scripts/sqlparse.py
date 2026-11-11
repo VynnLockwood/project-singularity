@@ -71,6 +71,7 @@ class ParsedScript:
     errors: list[ScriptIssue] = field(default_factory=list)
     statements: int = 0  # statements and psql meta lines seen (lone `;` not counted)
     join_hints: dict[str, list[dict]] = field(default_factory=dict)  # table -> [ref hint]
+    schema: str | None = None  # the one schema the script names (master_thach.x), if any
 
 
 # ---------------------------------------------------------------- splitter
@@ -1270,4 +1271,5 @@ def parse_script(text: str) -> ParsedScript:
         tr.out.errors.append(ScriptIssue(1, "", "no statements"))
     out = tr.finish()
     out.statements = seen
+    out.schema = tr.schema
     return out

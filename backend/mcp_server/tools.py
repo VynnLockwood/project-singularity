@@ -706,11 +706,12 @@ def list_pending(user) -> dict:
 
 
 
-def submit_script(user, name: str, content: str, mapping: dict | None = None, schema: str = "master") -> dict:
+def submit_script(user, name: str, content: str, mapping: dict | None = None, schema: str | None = None) -> dict:
     """Upload + validate inline (<= maxInlineScriptBytes). Larger scripts: upload via API/UI, pass script_id."""
     from config.siconfig import get_config
     try:
-        introspect.require_managed(schema)  # before uploading anything
+        if schema is not None:
+            introspect.require_managed(schema)  # before uploading anything
     except introspect.UnknownSchema as exc:
         raise ToolFailure(f"{exc} Call list_schemas to see the databases.") from exc
     data = content.encode("utf-8")
@@ -734,7 +735,7 @@ def submit_script(user, name: str, content: str, mapping: dict | None = None, sc
     return out
 
 
-def validate_script(user, script_id: int, mapping: dict | None = None, schema: str = "master") -> dict:
+def validate_script(user, script_id: int, mapping: dict | None = None, schema: str | None = None) -> dict:
     try:
         report = script_service.validate(user, script_id, mapping, schema)
     except (storage.ScriptError, introspect.UnknownSchema, PermissionError) as exc:

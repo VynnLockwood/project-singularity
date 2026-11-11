@@ -81,7 +81,7 @@ def validate_view(request, script_id):
     if request.GET.get("async"):
         try:
             return JsonResponse(jobs.start(request.user, script_id, request.json.get("mapping"),
-                                           schema_param(request, request.json)), status=202)
+                                           schema_param(request, request.json, default=None)), status=202)
         except jobs.Forbidden as exc:
             return error(str(exc), 403)
         except jobs.Busy as exc:
@@ -90,7 +90,7 @@ def validate_view(request, script_id):
             return _err(exc)
     try:
         report = service.validate(request.user, script_id, request.json.get("mapping"),
-                                  schema_param(request, request.json))
+                                  schema_param(request, request.json, default=None))
     except PermissionError as exc:
         return error(str(exc), 403)
     except storage.ScriptError as exc:
