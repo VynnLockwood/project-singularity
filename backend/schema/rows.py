@@ -1,13 +1,20 @@
 """Paged, sortable, filterable reads of one table in a managed schema for the grid editor (read-only role)."""
 from __future__ import annotations
 
+import csv
+import datetime
+import io
+import json
+
 import psycopg
 from psycopg import sql
+from psycopg.rows import tuple_row
 
 from config.siconfig import get_config
 
 from . import introspect, roles
 from .conn import ro_connection
+from .export import AsyncChunks, _Chunks
 from .util import jsonable
 
 MAX_PAGE = 200
@@ -41,18 +48,12 @@ def _run(query: sql.Composable, params=()) -> list[dict]:
         raise RowsError(exc.diag.message_primary or "query failed") from exc
 
 
-def read_rows(table: str, *, offset: int = 0, limit: int = 50, sort: str | None = None,
-              direction: str = "asc", filters: dict | None = None, include_inactive: bool = False,
-              schema: str = "master") -> dict:
-    d = _describe(table, schema)
-    cols = {c["name"]: c for c in d["columns"]}
-    limit = max(1, min(int(limit), MAX_PAGE))
-    offset = max(0, int(offset))
+def _plan(cols: dict, role_cols: dict, *, sort, direction, filters, include_inactive):
+    """The WHERE clause, ORDER BY and params for a filtered, sorted view. Shared by the rows endpoint and CSV export."""
     if direction not in ("asc", "desc"):
         raise RowsError("direction must be asc or desc")
     if sort is not None and sort not in cols:
         raise RowsError(f"unknown column {sort!r}")
-
     where, params = [], []
     for col, text in (filters or {}).items():
         if col not in cols:
@@ -62,19 +63,31 @@ def read_rows(table: str, *, offset: int = 0, limit: int = 50, sort: str | None 
         if text:
             where.append(sql.SQL("{}::text ILIKE %s").format(sql.Identifier(col)))
             params.append(_like(text))
-    conv = roles.conventions()
-    role_cols = roles.roles_of(d, conv)
-    hidden = roles.hidden_columns(conv)
     active = role_cols.get("is_active")
     if active and not include_inactive:
         where.append(sql.SQL("{} IS DISTINCT FROM false").format(sql.Identifier(active)))
     clause = sql.SQL(" WHERE ") + sql.SQL(" AND ").join(where) if where else sql.SQL("")
-
     pk = role_cols.get("primary_key")
     order_col = sort or pk or next(iter(cols))
     order = sql.SQL("{} {}").format(sql.Identifier(order_col), sql.SQL(direction.upper()))
     if pk and order_col != pk:
         order += sql.SQL(", {}").format(sql.Identifier(pk))
+    return clause, order, params
+
+
+def read_rows(table: str, *, offset: int = 0, limit: int = 50, sort: str | None = None,
+              direction: str = "asc", filters: dict | None = None, include_inactive: bool = False,
+              schema: str = "master") -> dict:
+    d = _describe(table, schema)
+    cols = {c["name"]: c for c in d["columns"]}
+    limit = max(1, min(int(limit), MAX_PAGE))
+    offset = max(0, int(offset))
+    conv = roles.conventions()
+    role_cols = roles.roles_of(d, conv)
+    hidden = roles.hidden_columns(conv)
+    clause, order, params = _plan(cols, role_cols, sort=sort, direction=direction, filters=filters,
+                                  include_inactive=include_inactive)
+    pk = role_cols.get("primary_key")
 
     t = sql.Identifier(schema, table)
     total = _run(sql.SQL("SELECT count(*) AS n FROM {}{}").format(t, clause), params)[0]["n"]
@@ -133,3 +146,81 @@ def options(table: str, *, q: str = "", limit: int = 100, schema: str = "master"
         "labelColumn": label, "truncated": len(rows) > limit,
         "options": [{"id": jsonable(r["id"]), "label": str(r["label"])} for r in rows[:limit]],
     }
+
+
+_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+CSV_BATCH = 1000
+
+
+def csv_cell(value, type_name: str = "") -> str:
+    """One CSV field, decided by the value (the column type only mattered for text, enums and jsonb alike).
+
+    NULL is empty; any string a spreadsheet could run as a formula gets a leading apostrophe; booleans are
+    `true`/`false` as in Postgres and the rows endpoint; jsonb objects and arrays are JSON text.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return "'" + value if value.startswith(_FORMULA_START) else value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    v = jsonable(value)
+    return v if isinstance(v, str) else str(v)
+
+
+class CsvExport:
+    """A filtered, sorted view of one table as CSV chunks; same iterator contract as `export.Export`."""
+
+    def __init__(self, table: str, schema: str, columns: list[dict], query: sql.Composable, params: list,
+                 total: int, today: datetime.date | None = None):
+        self.table, self.schema, self.columns = table, schema, columns
+        self._query, self._params, self.total = query, params, total
+        self.today = today or datetime.date.today()
+        self.conn = None
+
+    def filename(self) -> str:
+        return f"{self.schema}-{self.table}-{self.today.isoformat()}.csv"
+
+    def chunks(self) -> _Chunks:
+        return _Chunks(self)
+
+    def async_chunks(self) -> AsyncChunks:
+        return AsyncChunks(self.chunks())
+
+    def close(self) -> None:
+        if self.conn is not None and not self.conn.closed:
+            self.conn.close()
+
+    def _generate(self):
+        def encode(row) -> bytes:
+            buf = io.StringIO(newline="")
+            csv.writer(buf, lineterminator="\r\n").writerow(row)
+            return buf.getvalue().encode("utf-8")
+
+        types = [c["type"] for c in self.columns]
+        yield b"\xef\xbb\xbf" + encode([c["name"] for c in self.columns])
+        self.conn = ro_connection()
+        self.conn.execute("SET TRANSACTION READ ONLY")
+        self.conn.execute(f"SET LOCAL statement_timeout = {int(get_config()['limits']['queryTimeoutMs'])}")
+        with self.conn.cursor(name="csv_export", row_factory=tuple_row) as cur:
+            cur.execute(self._query, self._params)
+            while batch := cur.fetchmany(CSV_BATCH):
+                yield b"".join(encode([csv_cell(v, t) for v, t in zip(row, types)]) for row in batch)
+
+
+def open_csv(table: str, *, sort: str | None = None, direction: str = "asc", filters: dict | None = None,
+             include_inactive: bool = False, schema: str = "master", cap: int) -> CsvExport:
+    d = _describe(table, schema)
+    cols = {c["name"]: c for c in d["columns"]}
+    role_cols = roles.roles_of(d, roles.conventions())
+    clause, order, params = _plan(cols, role_cols, sort=sort, direction=direction, filters=filters,
+                                  include_inactive=include_inactive)
+    t = sql.Identifier(schema, table)
+    total = _run(sql.SQL("SELECT count(*) AS n FROM {}{}").format(t, clause), params)[0]["n"]
+    if total > cap:
+        raise RowsError(f"{total} rows match; the most that can be exported is {cap} "
+                        f"(setting limits.maxExportRows). Narrow the filters.")
+    query = sql.SQL("SELECT * FROM {}{} ORDER BY {}").format(t, clause, order)
+    return CsvExport(table, schema, d["columns"], query, params, total)

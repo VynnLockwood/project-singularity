@@ -106,7 +106,7 @@ function Shell({ me, onLogout }: Props) {
             <DatabaseView me={me} live={live} refreshKey={schemaKey} onProposed={onProposed}
               onAskAssistant={(t) => { setDraft(t); navigate({ view: "chat" }); }} />
           )}
-          {view === "data" && <DataView me={me} live={live} refreshKey={schemaKey} onProposed={onProposed} />}
+          {view === "data" && <DataView me={me} live={live} route={route} navigate={navigate} refreshKey={schemaKey} onProposed={onProposed} />}
           {view === "duplicates" && <DuplicatesView me={me} refreshKey={appliedCount} onProposed={onProposed} />}
           {view === "scripts" && me.role !== "viewer" && <ScriptsTab canEdit />}
           {view === "scripts" && me.role === "viewer" && <NotFound path="/scripts" onHome={() => navigate({ view: "chat" })} />}
