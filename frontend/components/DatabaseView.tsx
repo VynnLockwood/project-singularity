@@ -38,7 +38,7 @@ export function DatabaseView({ me, live, route, navigate, refreshKey, onProposed
   const [schemasError, setSchemasError] = useState("");
   const [graphState, setGraphState] = useState<{ schema: string; graph: SchemaGraph } | null>(null);
   const [graphFail, setGraphFail] = useState<{ schema: string; msg: string } | null>(null);
-  const [tabState, setTabState] = useState<{ key: string; tab: DbTab } | null>(null);
+  const [, bump] = useState(0); // the tab lives in the address; re-render after writing it
   const [panel, setPanel] = useState<Panel>(null);
   const [newName, setNewName] = useState("");
   const [target, setTarget] = useState("");
@@ -48,7 +48,7 @@ export function DatabaseView({ me, live, route, navigate, refreshKey, onProposed
   const tableRef = useRef(addrTable);
   tableRef.current = addrTable;
   const schemaRef = useRef<string | null>(null);
-  const created = useRef<{ name: string; id: number } | null>(null);
+  const created = useRef<{ name: string; id: number; from: string | null } | null>(null);
   const lastSchema = useRef<string | null>(null);
   const lastTable = useRef<string | null>(null);
   const rail = useRef<HTMLDetailsElement>(null);
@@ -65,16 +65,14 @@ export function DatabaseView({ me, live, route, navigate, refreshKey, onProposed
 
   const go = (name: string, tbl?: string, tab?: DbTab, replace?: boolean) => {
     navigate({ view: "database", schema: name, ...(tbl ? { table: tbl } : {}) }, replace ? { replace: true } : undefined);
-    const q = tab ? tabToSearch(tab, !!tbl) : "";
-    if (q) history.replaceState(null, "", location.pathname + q);
-    setTabState({ key: `${name}/${tbl ?? ""}`, tab: tab ?? parseTab("", !!tbl) });
+    history.replaceState(null, "", location.pathname + (tab ? tabToSearch(tab, !!tbl) : ""));
+    bump((n) => n + 1);
   };
 
-  const key = `${schema ?? ""}/${table ?? ""}`;
-  const tab: DbTab = tabState?.key === key ? tabState.tab : parseTab(typeof location === "undefined" ? "" : location.search, !!table);
+  const tab: DbTab = parseTab(typeof location === "undefined" ? "" : location.search, !!table);
   const chooseTab = (t: DbTab) => {
-    setTabState({ key, tab: t });
     history.replaceState(null, "", location.pathname + tabToSearch(t, !!table));
+    bump((n) => n + 1);
   };
 
   // A remembered create that was rejected/failed/went stale must not auto-select later.
@@ -94,9 +92,10 @@ export function DatabaseView({ me, live, route, navigate, refreshKey, onProposed
         setSchemasError("");
         if (created.current && list.some((x) => x.name === created.current!.name)) {
           const n = created.current.name;
+          const from = created.current.from;
           created.current = null;
           // Only take over the view when the user is not in the middle of something else.
-          const idle = (panelRef.current === "new" || panelRef.current === null) && !tableRef.current;
+          const idle = (panelRef.current === "new" || panelRef.current === null) && !tableRef.current && schemaRef.current === from;
           if (idle) {
             setPanel((p) => (p === "new" ? null : p));
             if (n !== schemaRef.current) go(n);
@@ -111,7 +110,7 @@ export function DatabaseView({ me, live, route, navigate, refreshKey, onProposed
   // The address names no database, or one that has gone: land on a real one.
   useEffect(() => {
     if (!schemas || schemas.length === 0) return;
-    if (!addrSchema) go(first!, undefined, undefined, true);
+    if (!addrSchema) go(first!, undefined, parseTab(location.search, false), true);
     else if (!known && lastSchema.current === addrSchema) go(first!, undefined, undefined, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [schemas, addrSchema, known]);
@@ -201,7 +200,7 @@ export function DatabaseView({ me, live, route, navigate, refreshKey, onProposed
                 onClose={closePanel}
                 onProposed={(c, name) => {
                   created.current = c.status === "rejected" || c.status === "failed" || c.status === "stale"
-                    ? null : { name, id: c.id };
+                    ? null : { name, id: c.id, from: schema };
                   onProposed(c);
                 }}
               />
@@ -240,7 +239,30 @@ export function DatabaseView({ me, live, route, navigate, refreshKey, onProposed
       </nav>
       <section className="db-main">
         {noDatabase && <p className="muted">There is no database {addrSchema}.</p>}
-        {!noDatabase && !schema && <p className="muted">Loading…</p>}
+        {!noDatabase && !schema && (schemasError ? <p className="problems">{schemasError}</p> : <p className="muted">Loading…</p>)}
+        {/* These two outlive the database they were opened for, so a result card is not lost when it goes away. */}
+        {panel === "rename-review" && (
+          <ProposeDialog
+            me={me}
+            schema="master"
+            title={`Rename database ${target} to ${newName}`}
+            build={() => [renameSchemaOp(target, newName)]}
+            onClose={closePanel}
+            onBack={() => setPanel("rename")}
+            onProposed={onProposed}
+          />
+        )}
+        {panel === "drop" && (
+          <ProposeDialog
+            me={me}
+            schema="master"
+            title={`Delete database ${target}`}
+            destructive
+            build={(reason) => [dropSchemaOp(target, reason)]}
+            onClose={closePanel}
+            onProposed={onProposed}
+          />
+        )}
         {schema && (
           <>
         <div className="grid-bar">
@@ -277,28 +299,6 @@ export function DatabaseView({ me, live, route, navigate, refreshKey, onProposed
             <button type="submit" className="button" disabled={!newName || !!renameError}>Review</button>{" "}
             <button type="button" className="link" onClick={closePanel}>Cancel</button>
           </form>
-        )}
-        {panel === "rename-review" && (
-          <ProposeDialog
-            me={me}
-            schema="master"
-            title={`Rename database ${target} to ${newName}`}
-            build={() => [renameSchemaOp(target, newName)]}
-            onClose={closePanel}
-            onBack={() => setPanel("rename")}
-            onProposed={onProposed}
-          />
-        )}
-        {panel === "drop" && (
-          <ProposeDialog
-            me={me}
-            schema="master"
-            title={`Delete database ${target}`}
-            destructive
-            build={(reason) => [dropSchemaOp(target, reason)]}
-            onClose={closePanel}
-            onProposed={onProposed}
-          />
         )}
         {canWrite && table && panel === "trename" && (
           <form className="db-inline-form" onSubmit={(e) => { e.preventDefault(); if (newName && !tableRenameError) setPanel("trename-review"); }}>

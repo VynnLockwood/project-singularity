@@ -288,3 +288,4 @@ textarea.code { width: 100%; color: var(--text); }
 .edge[data-dim="true"] { opacity: 0.15; }
 .card-col[data-fk="true"] { fill: var(--disk); }
 @media (max-width: 800px) { .schema-2d:has(.universe-panel) { grid-template-columns: minmax(0, 1fr); } }
+.fields-panel .schema-scroll { overflow: visible; } /* the row menu opens below the last row, so the box must not clip it */

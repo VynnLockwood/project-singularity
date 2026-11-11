@@ -87,7 +87,7 @@ describe("DatabaseView", () => {
 
   it("shows problems text when the schema list fails", async () => {
     await setup({ getSchemas: vi.fn().mockRejectedValue(new Error("x")) });
-    expect(await screen.findByText("Could not load the databases.")).toBeInTheDocument();
+    expect((await screen.findAllByText("Could not load the databases."))[0]).toBeInTheDocument();
   });
 
   it("falls back to master if the selected schema vanished", async () => {
@@ -491,6 +491,60 @@ describe("DatabaseView", () => {
     it("the left pane is a disclosure", async () => {
       await setup();
       expect(screen.getByText("Databases and tables").closest("details")).not.toBeNull();
+    });
+  });
+
+  describe("review fixes", () => {
+    it("the Rename database result stays after the database disappears", async () => {
+      const getSchemas = vi.fn()
+        .mockResolvedValueOnce([{ name: "master", tables: 3, comment: null }, { name: "crm", tables: 0, comment: null }])
+        .mockResolvedValue([{ name: "master", tables: 3, comment: null }, { name: "sales", tables: 0, comment: null }]);
+      const { rerender } = await setup({ getSchemas }, 0, editor, "/database/crm");
+      fireEvent.click(await screen.findByRole("button", { name: /^rename$/i }));
+      fireEvent.change(screen.getByLabelText("New name"), { target: { value: "sales" } });
+      fireEvent.click(screen.getByRole("button", { name: "Review" }));
+      fireEvent.click(screen.getByRole("button", { name: "Propose" }));
+      await screen.findByRole("status");
+      rerender(1);
+      await waitFor(() => expect(location.pathname).toBe("/database/master"));
+      expect(screen.getByRole("status")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Propose" })).toBeNull();
+    });
+
+    it("a create does not steal the view after the user navigated by address", async () => {
+      const { rerender } = await setup({ getSchemas: created2() });
+      await screen.findByRole("button", { name: "customer" });
+      await createSales();
+      act(() => { history.pushState(null, "", "/database/crm"); dispatchEvent(new PopStateEvent("popstate")); });
+      await waitFor(() => expect(screen.getByRole("button", { name: "crm (0)" })).toHaveAttribute("aria-current", "true"));
+      rerender(1);
+      await screen.findByRole("button", { name: "sales (0)" });
+      expect(location.pathname).toBe("/database/crm");
+    });
+
+    it("Back restores the tab written in the address", async () => {
+      await setup();
+      fireEvent.click(await screen.findByRole("button", { name: "customer" }));
+      fireEvent.click(screen.getByRole("tab", { name: "Relations" }));
+      fireEvent.click(screen.getByRole("button", { name: "customer" }));
+      fireEvent.click(screen.getByRole("button", { name: "customer" }));
+      expect(screen.getByRole("tab", { name: "Fields" })).toHaveAttribute("aria-selected", "true");
+      for (const p of ["/database/master", "/database/master/customer"]) {
+        history.back();
+        await waitFor(() => expect(location.pathname).toBe(p));
+      }
+      await waitFor(() => expect(screen.getByRole("tab", { name: "Relations" })).toHaveAttribute("aria-selected", "true"));
+    });
+
+    it("keeps ?tab= when /database redirects to the first database", async () => {
+      await setup({}, 0, editor, "/database?tab=erd");
+      await waitFor(() => expect(location.pathname).toBe("/database/master"));
+      expect(location.search).toBe("?tab=erd");
+    });
+
+    it("a failed database list says so in the main pane too", async () => {
+      await setup({ getSchemas: vi.fn().mockRejectedValue(new Error("x")) });
+      await waitFor(() => expect(screen.getAllByText("Could not load the databases.").length).toBe(2));
     });
   });
 });

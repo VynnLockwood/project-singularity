@@ -11,12 +11,13 @@ const graph: SchemaGraph = {
   relations: [{ from: { table: "orderHeader", column: "customerId" }, to: { table: "customer", column: "id" } }],
 };
 
+const glProbe = vi.fn();
 async function setup(webgl: boolean, opts: { getGraph?: ReturnType<typeof vi.fn>; table?: string | null; onOpenTable?: (n: string) => void } = {}) {
   vi.resetModules();
   vi.doMock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), getGraph: opts.getGraph ?? vi.fn().mockResolvedValue(graph) }));
   // jsdom has no WebGL: stand in for the scene and expose its props
   vi.doMock("./UniverseScene", () => ({
-    webglAvailable: () => webgl,
+    webglAvailable: () => { glProbe(); return webgl; },
     UniverseScene: ({ universe, selected, onSelect, onUnavailable }: never) => (
       <div data-testid="scene" data-bodies={(universe as { bodies: unknown[] }).bodies.length} data-selected={selected ?? ""}>
         <button onClick={() => (onSelect as (n: string) => void)("customer")}>pick customer</button>
@@ -31,7 +32,7 @@ async function setup(webgl: boolean, opts: { getGraph?: ReturnType<typeof vi.fn>
 }
 
 describe("SchemaView", () => {
-  beforeEach(() => vi.resetModules());
+  beforeEach(() => { vi.resetModules(); glProbe.mockClear(); });
 
   it("starts in 3D when WebGL exists, with one body per table", async () => {
     await setup(true);
@@ -176,5 +177,13 @@ describe("SchemaView", () => {
     fireEvent.click(await screen.findByText("pick customer"));
     fireEvent.click(await screen.findByRole("button", { name: "Open fields" }));
     expect(onOpenTable).toHaveBeenCalledWith("customer");
+  });
+
+  it("checks for WebGL once, not on every render", async () => {
+    await setup(false);
+    fireEvent.click(await screen.findByRole("button", { name: "customer" }));
+    fireEvent.click(screen.getByRole("button", { name: "customer" }));
+    fireEvent.click(screen.getByRole("button", { name: "orderHeader" }));
+    expect(glProbe).toHaveBeenCalledTimes(1);
   });
 });

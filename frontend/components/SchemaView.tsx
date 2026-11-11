@@ -98,7 +98,8 @@ export function SchemaView({ schema, refreshKey, table = null, onOpenTable }: {
   const [graph, setGraph] = useState<SchemaGraph | null>(null);
   const [universe, setUniverse] = useState<Universe | null>(null);
   const [error, setError] = useState("");
-  const [mode, setMode] = useState<Mode>(() => (webglAvailable() ? "3d" : "2d"));
+  const [canGl] = useState(() => webglAvailable());
+  const [mode, setMode] = useState<Mode>(canGl ? "3d" : "2d");
   const [selected, setSelected] = useState<string | null>(table);
   const [fit, setFit] = useState(false);
   const [seenTable, setSeenTable] = useState(table);
@@ -137,7 +138,7 @@ export function SchemaView({ schema, refreshKey, table = null, onOpenTable }: {
       <div className="grid-bar">
         <div className="segmented" role="group" aria-label="View">
           <button aria-pressed={mode === "2d"} onClick={() => setMode("2d")}>2D</button>
-          {webglAvailable() && <button aria-pressed={mode === "3d"} onClick={() => setMode("3d")}>3D</button>}
+          {canGl && <button aria-pressed={mode === "3d"} onClick={() => setMode("3d")}>3D</button>}
         </div>
         {mode === "2d" && graph.tables.length > 0 && (
           <Button size="sm" variant="ghost" aria-pressed={fit} onClick={() => setFit((f) => !f)}>Fit to width</Button>
