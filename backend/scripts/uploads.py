@@ -14,6 +14,7 @@ from .storage import ScriptError
 
 CHUNK_BYTES = 8 * 2**20
 SESSION_TTL = timedelta(hours=24)
+MAX_OPEN = 5   # open uploads per user
 
 
 class Gone(ScriptError):
@@ -30,6 +31,10 @@ def begin(user, name: str, size: int) -> dict:
         raise ScriptError(f"Upload size must be above 0 bytes (got {size!r}).")
     if size > cap:
         raise ScriptError(f"Script is larger than the allowed size: {size} bytes is over the limit of {cap} bytes.")
+    purge_expired()
+    if UploadSession.objects.filter(owner=user, status=UploadSession.Status.OPEN).count() >= MAX_OPEN:
+        raise ScriptError(f"You already have {MAX_OPEN} open uploads. Finish them or wait for them to expire "
+                          "(24 hours), then try again.")
     rel = f"{uuid.uuid4().hex}.part"
     path = os.path.join(storage.uploads_dir(), rel)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -84,6 +89,7 @@ def status(user, upload_id: int) -> dict:
 
 
 def complete(user, upload_id: int):
+    refused = None
     with transaction.atomic():
         s = _get(user, upload_id, lock=True)
         missing = sorted(set(range(_chunks(s))) - set(s.received))
@@ -91,9 +97,18 @@ def complete(user, upload_id: int):
             shown = ", ".join(map(str, missing[:20])) + (" ..." if len(missing) > 20 else "")
             raise ScriptError(f"Chunks missing: {shown}. Send them, then complete again.")
         part = _part(s)
-        script = storage.save_stream(user, s.name, part)
-        s.status, s.script = UploadSession.Status.COMPLETE, script
-        s.save(update_fields=["status", "script"])
+        try:
+            script = storage.save_stream(user, s.name, part)
+        except ScriptError as exc:
+            refused = exc
+        else:
+            s.status, s.script = UploadSession.Status.COMPLETE, script
+            s.save(update_fields=["status", "script"])
+    if refused is not None:
+        # the file itself is refused (NUL, not UTF-8, empty, too big): it can never succeed, so free the disk now
+        _remove(part)
+        UploadSession.objects.filter(pk=upload_id).update(status=UploadSession.Status.EXPIRED, path="")
+        raise refused
     _remove(part)
     return script
 

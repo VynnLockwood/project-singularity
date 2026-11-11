@@ -17,6 +17,7 @@ from .storage import ScriptError
 
 STALE_SECONDS = 600
 BEAT_SECONDS = 30
+MAX_RUNNING = 2   # checks running at once, system-wide: each holds the whole file as text in memory
 STOPPED = {"state": "failed", "message": "The check stopped unexpectedly. Try again."}
 
 
@@ -64,6 +65,10 @@ def start(user, script_id: int, mapping: dict | None, schema: str = "master") ->
         current = script.report or {}
         if current.get("state") == "running" and not is_stale(current):
             raise Busy("A check of this script is already running.")
+        live = sum(1 for r in Script.objects.filter(report__state="running").exclude(pk=script.pk)
+                   .values_list("report", flat=True) if not is_stale(r))
+        if live >= MAX_RUNNING:
+            raise Busy("Two other checks are running. Wait for one to finish, then try again.")
         script.report = {"state": "running", "phase": "queued", "heartbeat": _now(),
                          "job": {"mapping": mapping, "schema": schema}, **_carry(current)}
         script.save(update_fields=["report"])

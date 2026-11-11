@@ -354,11 +354,32 @@ export function ScriptsTab({ canEdit }: { canEdit: boolean }) {
   const mappingRef = useRef("");
   mappingRef.current = mapping;
 
-  const load = useCallback(() => listScripts().then((s) => setScript(s[0] ?? null)).catch(() => {}), []);
-  useEffect(() => { if (canEdit) load(); }, [canEdit, load]);
   useEffect(() => { if (canEdit) getGraph().then((g) => setTables(g.tables ?? [])).catch(() => {}); }, [canEdit]);
   useEffect(() => { if (canEdit) getScriptLimits().then(setLimits).catch(() => {}); }, [canEdit]);
   useEffect(() => () => { token.current += 1; }, []);
+
+  /** Follow a running check until it is done or failed (three failed polls in a row end it). */
+  const follow = useCallback(async (id: number, mine: number) => {
+    let misses = 0;
+    for (;;) {
+      await sleep(POLL_MS);
+      if (mine !== token.current) return;
+      let s: ScriptInfo;
+      try { s = await getScript(id); misses = 0; } catch (e) {
+        if (++misses >= 3) throw e;
+        continue;
+      }
+      if (mine !== token.current) return;
+      const rep = s.report;
+      if (!rep || rep.state === "running") { setStep(PHASE_LABEL[rep?.phase ?? "queued"] ?? "Checking"); continue; }
+      if (rep.state === "failed") {
+        setError(rep.message || "The check failed. Try again."); setRetry("check"); setStep("");
+        return;
+      }
+      setScript(s); setReport(rep); setStep(rep.ok ? "Ready" : "Needs changes");
+      return;
+    }
+  }, []);
 
   /** Start the background check and follow it until it is done or failed. */
   const check = useCallback(async (id: number, mappingText: string) => {
@@ -367,27 +388,34 @@ export function ScriptsTab({ canEdit }: { canEdit: boolean }) {
     lastMapped.current = mappingText;
     try {
       await validateScriptAsync(id, parseMapping(mappingText));
-      for (;;) {
-        await sleep(POLL_MS);
-        if (mine !== token.current) return;
-        const s = await getScript(id);
-        if (mine !== token.current) return;
-        const rep = s.report;
-        if (!rep || rep.state === "running") { setStep(PHASE_LABEL[rep?.phase ?? "queued"] ?? "Checking"); continue; }
-        if (rep.state === "failed") {
-          setError(rep.message || "The check failed. Try again."); setRetry("check"); setStep("");
-          return;
-        }
-        setScript(s); setReport(rep); setStep(rep.ok ? "Ready" : "Needs changes");
-        return;
-      }
+      await follow(id, mine);
     } catch (e) {
       if (mine !== token.current) return;
       setError(e instanceof SyntaxError ? `Mapping is not valid JSON: ${e.message}`
         : e instanceof Error ? e.message : "The check failed.");
       setRetry("check"); setStep("");
     } finally { if (mine === token.current) setBusy(false); }
-  }, []);
+  }, [follow]);
+
+  // On load: show the latest script; a check still running is followed, a finished one is shown as it was
+  const load = useCallback(() => listScripts().then(async (list) => {
+    const latest = list[0] ?? null;
+    setScript(latest);
+    const rep = latest?.report;
+    if (!latest || !rep) return;
+    if (rep.state === "running") {
+      const mine = ++token.current;
+      setBusy(true); setStep(PHASE_LABEL[rep.phase ?? "queued"] ?? "Checking");
+      try { await follow(latest.id, mine); } catch (e) {
+        if (mine === token.current) { setError(e instanceof Error ? e.message : "The check failed."); setRetry("check"); setStep(""); }
+      } finally { if (mine === token.current) setBusy(false); }
+    } else if (rep.state === "done" || (rep.state === undefined && "ok" in rep)) {
+      setReport(rep); setStep(rep.ok ? "Ready" : "Needs changes");
+    } else if (rep.state === "failed") {
+      setError(rep.message || "The check failed. Try again."); setRetry("check");
+    }
+  }).catch(() => {}), [follow]);
+  useEffect(() => { if (canEdit) void load(); }, [canEdit, load]);
 
   const sendFile = async (file: File) => {
     lastFile.current = file;

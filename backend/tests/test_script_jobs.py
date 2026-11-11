@@ -192,3 +192,14 @@ def test_heartbeat_advances_during_a_long_phase(monkeypatch):
     t = threading.Thread(target=work)
     t.start(); t.join()
     assert seen[0] > before
+
+
+def test_at_most_max_running_checks_at_once(never_starts):               # review finding 2
+    u = user()
+    scripts = [make(u) for _ in range(jobs.MAX_RUNNING + 1)]
+    for s in scripts[:-1]:
+        jobs.start(u, s.pk, None, "master")
+    with pytest.raises(jobs.Busy, match="other checks"):
+        jobs.start(u, scripts[-1].pk, None, "master")
+    age(scripts[0], 11)                                                  # a stale one no longer counts
+    assert jobs.start(u, scripts[-1].pk, None, "master") == {"state": "running"}

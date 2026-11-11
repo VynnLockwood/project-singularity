@@ -71,3 +71,16 @@ def test_destructive_statements_still_error(sql):
 def test_function_body_skipped_whole():
     p = parse_script("CREATE FUNCTION master.f() RETURNS integer LANGUAGE sql AS $$ SELECT 1; SELECT 2 $$;\n" + T)
     assert p.errors == [] and [o["op"] for o in p.ops] == ["create_table"] and len(p.skipped) == 1
+
+
+@pytest.mark.parametrize("sql", [                                       # review finding 3
+    "COMMENT ON FUNCTION master.f() IS 'x';",
+    "COMMENT ON SEQUENCE master.s IS 'x';",
+    "COMMENT ON TRIGGER t ON master.a IS 'x';",
+    "ALTER TABLE master.a ENABLE ROW LEVEL SECURITY;",
+    "ALTER TABLE master.a FORCE ROW LEVEL SECURITY;",
+    "ALTER TABLE master.a DISABLE TRIGGER ALL;",
+])
+def test_statements_that_go_with_skipped_objects_are_skipped(sql):
+    p = parse_script(T + sql + "\n")
+    assert p.errors == [] and len(p.skipped) == 1 and len(p.ops) == 1

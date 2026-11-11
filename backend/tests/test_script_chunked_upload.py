@@ -201,3 +201,23 @@ def test_limits_endpoint():
     v = Client()
     v.force_login(user(Role.VIEWER, "vv"))
     assert v.get("/api/scripts/limits").status_code == 403
+
+
+def test_refused_file_leaves_no_part_and_session_is_closed():          # review finding 1
+    u = user()
+    info = uploads.begin(u, "bad.sql", 7)
+    uploads.put_chunk(u, info["upload_id"], 0, b"abc\x00def")
+    with pytest.raises(storage.ScriptError, match="NUL"):
+        uploads.complete(u, info["upload_id"])
+    assert os.listdir(storage.uploads_dir()) == []
+    assert UploadSession.objects.get(pk=info["upload_id"]).status != "open"
+
+
+def test_open_sessions_are_capped_per_user_and_begin_purges_expired():
+    u = user()
+    first = [uploads.begin(u, "a.sql", 10)["upload_id"] for _ in range(uploads.MAX_OPEN)]
+    with pytest.raises(storage.ScriptError, match="open uploads"):
+        uploads.begin(u, "a.sql", 10)
+    UploadSession.objects.filter(pk__in=first).update(expires_at=timezone.now() - timedelta(minutes=1))
+    uploads.begin(u, "a.sql", 10)                                       # the expired ones were purged first
+    assert UploadSession.objects.filter(pk__in=first).count() == 0

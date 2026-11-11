@@ -438,6 +438,15 @@ def _long_identifier(stmt: str) -> str | None:
 
 # ---------------------------------------------------------------- translator
 
+_LOGIC_OBJECTS = {_OBJ.OBJECT_FUNCTION, _OBJ.OBJECT_PROCEDURE, _OBJ.OBJECT_ROUTINE, _OBJ.OBJECT_TRIGGER,
+                  _OBJ.OBJECT_POLICY, _OBJ.OBJECT_RULE}
+_LOGIC_TABLE_CMDS = {getattr(_AT, n) for n in (
+    "AT_EnableRowSecurity", "AT_DisableRowSecurity", "AT_ForceRowSecurity", "AT_NoForceRowSecurity",
+    "AT_EnableTrig", "AT_DisableTrig", "AT_EnableTrigAll", "AT_DisableTrigAll", "AT_EnableTrigUser",
+    "AT_DisableTrigUser", "AT_EnableAlwaysTrig", "AT_EnableReplicaTrig", "AT_EnableRule", "AT_DisableRule",
+    "AT_EnableAlwaysRule", "AT_EnableReplicaRule")}
+
+
 class _Translator:
     def __init__(self, text: str):
         self.text = text
@@ -996,6 +1005,12 @@ class _Translator:
         if isinstance(s, ast.CreateExtensionStmt) or (
                 isinstance(s, ast.CommentStmt) and s.objtype == _OBJ.OBJECT_EXTENSION):
             return "extension", "extensions are not installed by a script; install them on the server if needed"
+        if isinstance(s, ast.CommentStmt) and s.objtype in _LOGIC_OBJECTS:
+            return "logic", "comments on functions, triggers and policies go with them, which are not imported"
+        if isinstance(s, ast.CommentStmt) and s.objtype == _OBJ.OBJECT_SEQUENCE:
+            return "sequence", "sequences are not created; ids come from the data or identity columns"
+        if isinstance(s, ast.AlterTableStmt) and s.cmds and all(c.subtype in _LOGIC_TABLE_CMDS for c in s.cmds):
+            return "logic", "row-level security and trigger switches go with the policies and triggers, which are not imported"
         if isinstance(s, (ast.CreateSeqStmt, ast.AlterSeqStmt)):
             return "sequence", "sequences are not created; ids come from the data or identity columns"
         if isinstance(s, (ast.GrantStmt, ast.GrantRoleStmt, ast.AlterDefaultPrivilegesStmt)):

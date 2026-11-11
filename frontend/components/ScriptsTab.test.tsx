@@ -259,4 +259,30 @@ describe("ScriptsTab one-click flow", () => {
     await tick();
     expect(api.validateScriptAsync).toHaveBeenCalledTimes(2);
   });
+
+  it("re-attaches to a check that is already running after a reload", async () => {          // review finding 4
+    const running = { id: 5, name: "d.sql", size: 100, status: "uploaded", change_id: null, report: { state: "running", phase: "parsing" } };
+    const { api } = await setup({}, [running]);
+    await tick();
+    expect(await screen.findByText("Ready: 2 tables, 15 rows")).toBeInTheDocument();
+    expect(api.getScript).toHaveBeenCalled();
+    expect(api.validateScriptAsync).not.toHaveBeenCalled();
+  });
+
+  it("shows the finished result of the latest script on load without a new check", async () => {
+    const done = { id: 5, name: "d.sql", size: 100, status: "validated", change_id: null, report: doneReport() };
+    const { api } = await setup({}, [done]);
+    expect(await screen.findByText("Ready: 2 tables, 15 rows")).toBeInTheDocument();
+    expect(api.validateScriptAsync).not.toHaveBeenCalled();
+  });
+
+  it("survives one failed poll", async () => {
+    const getScript = vi.fn()
+      .mockRejectedValueOnce(new Error("network"))
+      .mockResolvedValue({ id: 5, name: "d.sql", size: 100, status: "validated", change_id: null, report: doneReport() });
+    await setup({ getScript });
+    pick();
+    await tick(); await tick();
+    expect(await screen.findByText("Ready: 2 tables, 15 rows")).toBeInTheDocument();
+  });
 });
