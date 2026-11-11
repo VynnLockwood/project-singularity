@@ -103,9 +103,26 @@ export interface Change {
   /** the stored operations; a raw SQL change holds one {op: "raw_sql", sql, reason} */
   operations?: { op: string; sql?: string; reason?: string }[];
   check: { violations?: Violation[]; errors?: string[] };
+  decidedAt?: string | null;
+  appliedAt?: string | null;
+  /** applied changes only: whether the server can undo it automatically */
+  reversible?: boolean | null;
+  /** the id of the change this one reverts */
+  reverts?: number | null;
 }
 
 export const getQueue = () => call<{ changes: Change[] }>("GET", "/queue").then((r) => r.changes ?? []);
+export interface ChangeFilters { status?: ChangeStatus; kind?: Change["kind"]; schema?: string; mine?: boolean }
+export const listChanges = (f: ChangeFilters, limit: number) => {
+  const q = new URLSearchParams();
+  if (f.status) q.set("status", f.status);
+  if (f.kind) q.set("kind", f.kind);
+  if (f.schema) q.set("schema", f.schema);
+  if (f.mine) q.set("mine", "1");
+  q.set("limit", String(limit));
+  return call<{ changes: Change[]; more?: boolean }>("GET", `/changes?${q}`).then((r) => ({ changes: r.changes ?? [], more: r.more === true }));
+};
+export const revertChange = (id: number) => call<Change>("POST", `/changes/${id}/revert`, {});
 export const decide = (id: number, action: "approve" | "reject", note = "") =>
   call<Change>("POST", `/changes/${id}/${action}`, note ? { note } : {});
 

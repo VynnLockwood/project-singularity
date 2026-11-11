@@ -6,11 +6,12 @@ export type Route =
   | { view: "chat"; conversation?: number }
   | { view: "database" | "data"; schema?: string; table?: string }
   | { view: "settings"; section?: SettingsSection }
-  | { view: "duplicates" | "scripts" | "activity" | "connect" }
+  | { view: "activity"; tab?: "history" }
+  | { view: "duplicates" | "scripts" | "connect" }
   | { view: "notfound"; path: string };
 
 const SECTIONS: readonly string[] = ["quality", "rules", "team"];
-const PLAIN = ["duplicates", "scripts", "activity", "connect"] as const;
+const PLAIN = ["duplicates", "scripts", "connect"] as const;
 
 export function parseRoute(pathname: string): Route {
   let parts: string[];
@@ -31,6 +32,7 @@ export function parseRoute(pathname: string): Route {
   if (head === "settings") {
     return a && SECTIONS.includes(a) ? { view: "settings", section: a as SettingsSection } : { view: "settings" };
   }
+  if (head === "activity") return a === "history" ? { view: "activity", tab: "history" } : { view: "activity" };
   if (head === "queue") return { view: "activity" }; // the tab's name before the rework
   if ((PLAIN as readonly string[]).includes(head)) return { view: head as (typeof PLAIN)[number] };
   return { view: "notfound", path: pathname };
@@ -46,6 +48,7 @@ export function buildPath(route: Route): string {
     case "database":
     case "data": return join(route.view, route.schema, route.schema ? route.table : undefined);
     case "settings": return join("settings", route.section);
+    case "activity": return join("activity", route.tab);
     default: return join(route.view);
   }
 }
