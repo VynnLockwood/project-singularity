@@ -20,7 +20,7 @@ const ROWS = [
 ];
 const me = (role: Me["role"]): Me => ({ id: 1, email: "ed@example.com", name: "", role });
 
-async function setup(role: Me["role"] = "editor", data = page(ROWS), onBusy: (b: boolean) => void = vi.fn()) {
+async function setup(role: Me["role"] = "editor", data = page(ROWS), onBusy: (b: boolean) => void = vi.fn(), extra: Record<string, unknown> = {}) {
   vi.resetModules();
   const getRows = vi.fn().mockResolvedValue(data);
   const proposeChange = vi.fn().mockResolvedValue(change({ id: 77, kind: "data", status: "pending" }));
@@ -34,8 +34,8 @@ async function setup(role: Me["role"] = "editor", data = page(ROWS), onBusy: (b:
   }));
   const { GridEditor } = await import("./GridEditor");
   const onProposed = vi.fn();
-  render(<GridEditor me={me(role)} table="orderHeader" live={[]} onProposed={onProposed} onBusy={onBusy} />);
-  await screen.findByText(/\d+–\d+ of \d+/);
+  render(<GridEditor me={me(role)} table="orderHeader" live={[]} onProposed={onProposed} onBusy={onBusy} {...extra} />);
+  await screen.findByText(/\d+–\d+ of \d+|^no rows$/);
   return { getRows, proposeChange, onProposed };
 }
 
@@ -88,7 +88,7 @@ describe("GridEditor", () => {
     expect(proposeChange.mock.calls[0][0]).toEqual([
       { op: "update_rows", table: "orderHeader", where: { id: [1, 2] }, set: { qty: 5, note: "same" } },
     ]);
-    await waitFor(() => expect(screen.getByTestId("draft-count")).toHaveTextContent("No pending edits"));
+    await waitFor(() => expect(screen.queryByTestId("draft-count")).toBeNull());
     expect(screen.getByText(/Saved as change #77/)).toBeInTheDocument();
     expect(onProposed).toHaveBeenCalled();
   });
@@ -127,7 +127,7 @@ describe("GridEditor", () => {
     const { proposeChange } = await setup();
     type("qty 1", "7");
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
-    expect(screen.getByTestId("draft-count")).toHaveTextContent("No pending edits");
+    expect(screen.queryByTestId("draft-count")).toBeNull();
     expect((screen.getByLabelText("qty 1") as HTMLInputElement).value).toBe("1");
     expect(proposeChange).not.toHaveBeenCalled();
   });
@@ -138,7 +138,9 @@ describe("GridEditor", () => {
     await waitFor(() => expect(getRows).toHaveBeenLastCalledWith("orderHeader", expect.objectContaining({ sort: "qty", dir: "asc" })));
     fireEvent.click(screen.getByRole("button", { name: /qty/ }));
     await waitFor(() => expect(getRows).toHaveBeenLastCalledWith("orderHeader", expect.objectContaining({ sort: "qty", dir: "desc" })));
-    type("filter note", "sec");
+    fireEvent.change(screen.getByLabelText("Filter column"), { target: { value: "note" } });
+    type("Filter text", "sec");
+    fireEvent.click(screen.getByRole("button", { name: "Add filter" }));
     await waitFor(() => expect(getRows).toHaveBeenLastCalledWith("orderHeader", expect.objectContaining({ filters: { note: "sec" } })), { timeout: 2000 });
   });
 
@@ -191,5 +193,116 @@ describe("GridEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save for approval" }));
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("blocked this change"));
     expect(screen.getByTestId("draft-count")).toHaveTextContent("1 pending change"); // draft kept for fixing
+  });
+
+  it("has a filter bar and no per-column filter row", async () => {
+    await setup();
+    expect(screen.getByRole("button", { name: "Add filter" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("filter note")).toBeNull();
+  });
+
+  it("controlled view props reach getRows and view changes go out through onViewChange", async () => {
+    const onViewChange = vi.fn();
+    const view = { sort: "note", dir: "desc" as const, filters: { note: "x" }, inactive: true };
+    const { getRows } = await setup("editor", page(ROWS), vi.fn(), { view, onViewChange, schema: "other" });
+    expect(getRows).toHaveBeenLastCalledWith("orderHeader", expect.objectContaining({ sort: "note", dir: "desc", filters: { note: "x" }, inactive: true }), "other");
+    expect(screen.getByRole("columnheader", { name: /note/ })).toHaveAttribute("aria-sort", "descending");
+    fireEvent.click(screen.getByRole("button", { name: /^note/ }));
+    expect(onViewChange).toHaveBeenLastCalledWith({ ...view, sort: null, dir: "asc" });
+  });
+
+  it("the third header click clears the sort", async () => {
+    const { getRows } = await setup();
+    const head = () => screen.getByRole("button", { name: /^qty/ });
+    fireEvent.click(head()); fireEvent.click(head()); fireEvent.click(head());
+    await waitFor(() => expect(getRows).toHaveBeenLastCalledWith("orderHeader", expect.objectContaining({ sort: undefined })));
+    expect(screen.getByRole("columnheader", { name: /qty/ })).toHaveAttribute("aria-sort", "none");
+  });
+
+  it("a filter change keeps pending edits and goes back to page 1", async () => {
+    const { getRows } = await setup("editor", page(ROWS, 120));
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    await waitFor(() => expect(getRows).toHaveBeenLastCalledWith("orderHeader", expect.objectContaining({ offset: 50 })));
+    type("qty 1", "9");
+    type("Filter text", "sec");
+    fireEvent.click(screen.getByRole("button", { name: "Add filter" }));
+    await waitFor(() => expect(getRows).toHaveBeenLastCalledWith("orderHeader", expect.objectContaining({ offset: 0, filters: { id: "sec" } })));
+    expect(screen.getByTestId("draft-count")).toHaveTextContent("1 pending change");
+  });
+
+  it("an old reply never overwrites a newer one", async () => {
+    let first!: (p: RowsPage) => void;
+    const { getRows } = await setup();
+    getRows.mockImplementationOnce(() => new Promise<RowsPage>((r) => { first = r; }));
+    getRows.mockResolvedValueOnce(page([{ id: 9, note: "newest", qty: 1, customerId: 10 }]));
+    fireEvent.click(screen.getByRole("button", { name: "qty" }));
+    fireEvent.click(screen.getByRole("button", { name: /^qty/ }));
+    await screen.findByDisplayValue("newest");
+    first(page([{ id: 8, note: "stale", qty: 1, customerId: 10 }]));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByDisplayValue("stale")).toBeNull();
+  });
+
+  it("the save bar exists only with pending edits and counts cells that need fixing", async () => {
+    await setup();
+    expect(screen.queryByRole("button", { name: "Save for approval" })).toBeNull();
+    type("qty 1", "lots");
+    expect(screen.getByTestId("draft-count")).toHaveTextContent("1 pending change");
+    expect(screen.getByTestId("draft-count")).toHaveTextContent("1 cell needs fixing");
+    expect(screen.getByRole("button", { name: "Discard" })).toBeInTheDocument();
+  });
+
+  it("marks edited, removed, new and invalid cells", async () => {
+    await setup();
+    type("qty 1", "lots");
+    expect(screen.getByLabelText("qty 1").closest("td")).toHaveAttribute("data-edited", "true");
+    expect(screen.getByText(/Enter a whole number|not a number|whole number/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "remove row 2" }));
+    expect(screen.getByRole("button", { name: "restore row 2" }).closest("tr")).toHaveAttribute("data-removed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Add row" }));
+    expect(screen.getByText("new")).toBeInTheDocument();
+  });
+
+  it("empty table and empty result are told apart", async () => {
+    await setup("editor", page([], 0));
+    expect(screen.getByText("No rows yet.")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Filter text"), { target: { value: "zz" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add filter" }));
+    expect(await screen.findByText("No rows match these filters.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(await screen.findByText("No rows yet.")).toBeInTheDocument();
+  });
+
+  it("a load error shows its message and Try again reloads", async () => {
+    const { getRows } = await setup();
+    getRows.mockRejectedValueOnce(new Error("x"));
+    fireEvent.click(screen.getByRole("button", { name: "qty" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load rows.");
+    getRows.mockResolvedValueOnce(page(ROWS));
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+
+  it("Export CSV is hidden from a viewer", async () => {
+    await setup("viewer");
+    expect(screen.queryByRole("button", { name: "Export CSV" })).toBeNull();
+  });
+
+  it("Export CSV downloads the whole view; a server refusal is shown and nothing downloads", async () => {
+    const view = { sort: "note", dir: "asc" as const, filters: { note: "x" }, inactive: false };
+    await setup("editor", page(ROWS), vi.fn(), { view, onViewChange: vi.fn() });
+    const create = vi.fn(() => "blob:x");
+    vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: create, revokeObjectURL: vi.fn() }));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "5 rows match; the most that can be exported is 3 (setting limits.maxExportRows). Narrow the filters." }), { status: 400 }))
+      .mockResolvedValueOnce(new Response("\ufeffa\r\n", { status: 200, headers: { "Content-Disposition": 'attachment; filename="master-t-2026-11-11.csv"' } }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    fireEvent.click(screen.getByRole("button", { name: "Export CSV" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("the most that can be exported is 3");
+    expect(create).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls[0][0]).toContain("/export.csv?schema=master&sort=note&dir=asc&filters=");
+    fireEvent.click(screen.getByRole("button", { name: "Export CSV" }));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
   });
 });
