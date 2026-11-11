@@ -46,6 +46,16 @@ def _ensure_dir() -> None:
         raise ScriptError("Script directory is not private.")
 
 
+def loads_dir() -> str:
+    """Private directory for staged-load files (SCRIPT_DIR/loads), created on first use."""
+    _ensure_dir()
+    d = os.path.join(settings.SCRIPT_DIR, "loads")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    if os.stat(d).st_uid == os.geteuid():
+        os.chmod(d, 0o700)
+    return d
+
+
 def _write_atomic(rel: str, data: bytes) -> None:
     """Write to a temp file in the same directory, fsync, then rename into place. Nothing is left behind on failure."""
     final = _full_path(rel)
