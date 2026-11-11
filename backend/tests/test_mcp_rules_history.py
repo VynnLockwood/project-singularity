@@ -83,3 +83,20 @@ def test_rollback_bad_input_is_a_gate_error(people, rule, op):
     ch = tools.propose_config_change(people[Role.EDITOR], [op])
     assert ch["status"] == "rejected"
     assert Rule.objects.get(name="tidy").version == 2
+
+
+def test_rollback_diff_shows_what_changes(people, rule):
+    ch = tools.propose_config_change(people[Role.EDITOR], [{"op": "rollback_rule", "name": "tidy", "version": 1}])
+    assert ch["diff"] == ["~ rule tidy: severity warn → block (rollback to version 1)"]
+
+
+def test_rollback_to_an_identical_state_changes_nothing(people, rule):
+    ap = people[Role.APPROVER]
+    rule_services.update_rule(ap, rule, description="note")           # v3 differs from v2 only in description
+    rule_services.update_rule(ap, rule, description="")               # v4 equals v2's content
+    rule.refresh_from_db()
+    before = (rule.version, RuleVersion.objects.filter(rule=rule).count())
+    ch = tools.propose_config_change(people[Role.EDITOR], [{"op": "rollback_rule", "name": "tidy", "version": 2}])
+    assert ch["status"] == "rejected"
+    rule.refresh_from_db()
+    assert (rule.version, RuleVersion.objects.filter(rule=rule).count()) == before

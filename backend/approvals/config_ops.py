@@ -116,13 +116,21 @@ def _rollback_rule(res: Result, actor, op):
     if not isinstance(version, int) or isinstance(version, bool):
         res.errors.append(f"rollback_rule {rule.name}: version must be a whole number (see get_rule_history)")
         return
-    before_version = rule.version
+    target = rule.versions.filter(version=version).first()
+    if target is None:
+        res.errors.append(f"rule {rule.name}: version {version} does not exist (see get_rule_history)")
+        return
+    before_version, before = rule.version, rule.snapshot()
+    changed = [k for k in RULE_FIELDS if before[k] != target.snapshot[k]]
+    if not changed:
+        return                                                   # already in that state: nothing to roll back
     try:
         rule_services.rollback_rule(actor, rule, version)
     except rule_services.RuleError as exc:
         res.errors += [f"rule {rule.name}: {e}" for e in exc.errors]
         return
-    res.diff.append(f"~ rule {rule.name}: rolled back to version {version}")
+    parts = [f"{k} {_short(before[k])} → {_short(target.snapshot[k])}" if k != "params" else "parameters changed" for k in changed]
+    res.diff.append(f"~ rule {rule.name}: " + "; ".join(parts) + f" (rollback to version {version})")
     res.reverse.append({"op": "rollback_rule", "name": rule.name, "version": before_version})
 
 
