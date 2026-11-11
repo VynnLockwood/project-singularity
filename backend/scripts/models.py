@@ -55,3 +55,26 @@ class StagedLoad(models.Model):
 
     class Meta:
         ordering = ["-id"]
+
+
+class UploadSession(models.Model):
+    """A big script arriving in fixed-size chunks (web upload), streamed to a part file until complete."""
+
+    class Status(models.TextChoices):
+        OPEN = "open"
+        COMPLETE = "complete"
+        EXPIRED = "expired"
+
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="upload_sessions")
+    name = models.CharField(max_length=200)
+    size = models.PositiveBigIntegerField()          # raw bytes the client will send
+    chunk_bytes = models.PositiveIntegerField()
+    received = models.JSONField(default=list)        # chunk numbers written so far
+    path = models.CharField(max_length=255, blank=True)  # part file under SCRIPT_DIR/uploads; empty once removed
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.OPEN, db_index=True)
+    script = models.ForeignKey(Script, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    created_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField(db_index=True)
+
+    class Meta:
+        ordering = ["-id"]

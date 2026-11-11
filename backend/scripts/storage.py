@@ -57,6 +57,16 @@ def loads_dir() -> str:
     return d
 
 
+def uploads_dir() -> str:
+    """Private directory for chunked-upload part files (SCRIPT_DIR/uploads), created on first use."""
+    _ensure_dir()
+    d = os.path.join(settings.SCRIPT_DIR, "uploads")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    if os.stat(d).st_uid == os.geteuid():
+        os.chmod(d, 0o700)
+    return d
+
+
 def _write_atomic(rel: str, data: bytes) -> None:
     """Write to a temp file in the same directory, fsync, then rename into place. Nothing is left behind on failure."""
     final = _full_path(rel)
@@ -110,6 +120,74 @@ def save(owner, name: str, data: bytes) -> Script:
         except FileNotFoundError:
             pass
         raise
+
+
+def save_stream(owner, name: str, src_path: str) -> Script:
+    """Store a file already on disk (a finished chunked upload) in ONE pass, never holding more than a block.
+
+    Same result as `save` on the same bytes: BOM stripped, UTF-8 and NUL checked, CRLF and lone CR become LF
+    (a pair split across two reads included), checksum and size of the normalized bytes."""
+    import codecs
+    raw = os.path.getsize(src_path)
+    if raw > get_config()["limits"]["maxScriptBytes"]:
+        raise ScriptError("Script is larger than the allowed size.")
+    _ensure_dir()
+    rel = f"{uuid.uuid4().hex}.sql"
+    final = _full_path(rel)
+    tmp = os.path.join(settings.SCRIPT_DIR, f".tmp-{uuid.uuid4().hex}")
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    digest, size, held_cr, first, has_text = hashlib.sha256(), 0, False, True, False
+    try:
+        with open(src_path, "rb") as src, open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as out:
+            def emit(text: str) -> None:
+                nonlocal size, has_text
+                if not text:
+                    return
+                if "\x00" in text:
+                    raise ScriptError("Script contains NUL bytes.")
+                has_text = has_text or bool(text.strip())
+                b = text.encode("utf-8")
+                digest.update(b)
+                size += len(b)
+                out.write(b)
+
+            while block := src.read(BLOCK):
+                if first:
+                    first = False
+                    if block.startswith(BOM):
+                        block = block[len(BOM):]
+                text = ("\r" if held_cr else "") + decoder.decode(block)
+                held_cr = text.endswith("\r")
+                if held_cr:
+                    text = text[:-1]
+                emit(text.replace("\r\n", "\n").replace("\r", "\n"))
+            tail = decoder.decode(b"", final=True)
+            emit((("\r" if held_cr else "") + tail).replace("\r\n", "\n").replace("\r", "\n"))
+            out.flush()
+            os.fsync(out.fileno())
+        if not has_text:
+            raise ScriptError("Script is empty.")
+        os.replace(tmp, final)
+    except UnicodeDecodeError:
+        _unlink(tmp)
+        raise ScriptError("Script is not valid UTF-8 text.") from None
+    except BaseException:
+        _unlink(tmp)
+        raise
+    now = timezone.now()
+    try:
+        return Script.objects.create(owner=owner, name=_clean_name(name), sha256=digest.hexdigest(), size=size,
+                                     path=rel, created_at=now, expires_at=now + SCRIPT_TTL)
+    except BaseException:
+        _unlink(final)
+        raise
+
+
+def _unlink(path: str) -> None:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
 
 
 def read(script: Script) -> bytes:

@@ -4,7 +4,7 @@ from django.http import JsonResponse
 from accounts.api import endpoint, error
 from schema.http import schema_param, unknown_schema_is_400
 
-from . import service, storage
+from . import service, storage, uploads
 from .models import Script
 
 
@@ -96,3 +96,60 @@ def script_detail(request, script_id):
     if s.owner_id != request.user.pk and not request.user.can_approve:
         return error("forbidden", 403)
     return JsonResponse(_summary(s))
+
+
+def _upload_view(methods, fn):
+    """Editor-only guard for the chunked-upload views: no JSON parsing of the body (chunks are raw bytes)."""
+    def wrapper(request, *args, **kwargs):
+        if request.method not in methods:
+            return error("method not allowed", 405)
+        if not request.user.is_authenticated:
+            return error("unauthenticated", 401)
+        if not request.user.can_edit:
+            return error("forbidden", 403)
+        try:
+            return fn(request, *args, **kwargs)
+        except uploads.NotFound as exc:
+            return error(str(exc), 404)
+        except uploads.Gone as exc:
+            return error(str(exc), 410)
+        except storage.ScriptError as exc:
+            return error(str(exc), 413 if "larger than" in str(exc) else 400)
+    return wrapper
+
+
+def _json_body(request) -> dict:
+    import json as _json
+    try:
+        body = _json.loads(request.body or b"{}")
+    except ValueError:
+        raise storage.ScriptError("invalid JSON body") from None
+    if not isinstance(body, dict):
+        raise storage.ScriptError("body must be a JSON object")
+    return body
+
+
+def upload_begin(request):
+    def run(request):
+        body = _json_body(request)
+        return JsonResponse(uploads.begin(request.user, str(body.get("name") or "script.sql"), body.get("size")),
+                            status=201)
+    return _upload_view({"POST"}, run)(request)
+
+
+def upload_chunk(request, upload_id, n):
+    def run(request):
+        # request.read(), not request.body: body would refuse anything over DATA_UPLOAD_MAX_MEMORY_SIZE
+        return JsonResponse(uploads.put_chunk(request.user, upload_id, n, request.read()))
+    return _upload_view({"PUT"}, run)(request)
+
+
+def upload_status(request, upload_id):
+    return _upload_view({"GET"}, lambda r: JsonResponse(uploads.status(r.user, upload_id)))(request)
+
+
+def upload_complete(request, upload_id):
+    def run(request):
+        script = uploads.complete(request.user, upload_id)
+        return JsonResponse({"script_id": script.pk, "sha256": script.sha256, "size": script.size}, status=201)
+    return _upload_view({"POST"}, run)(request)
