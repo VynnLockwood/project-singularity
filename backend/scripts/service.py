@@ -78,8 +78,11 @@ def _bound_ops(script: Script) -> list[dict]:
 
 
 def trim_report(report: dict) -> dict:
-    """A validation report small enough for an AI client: at most 20 errors and 10 sample orphans per table."""
+    """A validation report small enough for an AI client: at most 20 errors, 20 skipped statements and 10 sample orphans per table."""
     out = dict(report)
     out["errors"] = report.get("errors", [])[:20]
+    skipped = report.get("skipped", [])
+    out["skipped"] = skipped[:20]
+    out["skipped_truncated"] = report.get("skipped_truncated", 0) + max(0, len(skipped) - 20)
     out["tables"] = [{**t, "sample_orphans": t.get("sample_orphans", [])[:10]} for t in out.get("tables", [])]
     return out

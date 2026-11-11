@@ -208,7 +208,9 @@ async def list_pending() -> dict:
     description=(
         "Upload a small pg_dump-style SQL file inline (text, <= maxInlineScriptBytes; check get_settings for the cap), "
         "validate it against the gate and submit it as one approvable Change. No raw SQL is executed: the script is "
-        "parsed into gated operations. For bigger files, tell the user to upload the file in the web app, then use "
+        "parsed into gated operations. Extensions, sequences (and their nextval defaults), grants and functions/triggers/"
+        "policies are skipped, never run, and listed in report.skipped with a reason (skipped logic means that logic "
+        "will be missing: tell the user); DROP, DELETE, UPDATE and TRUNCATE still fail. For bigger files, tell the user to upload the file in the web app, then use "
         "validate_script with the script_id. Optional mapping: {tables: {src_table: {pk: ', srcname: table}}, "
         "columns: {...}}; leave out to let the system suggest one. The script loads into one database (schema, default master)."
     ),

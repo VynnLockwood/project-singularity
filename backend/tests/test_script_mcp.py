@@ -126,3 +126,30 @@ def test_validate_script_before_submit(server):
     assert body.get("report", {}).get("ok") is False and not body.get("change_id")
     again = payload(call(server, tk, "validate_script", {"script_id": body["script_id"]}))
     assert again["report"]["ok"] is False and again["report"]["errors"] == body["report"]["errors"]
+
+
+def test_submit_script_with_extension_and_grant_succeeds_and_reports_skipped(server):
+    from tests.bigdump import PROBE
+    res = payload(call(server, server["tokens"][Role.EDITOR], "submit_script", {"name": "probe.sql", "content": PROBE}))
+    assert res["report"]["ok"], res["report"]["errors"]
+    assert res["change_id"] > 0
+    kinds = {s["kind"] for s in res["report"]["skipped"]}
+    assert {"extension", "permission", "logic"} <= kinds
+
+
+def test_trimmed_report_caps_skipped_at_20_and_counts_the_rest():
+    from scripts.service import trim_report
+    items = [{"line": i, "statement": "GRANT", "reason": "r", "kind": "permission"} for i in range(30)]
+    out = trim_report({"skipped": items, "skipped_truncated": 5, "errors": [], "tables": []})
+    assert len(out["skipped"]) == 20 and out["skipped_truncated"] == 15
+    assert trim_report({"errors": [], "tables": []}).get("skipped", []) == []
+
+
+def test_validate_script_of_someone_elses_script_is_a_clean_tool_failure(server):
+    from mcp_server import tools
+    from scripts import storage
+    owner = server["users"][Role.EDITOR]
+    other = User.objects.create(username="ed2@example.com", email="ed2@example.com", role=Role.EDITOR)
+    s = storage.save(owner, "a.sql", b"CREATE TABLE a (id integer);\n")
+    with pytest.raises(tools.ToolFailure, match="belongs to someone else"):
+        tools.validate_script(other, s.pk)
