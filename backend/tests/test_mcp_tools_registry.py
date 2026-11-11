@@ -44,3 +44,8 @@ def test_minimum_roles_of_the_reach_tools_are_pinned():
         "merge_duplicates": "editor", "dismiss_duplicate": "editor", "export_schema": "viewer",
         "reindex_search": "approver",
     }
+
+
+def test_load_tools_are_editor_tools():
+    for t in ("begin_load", "append_rows", "finish_load", "get_load", "cancel_load"):
+        assert tools.TOOL_ROLES[t] == "editor"

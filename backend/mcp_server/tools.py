@@ -45,6 +45,11 @@ TOOL_ROLES = {
     "revert_change": "approver",
     "reindex_search": "approver",
     "recheck_change": "editor",
+    "begin_load": "editor",
+    "append_rows": "editor",
+    "finish_load": "editor",
+    "get_load": "editor",
+    "cancel_load": "editor",
     "get_audit_log": "approver",   # audit details can hold other people's prompts and emails
 }
 
@@ -66,7 +71,7 @@ OPERATIONS_HELP = (
     "create_view{name,query,comment?} (one read-only SELECT over this database's tables), drop_view{name,reason}, "
     "create_enum{name,values[]} (then use the name as a column type), add_enum_value{name,value}, drop_enum{name,reason}, "
     "drop_column{table,column,reason}, drop_table{table,reason}, drop_index{name,reason}, drop_constraint{table,name,reason}, "
-    "insert_rows{table,rows[]}, update_rows{table,where{},set{}}, deactivate_rows{table,where{}}, "
+    "insert_rows{table,rows[]} (a few hundred rows at most: for more use begin_load, append_rows, finish_load), update_rows{table,where{},set{}}, deactivate_rows{table,where{}}, "
     "delete_rows{table,where{},reason} (real deletion; prefer deactivate_rows), "
     "upsert_rows{table,key[],columns[],rows[]} (insert, or overwrite 'columns' when the key exists; the key must be a unique key). "
     "Database-level operations: create_schema{name,comment?}, rename_schema{schema,new_name}, drop_schema{schema,reason}, "
@@ -147,6 +152,30 @@ DESCRIPTIONS = {
         "Refresh the schema search index (approvers). It runs by itself after schema changes; use rebuild=true only "
         "when search results look wrong."
     ),
+    "begin_load": (
+        "Start loading MORE ROWS than propose_change takes (thousands to 100,000) into an EXISTING table, yourself, "
+        "from this chat: begin_load, then append_rows once per chunk, then finish_load. Never ask the person to run the "
+        "insert. begin_load(table, columns, schema?, refs?) returns a load_id and the limits. columns are the CSV "
+        "columns in order. Optional refs fill a foreign key from a parent business key: [{column: 'province_id', "
+        "parent_table: 'province', parent_key: 'code', source_column: 'province_code'}] (source_column is a CSV column "
+        "that is not a real column). Minimum role: editor."
+    ),
+    "append_rows": (
+        "Send one chunk of rows for a load (about 2,000 rows per call; see the limits from begin_load). csv is "
+        "header-less RFC 4180 text, columns in the begin_load order; an unquoted empty field is NULL, a quoted empty "
+        "field \"\" is the empty string. seq starts at 1 and goes up by one per accepted chunk; if a call fails or "
+        "times out, resend the SAME seq with the SAME content: it is safe. A bad chunk is refused whole with "
+        "problems [{row, column, value, message}] (row counts from the first row of the whole load): fix it and "
+        "resend the same seq. Nothing is written to the database until finish_load."
+    ),
+    "finish_load": (
+        "Close a load and submit it as ONE approvable change (the same checks as submit_script: rules gate, foreign "
+        "keys, a rolled-back dry run). Returns change_id and next steps. If ok is false the report lists problems with "
+        "row numbers and the load stays open: you can cancel_load and start again, or fix the table and finish again. "
+        "Calling it twice returns the same change."
+    ),
+    "get_load": "Status of a load: open, finished, cancelled or expired, the next seq expected, rows so far, and the change id once finished.",
+    "cancel_load": "Throw away an open load and its staged rows. Nothing was written to the database.",
     "recheck_change": "Run the gate again on a stale change, after the schema or the rules moved.",
 }
 
@@ -169,6 +198,22 @@ def clamp(value, default: int, maximum: int) -> int:
     return min(value, maximum)
 
 
+BULK_LOADING = {
+    "when": "More rows than insert_rows should carry (more than a few hundred): load them yourself with these tools. "
+            "Do not hand the insert to the person.",
+    "steps": [
+        "begin_load(table, columns) -> load_id and limits",
+        "append_rows(load_id, seq=1, csv) ... seq=2, 3, ... about 2,000 rows each",
+        "finish_load(load_id) -> change_id; show the person the change and ask before approve_change",
+    ],
+    "csv": "No header row. Columns in begin_load order. Quote a field with \" when it holds a comma, quote or newline; "
+           "double a quote inside as \"\". An unquoted empty field is NULL; \"\" is the empty string.",
+    "retry": "If a call fails or times out, resend the same seq and same content: it is safe.",
+    "example": {"begin_load": {"table": "customer", "columns": ["code", "name_en"]},
+                "append_rows": {"load_id": 7, "seq": 1, "csv": "C-1,Acme\nC-2,\"Smith, Jones\"\n"}},
+}
+
+
 def get_rules(user) -> dict:
     return {
         "instructions": (
@@ -176,6 +221,7 @@ def get_rules(user) -> dict:
             "change; 'warn' rules are shown to the reviewer. The gate checks every proposal again."
         ),
         "operations": OPERATION_EXAMPLES,
+        "bulk_loading": BULK_LOADING,
         "rules": [
             {k: r[k] for k in ("name", "type", "severity", "description", "params")}
             for r in rule_services.active_rules() if r["enabled"]
@@ -603,12 +649,45 @@ def get_script(user, script_id: int) -> dict:
             "change_id": s.change_id, "report": _trim_report(s.report or {}) if s.report else None}
 
 
-def _trim_report(report: dict) -> dict:
-    out = dict(report)
-    out["errors"] = report.get("errors", [])[:20]
-    for t in out.get("tables", []):
-        t["sample_orphans"] = t.get("sample_orphans", [])[:10]
+_trim_report = script_service.trim_report
+
+
+def _load_call(fn, *args, **kwargs):
+    from scripts import loads
+    try:
+        return fn(*args, **kwargs)
+    except (loads.LoadError, storage.ScriptError, introspect.UnknownSchema) as exc:
+        raise ToolFailure(str(exc)) from exc
+    except PermissionError as exc:
+        raise ToolFailure(str(exc)) from exc
+
+
+def begin_load(user, table: str, columns: list, schema: str = "master", refs: list | None = None) -> dict:
+    from scripts import loads
+    return _load_call(loads.begin, user, table, columns, schema, refs)
+
+
+def append_rows(user, load_id: int, seq: int, csv: str) -> dict:
+    from scripts import loads
+    return _load_call(loads.append, user, load_id, seq, csv)
+
+
+def finish_load(user, load_id: int, note: str = "") -> dict:
+    from scripts import loads
+    out = _load_call(loads.finish, user, load_id, note)
+    if out.get("ok") and out.get("change_id"):
+        out["next"] = _next_step(user, Change.objects.get(pk=out["change_id"]))
     return out
+
+
+def get_load(user, load_id: int) -> dict:
+    from scripts import loads
+    return _load_call(loads.get, user, load_id)
+
+
+def cancel_load(user, load_id: int) -> dict:
+    from scripts import loads
+    return _load_call(loads.cancel, user, load_id)
 
 
 IMPL = {
@@ -628,6 +707,11 @@ IMPL = {
     "reject_change": reject_change,
     "list_pending": list_pending,
     "submit_script": submit_script,
+    "begin_load": begin_load,
+    "append_rows": append_rows,
+    "finish_load": finish_load,
+    "get_load": get_load,
+    "cancel_load": cancel_load,
     "validate_script": validate_script,
     "get_script": get_script,
     "list_changes": list_changes,
