@@ -67,6 +67,7 @@ class ParsedScript:
     ops: list[dict] = field(default_factory=list)
     streams: dict[str, RowStream] = field(default_factory=dict)
     ignored: list[str] = field(default_factory=list)
+    skipped: list[dict] = field(default_factory=list)  # {line, statement, reason, kind}: left out, never run
     errors: list[ScriptIssue] = field(default_factory=list)
     statements: int = 0  # statements and psql meta lines seen (lone `;` not counted)
     join_hints: dict[str, list[dict]] = field(default_factory=dict)  # table -> [ref hint]
@@ -318,7 +319,20 @@ def _const(node) -> tuple[bool, object]:
 _SVF = enums.SQLValueFunctionOp
 
 
+class _DropDefault:
+    """`_map_default` result for a sequence default (nextval): the column gets no default."""
+
+
+DROP_DEFAULT = _DropDefault()
+
+
+def _is_nextval(expr) -> bool:
+    return isinstance(expr, ast.FuncCall) and _catalog_func(expr) == "nextval"
+
+
 def _map_default(expr):
+    if _is_nextval(expr):
+        return DROP_DEFAULT
     ok, v = _const(expr)
     if ok and isinstance(v, _Numeric):
         # a JSON float only when it is exact; otherwise keep the literal text (PostgreSQL casts it exactly)
@@ -424,6 +438,15 @@ def _long_identifier(stmt: str) -> str | None:
 
 # ---------------------------------------------------------------- translator
 
+_LOGIC_OBJECTS = {_OBJ.OBJECT_FUNCTION, _OBJ.OBJECT_PROCEDURE, _OBJ.OBJECT_ROUTINE, _OBJ.OBJECT_TRIGGER,
+                  _OBJ.OBJECT_POLICY, _OBJ.OBJECT_RULE}
+_LOGIC_TABLE_CMDS = {getattr(_AT, n) for n in (
+    "AT_EnableRowSecurity", "AT_DisableRowSecurity", "AT_ForceRowSecurity", "AT_NoForceRowSecurity",
+    "AT_EnableTrig", "AT_DisableTrig", "AT_EnableTrigAll", "AT_DisableTrigAll", "AT_EnableTrigUser",
+    "AT_DisableTrigUser", "AT_EnableAlwaysTrig", "AT_EnableReplicaTrig", "AT_EnableRule", "AT_DisableRule",
+    "AT_EnableAlwaysRule", "AT_EnableReplicaRule")}
+
+
 class _Translator:
     def __init__(self, text: str):
         self.text = text
@@ -444,6 +467,7 @@ class _Translator:
         self.stream_src: dict[str, list[Callable[[], Iterator[list[str | None]]]]] = {}
         self.stream_lines: dict[str, list[Callable[[], Iterator[int]]]] = {}
         self.out = ParsedScript()
+        self._line, self._text = 0, ""
 
     # --- names and schema
     def _schema(self, name: str) -> None:
@@ -612,7 +636,12 @@ class _Translator:
             elif k == _C.CONSTR_NULL:
                 pass
             elif k == _C.CONSTR_DEFAULT:
-                col["default"] = _map_default(c.raw_expr)
+                d = _map_default(c.raw_expr)
+                if d is DROP_DEFAULT:
+                    self._skip("default", f"the sequence default of {table}.{cd.colname} was dropped "
+                                          "(the column is filled from the data)", _sql(c.raw_expr))
+                else:
+                    col["default"] = d
             elif k == _C.CONSTR_IDENTITY:
                 col["identity"] = True
             elif k == _C.CONSTR_PRIMARY:
@@ -681,6 +710,10 @@ class _Translator:
         kind = cmd.subtype
         if kind == _AT.AT_ColumnDefault:
             default = _map_default(cmd.def_) if cmd.def_ is not None else None
+            if default is DROP_DEFAULT:
+                self._skip("default", f"the sequence default of {table}.{column} was dropped "
+                                      "(the column is filled from the data)", _sql(cmd.def_))
+                return
             op = ({"op": "set_column_default", "table": table, "column": column, "default": default}
                   if cmd.def_ is not None else {"op": "drop_column_default", "table": table, "column": column})
         else:
@@ -962,6 +995,30 @@ class _Translator:
             raise _Reject("CREATE SCHEMA needs a name")
         self._schema(s.schemaname)
 
+    # --- skipped statements
+    def _skip(self, kind: str, reason: str, statement: str | None = None) -> None:
+        self.out.skipped.append({"line": self._line, "statement": _excerpt(statement or self._text),
+                                 "reason": reason, "kind": kind})
+
+    def _skip_kind(self, s) -> tuple[str, str] | None:
+        """(kind, reason) for statements that are left out of the import instead of failing the file."""
+        if isinstance(s, ast.CreateExtensionStmt) or (
+                isinstance(s, ast.CommentStmt) and s.objtype == _OBJ.OBJECT_EXTENSION):
+            return "extension", "extensions are not installed by a script; install them on the server if needed"
+        if isinstance(s, ast.CommentStmt) and s.objtype in _LOGIC_OBJECTS:
+            return "logic", "comments on functions, triggers and policies go with them, which are not imported"
+        if isinstance(s, ast.CommentStmt) and s.objtype == _OBJ.OBJECT_SEQUENCE:
+            return "sequence", "sequences are not created; ids come from the data or identity columns"
+        if isinstance(s, ast.AlterTableStmt) and s.cmds and all(c.subtype in _LOGIC_TABLE_CMDS for c in s.cmds):
+            return "logic", "row-level security and trigger switches go with the policies and triggers, which are not imported"
+        if isinstance(s, (ast.CreateSeqStmt, ast.AlterSeqStmt)):
+            return "sequence", "sequences are not created; ids come from the data or identity columns"
+        if isinstance(s, (ast.GrantStmt, ast.GrantRoleStmt, ast.AlterDefaultPrivilegesStmt)):
+            return "permission", "permissions are managed in the app, not by a script"
+        if isinstance(s, (ast.CreateFunctionStmt, ast.CreateTrigStmt, ast.RuleStmt, ast.CreatePolicyStmt)):
+            return "logic", "functions, triggers, rules and policies are NOT imported: this logic will be missing"
+        return None
+
     # --- dispatch
     def statement(self, piece: _Piece) -> bool:
         """Translate one statement. Returns False for an empty statement (a lone `;`)."""
@@ -977,6 +1034,11 @@ class _Translator:
             self.out.errors.append(ScriptIssue(piece.line, excerpt, "could not split this statement"))
             return True
         s = parsed[0].stmt
+        self._line, self._text = piece.line, piece.text
+        skip = self._skip_kind(s)
+        if skip:
+            self._skip(*skip)
+            return True
         self.pending_schema = None
         self.new_checks = []
         try:

@@ -16,6 +16,7 @@ from .models import Script
 SCRIPT_TTL = timedelta(days=7)
 BOM = b"\xef\xbb\xbf"
 NAME_MAX = 200
+BLOCK = 8 * 2**20
 
 
 class ScriptError(Exception):
@@ -50,6 +51,16 @@ def loads_dir() -> str:
     """Private directory for staged-load files (SCRIPT_DIR/loads), created on first use."""
     _ensure_dir()
     d = os.path.join(settings.SCRIPT_DIR, "loads")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    if os.stat(d).st_uid == os.geteuid():
+        os.chmod(d, 0o700)
+    return d
+
+
+def uploads_dir() -> str:
+    """Private directory for chunked-upload part files (SCRIPT_DIR/uploads), created on first use."""
+    _ensure_dir()
+    d = os.path.join(settings.SCRIPT_DIR, "uploads")
     os.makedirs(d, mode=0o700, exist_ok=True)
     if os.stat(d).st_uid == os.geteuid():
         os.chmod(d, 0o700)
@@ -111,6 +122,74 @@ def save(owner, name: str, data: bytes) -> Script:
         raise
 
 
+def save_stream(owner, name: str, src_path: str) -> Script:
+    """Store a file already on disk (a finished chunked upload) in ONE pass, never holding more than a block.
+
+    Same result as `save` on the same bytes: BOM stripped, UTF-8 and NUL checked, CRLF and lone CR become LF
+    (a pair split across two reads included), checksum and size of the normalized bytes."""
+    import codecs
+    raw = os.path.getsize(src_path)
+    if raw > get_config()["limits"]["maxScriptBytes"]:
+        raise ScriptError("Script is larger than the allowed size.")
+    _ensure_dir()
+    rel = f"{uuid.uuid4().hex}.sql"
+    final = _full_path(rel)
+    tmp = os.path.join(settings.SCRIPT_DIR, f".tmp-{uuid.uuid4().hex}")
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    digest, size, held_cr, first, has_text = hashlib.sha256(), 0, False, True, False
+    try:
+        with open(src_path, "rb") as src, open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as out:
+            def emit(text: str) -> None:
+                nonlocal size, has_text
+                if not text:
+                    return
+                if "\x00" in text:
+                    raise ScriptError("Script contains NUL bytes.")
+                has_text = has_text or bool(text.strip())
+                b = text.encode("utf-8")
+                digest.update(b)
+                size += len(b)
+                out.write(b)
+
+            while block := src.read(BLOCK):
+                if first:
+                    first = False
+                    if block.startswith(BOM):
+                        block = block[len(BOM):]
+                text = ("\r" if held_cr else "") + decoder.decode(block)
+                held_cr = text.endswith("\r")
+                if held_cr:
+                    text = text[:-1]
+                emit(text.replace("\r\n", "\n").replace("\r", "\n"))
+            tail = decoder.decode(b"", final=True)
+            emit((("\r" if held_cr else "") + tail).replace("\r\n", "\n").replace("\r", "\n"))
+            out.flush()
+            os.fsync(out.fileno())
+        if not has_text:
+            raise ScriptError("Script is empty.")
+        os.replace(tmp, final)
+    except UnicodeDecodeError:
+        _unlink(tmp)
+        raise ScriptError("Script is not valid UTF-8 text.") from None
+    except BaseException:
+        _unlink(tmp)
+        raise
+    now = timezone.now()
+    try:
+        return Script.objects.create(owner=owner, name=_clean_name(name), sha256=digest.hexdigest(), size=size,
+                                     path=rel, created_at=now, expires_at=now + SCRIPT_TTL)
+    except BaseException:
+        _unlink(final)
+        raise
+
+
+def _unlink(path: str) -> None:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
 def read(script: Script) -> bytes:
     if script.status == Script.Status.EXPIRED or not script.path:
         raise ScriptError("Script has expired.")
@@ -122,6 +201,31 @@ def read(script: Script) -> bytes:
     if hashlib.sha256(data).hexdigest() != script.sha256:
         raise ScriptError("Script file does not match its checksum.")
     return data
+
+
+def read_text(script: Script) -> str:
+    """The script as text, checked against its checksum, without ever holding the whole file as bytes.
+
+    Decoding a few hundred MB in one call allocates up to three times its size at once; blocks keep the peak
+    near twice the final text."""
+    import codecs
+    if script.status == Script.Status.EXPIRED or not script.path:
+        raise ScriptError("Script has expired.")
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    digest, pieces = hashlib.sha256(), []
+    try:
+        with open(_full_path(script.path), "rb") as f:
+            while block := f.read(BLOCK):
+                digest.update(block)
+                pieces.append(decoder.decode(block))
+        pieces.append(decoder.decode(b"", final=True))
+    except FileNotFoundError:
+        raise ScriptError("Script file is missing.") from None
+    except UnicodeDecodeError:
+        raise ScriptError("Script is not valid UTF-8 text.") from None
+    if digest.hexdigest() != script.sha256:
+        raise ScriptError("Script file does not match its checksum.")
+    return "".join(pieces)
 
 
 def _candidate_ids(now) -> list[int]:

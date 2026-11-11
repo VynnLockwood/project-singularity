@@ -1,21 +1,45 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiError,
   getGraph,
   getScript,
+  getScriptLimits,
   listScripts,
   pasteScript,
   submitScript,
-  uploadScript,
-  validateScript,
+  uploadScriptChunked,
+  validateScriptAsync,
   type GraphTable,
   type ScriptInfo,
   type ScriptReport,
 } from "@/lib/api";
+import { explain } from "@/lib/scriptProblems";
 
-type Phase = "idle" | "uploaded" | "validated" | "submitted" | "error";
+const POLL_MS = 2000;       // how often the running check is asked for its phase
+const DEBOUNCE_MS = 1000;   // a customize edit re-runs the check once typing stops
+
+const PHASE_LABEL: Record<string, string> = {
+  queued: "Starting", reading: "Reading", parsing: "Parsing", checking: "Checking rows", dry_run: "Dry run",
+};
+const KIND_LABEL: Record<string, string> = {
+  logic: "Functions, triggers and policies", extension: "Extensions", sequence: "Sequences",
+  default: "Sequence defaults", permission: "Permissions",
+};
+const KIND_ORDER = ["logic", "extension", "sequence", "default", "permission"];
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const fmtBytes = (n: number) => (n < 1024 ? `${n.toLocaleString()} bytes` : n < 2 ** 20
+  ? `${(n / 1024).toFixed(1)} KB` : `${(n / 2 ** 20).toFixed(n % 2 ** 20 ? 1 : 0)} MB`);
+
+/** The mapping JSON, or undefined for "let the server suggest one". Throws a readable SyntaxError/Error. */
+function parseMapping(text: string): unknown {
+  if (!text.trim()) return undefined;
+  const data = JSON.parse(text);
+  if (typeof data !== "object" || data === null || Array.isArray(data)) throw new Error("mapping must be a JSON object");
+  return data;
+}
 
 // ---------------------------------------------------------------- destination picker
 
@@ -310,73 +334,142 @@ function DestinationPicker({ tables, onJson }: { tables: GraphTable[]; onJson: (
   );
 }
 
-/** Upload a pg_dump-style SQL file, validate it against the gate and submit it as one approvable change. */
+/** Choose a pg_dump-style SQL file: it is sent in parts, checked in the background and, when ready, submitted
+ * as one approvable change. Nothing runs until an approver accepts it. */
 export function ScriptsTab({ canEdit }: { canEdit: boolean }) {
-  const [phase, setPhase] = useState<Phase>("idle");
   const [script, setScript] = useState<ScriptInfo | null>(null);
   const [report, setReport] = useState<ScriptReport | null>(null);
   const [mapping, setMapping] = useState("");
   const [error, setError] = useState("");
+  const [retry, setRetry] = useState<null | "upload" | "check">(null);
+  const [step, setStep] = useState("");
   const [busy, setBusy] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [tables, setTables] = useState<GraphTable[]>([]);
+  const [limits, setLimits] = useState<{ max_bytes?: number } | null>(null);
 
-  const load = useCallback(() => listScripts().then((s) => setScript(s[0] ?? null)).catch(() => {}), []);
-  useEffect(() => { if (canEdit) load(); }, [canEdit, load]);
-  // existing tables: the destinations and ref parents the picker can offer (same list the ERD uses)
+  const token = useRef(0);                         // a newer run cancels the polling of an older one
+  const lastFile = useRef<File | null>(null);
+  const lastMapped = useRef<string | null>(null);  // mapping text of the last run; null until one ran
+  const mappingRef = useRef("");
+  mappingRef.current = mapping;
+
   useEffect(() => { if (canEdit) getGraph().then((g) => setTables(g.tables ?? [])).catch(() => {}); }, [canEdit]);
+  useEffect(() => { if (canEdit) getScriptLimits().then(setLimits).catch(() => {}); }, [canEdit]);
+  useEffect(() => () => { token.current += 1; }, []);
 
-  const gotScript = (id: number, name: string, size: number) => {
-    setScript({ id, name, size, status: "uploaded", change_id: null });
-    setPhase("uploaded");
-    setMapping("");
-    setReport(null);
-  };
+  /** Follow a running check until it is done or failed (three failed polls in a row end it). */
+  const follow = useCallback(async (id: number, mine: number) => {
+    let misses = 0;
+    for (;;) {
+      await sleep(POLL_MS);
+      if (mine !== token.current) return;
+      let s: ScriptInfo;
+      try { s = await getScript(id); misses = 0; } catch (e) {
+        if (++misses >= 3) throw e;
+        continue;
+      }
+      if (mine !== token.current) return;
+      const rep = s.report;
+      if (!rep || rep.state === "running") { setStep(PHASE_LABEL[rep?.phase ?? "queued"] ?? "Checking"); continue; }
+      if (rep.state === "failed") {
+        setError(rep.message || "The check failed. Try again."); setRetry("check"); setStep("");
+        return;
+      }
+      setScript(s); setReport(rep); setStep(rep.ok ? "Ready" : "Needs changes");
+      return;
+    }
+  }, []);
 
-  const upload = async (file: File) => {
-    setBusy(true); setError(""); setPhase("idle"); setReport(null);
+  /** Start the background check and follow it until it is done or failed. */
+  const check = useCallback(async (id: number, mappingText: string) => {
+    const mine = ++token.current;
+    setBusy(true); setError(""); setRetry(null); setReport(null); setStep("Starting");
+    lastMapped.current = mappingText;
     try {
-      const r = await uploadScript(file);
-      gotScript(r.script_id, file.name, r.size);
+      await validateScriptAsync(id, parseMapping(mappingText));
+      await follow(id, mine);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Upload failed.");
-      setPhase("error");
-    } finally { setBusy(false); }
+      if (mine !== token.current) return;
+      setError(e instanceof SyntaxError ? `Mapping is not valid JSON: ${e.message}`
+        : e instanceof Error ? e.message : "The check failed.");
+      setRetry("check"); setStep("");
+    } finally { if (mine === token.current) setBusy(false); }
+  }, [follow]);
+
+  // On load: show the latest script; a check still running is followed, a finished one is shown as it was
+  const load = useCallback(() => listScripts().then(async (list) => {
+    const latest = list[0] ?? null;
+    setScript(latest);
+    const rep = latest?.report;
+    if (!latest || !rep) return;
+    if (rep.state === "running") {
+      const mine = ++token.current;
+      setBusy(true); setStep(PHASE_LABEL[rep.phase ?? "queued"] ?? "Checking");
+      try { await follow(latest.id, mine); } catch (e) {
+        if (mine === token.current) { setError(e instanceof Error ? e.message : "The check failed."); setRetry("check"); setStep(""); }
+      } finally { if (mine === token.current) setBusy(false); }
+    } else if (rep.state === "done" || (rep.state === undefined && "ok" in rep)) {
+      setReport(rep); setStep(rep.ok ? "Ready" : "Needs changes");
+    } else if (rep.state === "failed") {
+      setError(rep.message || "The check failed. Try again."); setRetry("check");
+    }
+  }).catch(() => {}), [follow]);
+  useEffect(() => { if (canEdit) void load(); }, [canEdit, load]);
+
+  const sendFile = async (file: File) => {
+    lastFile.current = file;
+    const max = limits?.max_bytes;
+    if (file.size === 0) { setError("The file is empty."); setRetry(null); return; }
+    if (typeof max === "number" && file.size > max) {
+      setError(`This file is ${fmtBytes(file.size)}, larger than the ${fmtBytes(max)} limit. Split it into parts, or ask an approver to raise the limit.`);
+      setRetry(null);
+      return;
+    }
+    setBusy(true); setError(""); setRetry(null); setStep("Uploading 0%");
+    let r: { script_id: number; size: number };
+    try {
+      r = await uploadScriptChunked(file, (done, total) => setStep(`Uploading ${Math.floor((done * 100) / Math.max(total, 1))}%`));
+    } catch (e) {
+      // the previous script stays as it was, and can still be validated
+      setError(e instanceof Error ? e.message : "Upload failed.");
+      setRetry("upload"); setStep(""); setBusy(false);
+      return;
+    }
+    setScript({ id: r.script_id, name: file.name, size: r.size, status: "uploaded", change_id: null });
+    setReport(null);
+    await check(r.script_id, mappingRef.current);
   };
 
   /** No local file? Paste the SQL text instead — same gate, same caps. */
   const paste = async () => {
     if (!pasteText.trim()) return;
-    setBusy(true); setError(""); setPhase("idle"); setReport(null);
+    setBusy(true); setError(""); setRetry(null); setStep("Uploading 0%");
+    let r: { script_id: number; size: number };
     try {
-      const r = await pasteScript("pasted.sql", pasteText);
-      gotScript(r.script_id, "pasted.sql", r.size);
-      setPasteText("");
+      r = await pasteScript("pasted.sql", pasteText);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Paste failed.");
-      setPhase("error");
-    } finally { setBusy(false); }
+      setError(e instanceof Error ? e.message : "Paste failed."); setStep(""); setBusy(false);
+      return;
+    }
+    setScript({ id: r.script_id, name: "pasted.sql", size: r.size, status: "uploaded", change_id: null });
+    setReport(null); setPasteText("");
+    await check(r.script_id, mappingRef.current);
   };
 
-  const doValidate = async () => {
-    if (!script) return;
-    setBusy(true); setError("");
-    try {
-      let data: unknown;
-      if (mapping.trim()) {
-        data = JSON.parse(mapping); // throws with a readable message on bad JSON
-        if (typeof data !== "object" || data === null) throw new Error("mapping must be a JSON object");
-      }
-      // script_id must match the uploaded one: tell validate which script via the saved report
-      const rep = await validateScript(script.id, data);
-      setReport(rep);
-      setPhase(rep.ok ? "validated" : "error");
-      if (!rep.ok) setError("Validation found problems — fix the file and re-upload, or edit the mapping.");
-      else setScript({ ...script, status: "validated", report: rep });
-    } catch (e) {
-      setError(e instanceof SyntaxError ? `Mapping is not valid JSON: ${e.message}` : e instanceof Error ? e.message : "Validation failed.");
-      setPhase("error");
-    } finally { setBusy(false); }
+  const submitted = script?.status === "submitted";
+
+  // Customize: one re-run after the mapping changes (and only after a run happened), never a loop
+  useEffect(() => {
+    if (!script || busy || submitted || lastMapped.current === null || mapping === lastMapped.current) return;
+    try { parseMapping(mapping); } catch { return; }      // wait until it reads as JSON
+    const t = setTimeout(() => void check(script.id, mapping), DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [mapping, script, busy, submitted, check]);
+
+  const tryAgain = () => {
+    if (retry === "upload" && lastFile.current) void sendFile(lastFile.current);
+    else if (script) void check(script.id, mapping);
   };
 
   const doSubmit = async () => {
@@ -384,24 +477,28 @@ export function ScriptsTab({ canEdit }: { canEdit: boolean }) {
     setBusy(true); setError("");
     try {
       const r = await submitScript(script.id);
-      setPhase("submitted");
       setScript({ ...script, status: "submitted", change_id: r.change_id });
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Submit failed.");
-      setPhase("error");
+      setError(e instanceof ApiError || e instanceof Error ? e.message : "Submit failed.");
     } finally { setBusy(false); }
   };
 
   if (!canEdit) return <p className="muted">Viewers cannot load scripts. Ask an approver for the editor role.</p>;
 
+  const max = limits?.max_bytes;
+  const tableCount = report?.ops_summary?.tables?.length ?? report?.tables?.length ?? 0;
+  const rowCount = (report?.tables ?? []).reduce((n, t) => n + t.rows, 0);
   const orphanCount = (report?.tables ?? []).reduce((n, t) => n + t.orphans, 0);
+  const skipped = report?.skipped ?? [];
+  const groups = KIND_ORDER.map((kind) => ({ kind, items: skipped.filter((x) => x.kind === kind) })).filter((g) => g.items.length);
+  const hasLogic = groups.some((g) => g.kind === "logic");
 
   return (
     <div className="scripts">
       <h2>Scripts</h2>
       <p className="muted">
-        Upload a pg_dump-style SQL file. It is parsed and checked by the same gate as every other change —
-        nothing runs until an approver accepts it.
+        Choose a pg_dump-style SQL file. It is sent, checked by the same gate as every other change and shown
+        here as ready or not — nothing runs until an approver accepts it.
       </p>
 
       <label className="drop">
@@ -409,10 +506,11 @@ export function ScriptsTab({ canEdit }: { canEdit: boolean }) {
           type="file"
           accept=".sql,text/plain"
           disabled={busy}
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); }}
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) void sendFile(f); }}
         />
         Choose a .sql file
       </label>
+      {typeof max === "number" && <p className="muted">Largest file: {fmtBytes(max)}.</p>}
 
       {script && (
         <p>
@@ -420,67 +518,107 @@ export function ScriptsTab({ canEdit }: { canEdit: boolean }) {
           {script.change_id != null && <> · change <code>#{script.change_id}</code></>}
         </p>
       )}
+      {step && <p role="status" className="step">{step}</p>}
 
-      <label>…or paste the SQL here</label>
-      <textarea
-        rows={8}
-        value={pasteText}
-        onChange={(e) => setPasteText(e.target.value)}
-        placeholder="-- pg_dump-style SQL, pasted"
-        spellCheck={false}
-        disabled={busy}
-      />
-      <div className="actions">
-        <button onClick={() => void paste()} disabled={busy || !pasteText.trim()}>
-          Upload pasted SQL
-        </button>
-      </div>
+      {error && (
+        <p className="problems" role="alert">
+          {error}{" "}
+          {retry && <button onClick={tryAgain} disabled={busy}>Try again</button>}
+        </p>
+      )}
 
-      <h3>Destination</h3>
-      <DestinationPicker tables={tables} onJson={setMapping} />
+      {report?.ok && (
+        <div className="report">
+          <p className="ready">{`Ready: ${tableCount} ${tableCount === 1 ? "table" : "tables"}, ${rowCount.toLocaleString()} ${rowCount === 1 ? "row" : "rows"}`}</p>
+          <button onClick={() => void doSubmit()} disabled={busy || submitted}>Submit for approval</button>
+        </div>
+      )}
 
-      <details>
-        <summary>Advanced: edit the mapping JSON</summary>
-        <textarea
-          rows={8}
-          value={mapping}
-          onChange={(e) => setMapping(e.target.value)}
-          className="code"
-          placeholder='{"tables": {"province": {"target": "province", "columns": {"code": "province_id"}}}}'
-          spellCheck={false}
-          aria-label="Mapping JSON (advanced)"
-        />
-        <p className="muted">Editing by hand wins until you change a field above — then the picker writes this again.</p>
+      {report && !report.ok && (
+        <div className="report">
+          {report.errors.map((e, i) => {
+            const x = explain(e);
+            return (
+              <div key={i} className="problems">
+                <p>{x.text}</p>
+                <p>{x.fix}</p>
+                <details>
+                  <summary>Details</summary>
+                  <p>[{e.kind}] line {e.line}: {e.message}</p>
+                  {e.statement && <pre className="code">{e.statement}</pre>}
+                </details>
+              </div>
+            );
+          })}
+          {(report.errors_truncated ?? 0) > 0 && <p className="muted">…and {report.errors_truncated} more problems.</p>}
+          {(report.gate?.errors ?? []).map((g, i) => <p key={`g${i}`} className="problems">{g}</p>)}
+          {orphanCount > 0 && <p className="problems">{orphanCount} rows point at a parent row that does not exist, in {(report.tables ?? []).filter((t) => t.orphans > 0).length} table(s).</p>}
+          {report.dry_run && !report.dry_run.skipped && !report.dry_run.ok && report.dry_run.error && (
+            <p className="problems">The trial load failed: {report.dry_run.error}</p>
+          )}
+        </div>
+      )}
+
+      {report && groups.length > 0 && (
+        <details open={hasLogic}>
+          <summary>Not imported, and why ({skipped.length}{(report.skipped_truncated ?? 0) > 0 ? "+" : ""})</summary>
+          {groups.map(({ kind, items }) => (
+            <details key={kind} open={kind === "logic"} className={kind === "logic" ? "warning" : undefined}>
+              <summary>{KIND_LABEL[kind]} ({items.length})</summary>
+              {kind === "logic" && <p className="problems">Warning: this logic is not imported, so it will be missing after the import.</p>}
+              <p className="muted">{items[0].reason}</p>
+              <ul>{items.map((x, i) => <li key={i}>line {x.line}: <code>{x.statement}</code></li>)}</ul>
+            </details>
+          ))}
+          {(report.skipped_truncated ?? 0) > 0 && <p className="muted">…and {report.skipped_truncated} more.</p>}
+        </details>
+      )}
+      {report && (report.ignored ?? []).length > 0 && (
+        <details>
+          <summary>Notes ({report.ignored.length})</summary>
+          <ul>{report.ignored.map((x, i) => <li key={i}>line {x.line}: <code>{x.statement}</code></li>)}</ul>
+        </details>
+      )}
+
+      <details className="customize">
+        <summary>Customize (optional)</summary>
+        <h3>Destination</h3>
+        <DestinationPicker tables={tables} onJson={setMapping} />
+        <details>
+          <summary>Advanced: edit the mapping JSON</summary>
+          <textarea
+            rows={8}
+            value={mapping}
+            onChange={(e) => setMapping(e.target.value)}
+            className="code"
+            placeholder='{"tables": {"province": {"target": "province", "columns": {"code": "province_id"}}}}'
+            spellCheck={false}
+            aria-label="Mapping JSON (advanced)"
+          />
+          <p className="muted">Editing by hand wins until you change a field above — then the picker writes this again. The check runs again when you stop typing.</p>
+        </details>
       </details>
 
       <div className="actions">
-        <button onClick={() => void doValidate()} disabled={busy || !script || phase === "submitted"}>
+        <button onClick={() => script && void check(script.id, mapping)} disabled={busy || !script || submitted}>
           Validate
-        </button>
-        <button onClick={() => void doSubmit()} disabled={busy || !report?.ok || phase === "submitted"}>
-          Submit for approval
         </button>
       </div>
 
-      {error && <p className="problems" role="alert">{error}</p>}
-
-      {report && (
-        <div className="report">
-          <p>{report.ok ? "✔ ready to submit" : "✖ not ready"}</p>
-          {report.dry_run && (
-            <p>
-              Dry run: {report.dry_run.ok ? "✔" : "✖"}
-              {Object.entries(report.dry_run.rows_loaded ?? {}).map(([t, n]) => ` ${t}: ${n}`).join(", ")}
-            </p>
-          )}
-          {orphanCount > 0 && <p className="problems">{orphanCount} orphan rows across {(report.tables ?? []).filter((t) => t.orphans > 0).length} table(s)</p>}
-          {report.errors.map((e, i) => (
-            <p key={i} className="problems">
-              [{e.kind}] line {e.line}: {e.message}
-            </p>
-          ))}
+      <details>
+        <summary>…or paste the SQL here</summary>
+        <textarea
+          rows={8}
+          value={pasteText}
+          onChange={(e) => setPasteText(e.target.value)}
+          placeholder="-- pg_dump-style SQL, pasted"
+          spellCheck={false}
+          disabled={busy}
+        />
+        <div className="actions">
+          <button onClick={() => void paste()} disabled={busy || !pasteText.trim()}>Upload pasted SQL</button>
         </div>
-      )}
+      </details>
     </div>
   );
 }

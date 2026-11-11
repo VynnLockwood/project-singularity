@@ -14,6 +14,7 @@ Report (JSON-serializable, bounded; saved on script.report):
    "errors": [{"kind": "storage"|"parse"|"mapping"|"rows", "line", "statement", "message"}],
    "errors_truncated": int,                                   # errors beyond MAX_ERRORS
    "ignored": [{"line", "statement"}], "ignored_truncated": int,
+   "skipped": [{"line", "statement", "reason", "kind"}], "skipped_truncated": int,
    "ops_summary": {"total": int, "by_op": {op: count}, "tables": [table, ...]},
    "gate": {"errors": [str], "blocked": [violation], "warnings": [violation], "truncated": int},
    "tables": [{"name", "source", "rows", "orphans", "sample_orphans": [
@@ -66,6 +67,7 @@ def _new_report(script: Script) -> dict:
     return {
         "ok": False, "script_id": script.pk, "statements": 0, "mapping_used": None,
         "errors": [], "errors_truncated": 0, "ignored": [], "ignored_truncated": 0,
+        "skipped": [], "skipped_truncated": 0,
         "ops_summary": {"total": 0, "by_op": {}, "tables": []},
         "gate": {"errors": [], "blocked": [], "warnings": [], "truncated": 0},
         "tables": [],
@@ -188,7 +190,8 @@ def _orphans(report: dict, ops: list[dict], parsed, state: dict, schema: str = "
 
 # ---------------------------------------------------------------- main
 
-def validate(script: Script, mapping: dict | None, schema: str = "master") -> dict:
+def validate(script: Script, mapping: dict | None, schema: str = "master", progress=None) -> dict:
+    """`progress(phase)` is called with reading, parsing, checking, dry_run as a run reaches each one."""
     introspect.require_managed(schema)
     report = _new_report(script)
     report["schema"] = schema
@@ -200,7 +203,7 @@ def validate(script: Script, mapping: dict | None, schema: str = "master") -> di
         _save(script, report, kept)
         return report
     try:
-        _run(report, script, mapping, schema)
+        _run(report, script, mapping, schema, progress or (lambda phase: None))
     except Exception as exc:  # last resort: never crash, report a failed run instead
         _add_error(report, "rows", 0, "", f"unexpected error: {_clip(exc)}")
         report["dry_run"] = {"ok": False, "skipped": report["dry_run"]["skipped"],
@@ -227,24 +230,32 @@ def _save(script: Script, report: dict, kept: tuple) -> None:
     script.save(update_fields=fields)
 
 
-def _run(report: dict, script: Script, mapping: dict | None, schema: str = "master") -> None:
+def _run(report: dict, script: Script, mapping: dict | None, schema: str = "master", progress=lambda p: None) -> None:
     if mapping is not None:
         script.mapping = mapping
         report["mapping_used"] = "given"
+    progress("reading")
     try:
-        text = storage.read(script).decode("utf-8")
+        text = storage.read_text(script)
     except storage.ScriptError as exc:
         _add_error(report, "storage", 0, "", str(exc))
         return
 
+    progress("parsing")
     parsed = parse_script(text)
     report["statements"] = parsed.statements
     _ignored(report, parsed.ignored)
+    report["skipped"] = parsed.skipped[:MAX_IGNORED]
+    report["skipped_truncated"] = max(0, len(parsed.skipped) - MAX_IGNORED)
+    if not parsed.errors and not parsed.ops and not parsed.streams:
+        _add_error(report, "parse", 0, "", "Nothing to import: the file has no tables or rows.")
+        return
     if parsed.errors:
         for e in parsed.errors:
             _add_error(report, "parse", e.line, e.statement, e.message)
         return
 
+    progress("checking")
     state = introspect.snapshot(schema)
     external = introspect.external_state(state, schema)  # tables the script does not create (external refs)
     if mapping is None:
@@ -267,7 +278,7 @@ def _run(report: dict, script: Script, mapping: dict | None, schema: str = "mast
                    f"script has {len(ops)} operations, above the limit maxOpsPerScript ({max_ops})")
         return
     rules = rule_service.active_rules()
-    res = check.run(ops, state, rules, actor=script.owner.email, max_ops=limits["maxOpsPerProposal"],
+    res = check.run(ops, state, rules, actor=script.owner.email, max_ops=max_ops,
                     allow_bulk=True, schema=schema)
     gate = report["gate"]
     for e in res.errors:
@@ -284,6 +295,7 @@ def _run(report: dict, script: Script, mapping: dict | None, schema: str = "mast
 
     if res.blocked or any(t["orphans"] for t in report["tables"]):
         return
+    progress("dry_run")
     dry = report["dry_run"]
     dry["skipped"] = False
     try:

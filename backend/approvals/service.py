@@ -200,7 +200,7 @@ def propose(user, raw_ops, *, source: str, prompt: str = "", conversation_id: in
             raise ChangeError("invalid", f"schema {schema!r} does not exist or is not managed by Singularity") from None
     is_revert = reverts is not None
     max_ops = max(limits["maxOpsPerProposal"], len(raw_ops)) if is_revert and isinstance(raw_ops, list) \
-        else limits["maxOpsPerProposal"]
+        else limits["maxOpsPerScript"] if source == "script" else limits["maxOpsPerProposal"]
 
     res = check.run(
         raw_ops, introspect.snapshot(schema), rule_service.active_rules(),

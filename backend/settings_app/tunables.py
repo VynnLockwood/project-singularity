@@ -20,7 +20,7 @@ TUNABLES = {
     "limits.maxRowsPerDataOp": ("Rows per data operation", "The most rows one insert, update or deactivate may touch.", "int", 1, 10000),
     "limits.maxQueryRows": ("Query row limit", "Read-only queries return at most this many rows.", "int", 10, 5000),
     "limits.queryTimeoutMs": ("Query timeout (ms)", "A read-only query is stopped after this long.", "int", 500, 60000),
-    "limits.maxScriptBytes": ("Script file size (bytes)", "The largest SQL script file that may be uploaded for intake.", "int", 1024, 209715200),
+    "limits.maxScriptBytes": ("Script file size (bytes)", "The largest SQL script file that may be uploaded for intake.", "int", 1024, 2147483648),
     "limits.maxScriptRows": ("Script rows", "The most rows one script intake may contain.", "int", 1, 2000000),
     "limits.maxExportRows": ("Export row cap", "The most rows one data export may contain.", "int", 1000, 20000000),
     "limits.maxInlineExportBytes": ("Inline export size (bytes)", "The largest schema export an AI client receives inline. Bigger exports are downloaded in the web app.", "int", 1024, 5000000),

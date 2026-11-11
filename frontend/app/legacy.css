@@ -289,3 +289,7 @@ textarea.code { width: 100%; color: var(--text); }
 .card-col[data-fk="true"] { fill: var(--disk); }
 @media (max-width: 800px) { .schema-2d:has(.universe-panel) { grid-template-columns: minmax(0, 1fr); } }
 .fields-panel .schema-scroll { overflow: visible; } /* the row menu opens below the last row, so the box must not clip it */
+.scripts .step { font-weight: 600; margin: var(--space-2) 0; }
+.scripts .ready { font-weight: 600; margin: var(--space-2) 0; }
+.scripts details { margin: var(--space-2) 0; }
+.scripts details.warning { border-left: 3px solid var(--redshift); padding-left: var(--space-3); }

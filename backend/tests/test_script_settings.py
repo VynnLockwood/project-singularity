@@ -14,7 +14,7 @@ def approver():
 def test_script_limit_defaults():
     get_config.cache_clear()
     limits = get_config()["limits"]
-    assert limits["maxScriptBytes"] == 52428800
+    assert limits["maxScriptBytes"] == 536870912
     assert limits["maxScriptRows"] == 200000
     assert limits["maxInlineScriptBytes"] == 20480
 

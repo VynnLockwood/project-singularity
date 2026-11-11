@@ -635,7 +635,7 @@ def submit_script(user, name: str, content: str, mapping: dict | None = None, sc
 def validate_script(user, script_id: int, mapping: dict | None = None, schema: str = "master") -> dict:
     try:
         report = script_service.validate(user, script_id, mapping, schema)
-    except (storage.ScriptError, introspect.UnknownSchema) as exc:
+    except (storage.ScriptError, introspect.UnknownSchema, PermissionError) as exc:
         raise ToolFailure(str(exc)) from exc
     return {"script_id": script_id, "report": _trim_report(report)}
 

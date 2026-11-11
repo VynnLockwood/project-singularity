@@ -30,6 +30,8 @@ def validate(user, script_id: int, mapping: dict | None, schema: str = "master")
     script = Script.objects.filter(pk=script_id).first()
     if script is None:
         raise storage.ScriptError(f"script #{script_id} does not exist")
+    if script.owner_id != user.pk and not user.can_approve:
+        raise PermissionError("this script belongs to someone else")
     return validate_mod.validate(script, mapping, schema)
 
 
@@ -76,8 +78,11 @@ def _bound_ops(script: Script) -> list[dict]:
 
 
 def trim_report(report: dict) -> dict:
-    """A validation report small enough for an AI client: at most 20 errors and 10 sample orphans per table."""
+    """A validation report small enough for an AI client: at most 20 errors, 20 skipped statements and 10 sample orphans per table."""
     out = dict(report)
     out["errors"] = report.get("errors", [])[:20]
+    skipped = report.get("skipped", [])
+    out["skipped"] = skipped[:20]
+    out["skipped_truncated"] = report.get("skipped_truncated", 0) + max(0, len(skipped) - 20)
     out["tables"] = [{**t, "sample_orphans": t.get("sample_orphans", [])[:10]} for t in out.get("tables", [])]
     return out

@@ -156,18 +156,18 @@ def test_defaults():
 
 
 def test_unsupported_default_is_an_error():
-    p = parse_script("CREATE TABLE a (id integer DEFAULT nextval('a_id_seq'::regclass));")
-    assert len(p.errors) == 1 and "default" in p.errors[0].message and "nextval" in p.errors[0].message
+    p = parse_script("CREATE TABLE a (id integer DEFAULT random());")
+    assert len(p.errors) == 1 and "default" in p.errors[0].message and "random" in p.errors[0].message
 
 
 def test_disallowed_statements_each_reported():
     text = (
-        "GRANT SELECT ON master_thach.a TO bob;\n"
-        "CREATE EXTENSION postgis;\n"
-        "CREATE SEQUENCE s;\n"
-        "ALTER SEQUENCE s OWNED BY a.id;\n"
         "DO $$ BEGIN END $$;\n"
         "TRUNCATE a;\n"
+        "DROP TABLE a;\n"
+        "DELETE FROM a;\n"
+        "UPDATE a SET x = 1;\n"
+        "VACUUM a;\n"
     )
     p = parse_script(text)
     assert [e.line for e in p.errors] == [1, 2, 3, 4, 5, 6]
@@ -181,7 +181,7 @@ def test_dollar_quoted_text_with_semicolons():
         "COMMENT ON COLUMN a.id IS 'it''s; fine';\n"
     )
     p = parse_script(text)
-    assert len(p.errors) == 1 and p.errors[0].line == 1 and "CREATE FUNCTION" in p.errors[0].statement
+    assert p.errors == [] and [x["kind"] for x in p.skipped] == ["logic"] and p.skipped[0]["line"] == 1
     assert {"op": "set_table_comment", "table": "a", "comment": "one; two"} in p.ops
     assert {"op": "set_column_comment", "table": "a", "column": "id", "comment": "it's; fine"} in p.ops
 
