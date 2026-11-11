@@ -43,6 +43,7 @@ History: list_changes and get_change; approvers also have get_audit_log, revert_
 A stale change is re-checked with recheck_change.
 Data quality: find_duplicates, list_duplicates, get_duplicate, then merge_duplicates (a data change), dismiss_duplicate or reopen_duplicate.
 Settings, gate rules and roles: get_settings, get_rule_history and list_users, then propose_config_change. These always wait for an approver.
+Backups (approvers): create_backup and list_backups. Restoring is done by a person, not here.
 Whole SQL files: submit_script parses a pg_dump-style script into the same gated operations (small scripts inline;
 big ones are uploaded in the web app, then validate_script with the script_id). export_schema returns a database as SQL.
 Big data: when a table needs more rows than propose_change takes, load them yourself with begin_load, append_rows
@@ -323,6 +324,16 @@ async def merge_duplicates(group_id: int, survivor_id: int) -> dict:
 @mcp.tool(name="dismiss_duplicate", description=tools.DESCRIPTIONS["dismiss_duplicate"])
 async def dismiss_duplicate(group_id: int) -> dict:
     return await run("dismiss_duplicate", group_id=group_id)
+
+
+@mcp.tool(name="create_backup", description=tools.DESCRIPTIONS["create_backup"])
+async def create_backup(schema: str = "master", label: str = "manual") -> dict:
+    return await run("create_backup", schema=schema, label=label)
+
+
+@mcp.tool(name="list_backups", description=tools.DESCRIPTIONS["list_backups"])
+async def list_backups(schema: str | None = None) -> dict:
+    return await run("list_backups", schema=schema)
 
 
 @mcp.tool(name="reopen_duplicate", description=tools.DESCRIPTIONS["reopen_duplicate"])

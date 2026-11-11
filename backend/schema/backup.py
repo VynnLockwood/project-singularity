@@ -56,6 +56,28 @@ def backup_schema(schema: str, label: str, retention_days: int = 14) -> Path:
     return path
 
 
+_FILE_RE = re.compile(r"^(?P<schema>[a-z][a-z0-9_]*)-(?P<stamp>\d{8}T\d{6}Z)-(?P<label>.+)\.dump$")
+
+
+def describe(path: Path) -> dict | None:
+    """One backup file as {file, schema, label, bytes, created_at}; None if it is not a backup this module wrote."""
+    m = _FILE_RE.match(path.name)
+    if m is None or not DUMP_RE.match(path.name) or not path.is_file():
+        return None
+    created = datetime.strptime(m["stamp"], "%Y%m%dT%H%M%SZ").strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {"file": path.name, "schema": m["schema"], "label": m["label"], "bytes": path.stat().st_size,
+            "created_at": created}
+
+
+def list_backups(schema: str | None = None) -> list[dict]:
+    """The backups in BACKUP_DIR, newest first, optionally only one schema's. A missing folder is an empty list."""
+    folder = Path(settings.BACKUP_DIR)
+    if not folder.is_dir():
+        return []
+    found = [d for p in folder.iterdir() if (d := describe(p)) is not None and (schema is None or d["schema"] == schema)]
+    return sorted(found, key=lambda d: (d["created_at"], d["file"]), reverse=True)
+
+
 def prune(folder: Path, retention_days: int) -> int:
     cutoff = time.time() - retention_days * 86400
     removed = 0

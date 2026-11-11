@@ -44,6 +44,8 @@ TOOL_ROLES = {
     "merge_duplicates": "editor",
     "dismiss_duplicate": "editor",
     "reopen_duplicate": "editor",
+    "create_backup": "approver",
+    "list_backups": "approver",
     "revert_change": "approver",
     "reindex_search": "approver",
     "recheck_change": "editor",
@@ -150,6 +152,12 @@ DESCRIPTIONS = {
         "To undo a rule change, call propose_config_change with {\"op\":\"rollback_rule\",\"name\":<rule>,\"version\":<n>}."
     ),
     "dismiss_duplicate": "Mark a group as not duplicates, so a scan does not bring it back.",
+    "create_backup": (
+        "Take a backup (pg_dump, custom format) of one database (schema, default master) into the server's backup folder. "
+        "Minimum role: approver. It blocks until pg_dump finishes (up to 10 minutes for a big database). Old backups are "
+        "pruned by the configured retention. There is no restore tool: a person restores in the web app or with pg_restore."
+    ),
+    "list_backups": "The backups in the server's backup folder, newest first (approvers only). Optional: only one database's.",
     "reopen_duplicate": (
         "Bring a dismissed duplicate group back to open, for when it was dismissed by mistake. Only dismissed groups "
         "can be reopened; a merged or merge-pending group cannot."
@@ -499,6 +507,31 @@ def dismiss_duplicate(user, group_id: int) -> dict:
     return _dup(lambda d: d.dismiss(d.get_group(group_id), user))
 
 
+def create_backup(user, schema: str = "master", label: str = "manual") -> dict:
+    from audit.models import record
+    from config.siconfig import get_config
+    from schema import backup
+
+    try:
+        introspect.require_managed(schema)
+        path = backup.backup_schema(schema, label, get_config()["backups"]["retentionDays"])
+    except introspect.UnknownSchema as exc:
+        raise ToolFailure(f"{exc} Call list_schemas to see the databases.") from exc
+    except backup.BackupError as exc:
+        raise ToolFailure(f"backup failed, nothing was kept: {exc}") from exc
+    record(user, "backup.created", target=path.name)
+    d = backup.describe(path)
+    return {k: d[k] for k in ("file", "schema", "bytes", "created_at")}
+
+
+def list_backups(user, schema: str | None = None) -> dict:
+    from schema import backup
+
+    if schema is not None and not isinstance(schema, str):
+        raise ToolFailure("schema must be a database name, for example \"master\".")
+    return {"backups": backup.list_backups(schema or None)}
+
+
 def reopen_duplicate(user, group_id: int) -> dict:
     return _dup(lambda d: d.reopen(d.get_group(group_id), user))
 
@@ -755,6 +788,8 @@ IMPL = {
     "merge_duplicates": merge_duplicates,
     "dismiss_duplicate": dismiss_duplicate,
     "reopen_duplicate": reopen_duplicate,
+    "create_backup": create_backup,
+    "list_backups": list_backups,
     "revert_change": revert_change,
     "reindex_search": reindex_search,
     "recheck_change": recheck_change,
