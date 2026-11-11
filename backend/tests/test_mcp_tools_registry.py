@@ -49,3 +49,12 @@ def test_minimum_roles_of_the_reach_tools_are_pinned():
 def test_load_tools_are_editor_tools():
     for t in ("begin_load", "append_rows", "finish_load", "get_load", "cancel_load"):
         assert tools.TOOL_ROLES[t] == "editor"
+
+
+def test_minimum_roles_of_the_parity_tools_are_pinned():
+    assert {t: tools.TOOL_ROLES[t] for t in (
+        "get_rule_history", "reopen_duplicate", "create_backup", "list_backups", "profile_column", "lookup_options",
+    )} == {
+        "get_rule_history": "viewer", "reopen_duplicate": "editor", "create_backup": "approver",
+        "list_backups": "approver", "profile_column": "viewer", "lookup_options": "viewer",
+    }
