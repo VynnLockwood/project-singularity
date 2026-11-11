@@ -146,6 +146,10 @@ def check_cells(rows, columns, enums, first_row):
                              "message": f"expected {width} fields but found {len(row)}"})
         else:
             for c, v in zip(columns, row):
+                if v is not None and "\x00" in v:
+                    problems.append({"row": r, "column": c["name"], "value": None,
+                                     "message": "NUL characters (\\x00) cannot be stored"})
+                    continue
                 if v == "" and not _is_texty(c["type"]):
                     v = None
                 if v is None:
