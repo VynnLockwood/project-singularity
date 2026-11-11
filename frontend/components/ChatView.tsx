@@ -6,6 +6,7 @@ import {
   type Change, type ChatMessage, type ConversationSummary, type Me,
 } from "@/lib/api";
 import { ChangeCard } from "./ChangeCard";
+import { ChatMarkdown } from "./ChatMarkdown";
 
 interface Props {
   me: Me;
@@ -109,7 +110,7 @@ export function ChatView({ me, live, onDecide, busy, draft, onDraftUsed }: Props
           )}
           {visible.map((m) => (
             <div key={m.id} className="bubble" data-role={m.role}>
-              {m.content && <p>{m.content}</p>}
+              {m.content && (m.role === "assistant" ? <ChatMarkdown text={m.content} /> : <p>{m.content}</p>)}
               {m.toolCalls && m.toolCalls.length > 0 && <p className="muted small">used: {m.toolCalls.join(", ")}</p>}
             </div>
           ))}
