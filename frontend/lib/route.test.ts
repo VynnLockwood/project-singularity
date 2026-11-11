@@ -21,6 +21,10 @@ describe("parseRoute", () => {
   it("reads the plain views", () => {
     for (const v of ["duplicates", "scripts", "activity", "connect"] as const) expect(parseRoute(`/${v}`)).toEqual({ view: v });
   });
+  it("reads the History tab of Activity and ignores an unknown tab", () => {
+    expect(parseRoute("/activity/history")).toEqual({ view: "activity", tab: "history" });
+    expect(parseRoute("/activity/nonsense")).toEqual({ view: "activity" });
+  });
   it("keeps the old queue address working", () => expect(parseRoute("/queue")).toEqual({ view: "activity" }));
   it("decodes segments and survives odd paths", () => {
     expect(parseRoute("/data/master/my%20table")).toEqual({ view: "data", schema: "master", table: "my table" });
@@ -40,7 +44,7 @@ describe("buildPath", () => {
     { view: "database" }, { view: "database", schema: "master" }, { view: "database", schema: "master", table: "province" },
     { view: "data", schema: "sales", table: "my table" },
     { view: "settings" }, { view: "settings", section: "team" },
-    { view: "duplicates" }, { view: "scripts" }, { view: "activity" }, { view: "connect" },
+    { view: "duplicates" }, { view: "scripts" }, { view: "activity" }, { view: "activity", tab: "history" }, { view: "connect" },
   ];
   it.each(samples)("round trips %o", (r) => expect(parseRoute(buildPath(r))).toEqual(r));
   it("puts chat at the root and encodes segments", () => {

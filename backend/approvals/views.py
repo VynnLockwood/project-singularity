@@ -17,11 +17,11 @@ def _err(exc: service.ChangeError):
 @unknown_schema_is_400
 def changes(request):
     if request.method == "GET":
-        items, _ = service.list_changes(
+        items, more = service.list_changes(
             request.user, status=request.GET.get("status"), kind=request.GET.get("kind"),
             schema=schema_param(request, default=None),  # absent = all schemas
             mine=request.GET.get("mine") == "1", limit=limit_param(request))
-        return JsonResponse({"changes": [service.serialize(c, detail=False) for c in items]})
+        return JsonResponse({"changes": [service.serialize(c, detail=False) for c in items], "more": more})
 
     if not request.user.can_edit:
         return error("forbidden", 403)

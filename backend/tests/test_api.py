@@ -253,3 +253,12 @@ def test_graph_has_columns_keys_and_foreign_keys(approver):
 def test_graph_is_readable_by_viewers_but_not_anonymous(viewer):
     assert viewer.get("/api/schema/graph").json() == {"tables": [], "relations": []}
     assert Client().get("/api/schema/graph").status_code == 401
+
+
+def test_changes_list_says_whether_more_exist(editor):
+    for name in ("a1", "a2", "a3"):
+        assert post(editor, "/api/changes", {"operations": [{"op": "create_table", "name": name, "columns": [col("v")]}]}).status_code == 201
+    two = editor.get("/api/changes?limit=2").json()
+    assert len(two["changes"]) == 2 and two["more"] is True
+    three = editor.get("/api/changes?limit=3").json()
+    assert len(three["changes"]) == 3 and three["more"] is False

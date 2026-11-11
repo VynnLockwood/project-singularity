@@ -23,7 +23,7 @@ Filters, all optional, kept in the query string so a link reproduces the view: `
 
 Each row shows: `#id`, a status `Badge`, kind, database, tables (first two, then "+n"), requester, relative time (full timestamp in the title attribute), and the first line of the prompt. A row is a button; activating it expands the same `ChangeCard` the Queue uses, read-only for a decided change (no approve/reject buttons; the card already hides them when status is not pending). The card for an applied, reversible change also offers **Revert** to approvers (`POST /api/changes/<id>/revert`, which the backend already has). After a revert the list refreshes and shows the new change.
 
-The list loads 50 rows. A **Show more** button raises the limit by 50 and reloads; it shows only when the server says more exist. Changing a filter resets the limit to 50.
+The list loads 50 rows. A **Show more** button raises the limit by 50 up to the server's cap of 200 and reloads; it shows only when the server says more exist. At the cap, with more rows beyond, it says "Showing the latest 200. Narrow the filters to see older changes." Changing a filter resets the limit to 50.
 
 States: loading (skeleton rows), empty ("No changes match these filters." with a Clear filters button), error (message and Try again). A change that arrives live (WebSocket event) and matches the filters appears at the top without a reload.
 

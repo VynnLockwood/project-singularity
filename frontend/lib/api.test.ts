@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { exportUrl, getGraph, getOptions, getRows, getSchemas, getTable, proposeChange, searchSchema } from "./api";
+import { exportUrl, getGraph, getOptions, getRows, getSchemas, getTable, listChanges, proposeChange, revertChange, searchSchema } from "./api";
 
 describe("exportUrl", () => {
   it("builds the export link", () => {
@@ -75,5 +75,20 @@ describe("schema-aware calls", () => {
     await searchSchema("x");
     await searchSchema("x", "crm");
     expect(calls.map((c) => c.url)).toEqual(["/api/search?q=x", "/api/search?q=x&schema=crm"]);
+  });
+
+  it("listChanges sends only the set filters and the limit, and reports more", async () => {
+    respond({ changes: [{ id: 1 }], more: true });
+    expect(await listChanges({ status: "applied", mine: true }, 100)).toEqual({ changes: [{ id: 1 }], more: true });
+    expect(calls[0].url).toBe("/api/changes?status=applied&mine=1&limit=100");
+    respond({ changes: [] });
+    expect(await listChanges({ schema: "sales", kind: "sql" }, 50)).toEqual({ changes: [], more: false });
+    expect(calls[0].url).toBe("/api/changes?kind=sql&schema=sales&limit=50");
+  });
+  it("revertChange posts to the revert action", async () => {
+    respond({ id: 9, status: "applied" });
+    await revertChange(7);
+    expect(calls[0].url).toBe("/api/changes/7/revert");
+    expect(calls[0].init?.method).toBe("POST");
   });
 });
