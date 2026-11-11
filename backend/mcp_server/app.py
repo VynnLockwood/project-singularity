@@ -45,6 +45,9 @@ Data quality: find_duplicates, list_duplicates, get_duplicate, then merge_duplic
 Settings, gate rules and roles: get_settings and list_users, then propose_config_change. These always wait for an approver.
 Whole SQL files: submit_script parses a pg_dump-style script into the same gated operations (small scripts inline;
 big ones are uploaded in the web app, then validate_script with the script_id). export_schema returns a database as SQL.
+Big data: when a table needs more rows than propose_change takes, load them yourself with begin_load, append_rows
+(about 2,000 rows per call, header-less CSV) and finish_load, which submits one approvable change. Never ask the person
+to run the insert. If a call fails, resend the same seq.
 If a tool the user needs is not available to them, say that a higher role (editor or approver) has it.
 """
 
@@ -212,6 +215,31 @@ async def list_pending() -> dict:
 )
 async def submit_script(name: str, content: str, mapping: dict | None = None, schema: str = "master") -> dict:
     return await run("submit_script", name=name, content=content, mapping=mapping, schema=schema)
+
+
+@mcp.tool(name="begin_load", description=tools.DESCRIPTIONS["begin_load"] + " " + DB_NOTE)
+async def begin_load(table: str, columns: list[str], schema: str = "master", refs: list[dict] | None = None) -> dict:
+    return await run("begin_load", table=table, columns=columns, schema=schema, refs=refs)
+
+
+@mcp.tool(name="append_rows", description=tools.DESCRIPTIONS["append_rows"])
+async def append_rows(load_id: int, seq: int, csv: str) -> dict:
+    return await run("append_rows", load_id=load_id, seq=seq, csv=csv)
+
+
+@mcp.tool(name="finish_load", description=tools.DESCRIPTIONS["finish_load"])
+async def finish_load(load_id: int, note: str = "") -> dict:
+    return await run("finish_load", load_id=load_id, note=note)
+
+
+@mcp.tool(name="get_load", description=tools.DESCRIPTIONS["get_load"])
+async def get_load(load_id: int) -> dict:
+    return await run("get_load", load_id=load_id)
+
+
+@mcp.tool(name="cancel_load", description=tools.DESCRIPTIONS["cancel_load"])
+async def cancel_load(load_id: int) -> dict:
+    return await run("cancel_load", load_id=load_id)
 
 
 @mcp.tool(
