@@ -14,7 +14,11 @@ pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("master")]
 
 @pytest.fixture(autouse=True)
 def script_dir(settings, tmp_path):
+    from config.siconfig import invalidate_overrides
     settings.SCRIPT_DIR = str(tmp_path / "scripts")
+    invalidate_overrides()
+    yield
+    invalidate_overrides()
 
 
 @pytest.fixture

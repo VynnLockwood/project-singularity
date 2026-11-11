@@ -126,3 +126,88 @@ def cancel(user, load_id: int) -> dict:
         load.save(update_fields=["status", "path"])
         record(user, "load.cancel", f"{load.schema}.{load.table}", {"load_id": load.pk, "rows": load.rows})
     return {"load_id": load.pk, "status": load.status}
+
+
+def _column_specs(load: StagedLoad, state) -> list[dict]:
+    if load.table not in state:
+        raise LoadError(f"table {load.table!r} no longer exists; cancel this load")
+    real = state[load.table]["columns"]
+    by_carrier = {r["source_column"]: r for r in load.refs}
+    specs = []
+    for name in load.columns:
+        if name in by_carrier:
+            tgt = real.get(by_carrier[name]["column"])
+            specs.append({"name": name, "type": "text", "required_value": bool(tgt and not tgt["nullable"])})
+        elif name in real:
+            specs.append({"name": name, "type": real[name]["type"], "required_value": not real[name]["nullable"]})
+        else:
+            raise LoadError(f"column {name!r} no longer exists in {load.table}; cancel this load")
+    return specs
+
+
+def append(user, load_id: int, seq: int, csv_text: str) -> dict:
+    import hashlib
+
+    from django.db import transaction
+
+    from . import loadcsv
+
+    if not isinstance(seq, int) or isinstance(seq, bool) or not isinstance(csv_text, str):
+        raise LoadError("seq must be a whole number and csv a string")
+    _mine(user, load_id)
+    cfg = _cfg()
+    data = csv_text.encode("utf-8")
+    if len(data) > cfg["maxLoadChunkBytes"]:
+        raise LoadError(f"chunk is {len(data)} bytes; the limit is {cfg['maxLoadChunkBytes']}. Send smaller chunks.")
+    if not csv_text.strip():
+        raise LoadError("chunk is empty")
+    sha = hashlib.sha256(data).hexdigest()
+
+    with transaction.atomic():
+        load = StagedLoad.objects.select_for_update().get(pk=load_id)
+        if load.status != StagedLoad.Status.OPEN:
+            raise LoadError(f"load #{load.pk} is {load.status}; only an open load takes rows")
+        if load.expires_at <= timezone.now():
+            raise LoadError(f"load #{load.pk} has expired; start a new load")
+        if seq == load.next_seq - 1 and seq >= 1:
+            if sha == load.last_chunk_sha:
+                return {"ok": True, "stored": True, "duplicate": True, "total_rows": load.rows,
+                        "next_seq": load.next_seq}
+            raise LoadError(f"seq {seq} was already accepted with different content; expected seq {load.next_seq}")
+        if seq != load.next_seq:
+            raise LoadError(f"expected seq {load.next_seq}, got {seq}")
+
+        state = introspect.snapshot(load.schema)
+        specs = _column_specs(load, state)
+        try:
+            rows = loadcsv.parse_csv(csv_text)
+        except loadcsv.CsvError as exc:
+            return {"ok": False, "stored": False,
+                    "problems": [{"row": load.rows + exc.row, "column": None, "value": None, "message": exc.message}]}
+        if len(rows) > cfg["maxLoadChunkRows"]:
+            raise LoadError(f"chunk has {len(rows)} rows; the limit is {cfg['maxLoadChunkRows']}. Send smaller chunks.")
+        if load.rows + len(rows) > cfg["maxScriptRows"]:
+            raise LoadError(f"load would exceed {cfg['maxScriptRows']} rows in total")
+        problems = loadcsv.check_cells(rows, specs, dict(state.enums), load.rows + 1)
+        if problems:
+            return {"ok": False, "stored": False, "problems": problems}
+        text = "".join(loadcsv.to_copy_line(r) + "\n" for r in rows).encode("utf-8")
+        if load.bytes + len(text) > cfg["maxLoadBytes"]:
+            raise LoadError(f"load would exceed {cfg['maxLoadBytes']} bytes in total")
+
+        with open(_full(load), "r+b") as f:
+            if os.fstat(f.fileno()).st_size < load.bytes:
+                raise LoadError(f"staging file of load #{load.pk} is damaged; cancel it and start again")
+            f.truncate(load.bytes)          # drop anything a crashed append left behind
+            f.seek(load.bytes)
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        load.rows += len(rows)
+        load.bytes += len(text)
+        load.next_seq += 1
+        load.last_chunk_sha = sha
+        load.expires_at = timezone.now() + timedelta(hours=cfg["ttlHours"])
+        load.save()
+        return {"ok": True, "stored": True, "rows_in_chunk": len(rows), "total_rows": load.rows,
+                "next_seq": load.next_seq}
