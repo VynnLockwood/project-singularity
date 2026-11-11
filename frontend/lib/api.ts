@@ -435,6 +435,10 @@ export interface ScriptReport {
   script_id: number;
   statements: number;
   mapping_used: string | null;
+  /** The database the check ran against, why, and the one the file itself names (master_thach.x). */
+  schema?: string;
+  schema_source?: "chosen" | "detected" | "default";
+  detected_schema?: string | null;
   errors: { kind: string; line: number; statement: string; message: string }[];
   errors_truncated?: number;
   ignored: { line: number; statement: string }[];
@@ -529,11 +533,13 @@ export async function uploadScriptChunked(
 }
 
 /** Starts the check in the background; poll getScript(id).report.state until it is done or failed. */
-export const validateScriptAsync = (id: number, mapping?: unknown) =>
-  call<{ state: "running" }>("POST", `/scripts/${id}/validate?async=1`, mapping ? { mapping } : {});
+const validateBody = (mapping?: unknown, schema?: string) => ({ ...(mapping ? { mapping } : {}), ...(schema ? { schema } : {}) });
+/** `schema` omitted = detect it from the file (the server falls back to master). */
+export const validateScriptAsync = (id: number, mapping?: unknown, schema?: string) =>
+  call<{ state: "running" }>("POST", `/scripts/${id}/validate?async=1`, validateBody(mapping, schema));
 
-export const validateScript = (id: number, mapping?: unknown) =>
-  call<ScriptReport>("POST", `/scripts/${id}/validate`, mapping ? { mapping } : {});
+export const validateScript = (id: number, mapping?: unknown, schema?: string) =>
+  call<ScriptReport>("POST", `/scripts/${id}/validate`, validateBody(mapping, schema));
 export const submitScript = (id: number, note = "") =>
   call<{ change_id: number }>("POST", `/scripts/${id}/submit`, { note });
 export const listScripts = () => call<{ scripts: ScriptInfo[] }>("GET", "/scripts").then((r) => r.scripts);
