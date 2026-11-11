@@ -51,6 +51,7 @@ Every tool states the role it needs; a client only sees the tools its user's rol
 | `recheck_change` | editor | Run the gate again on a stale change. |
 | `find_duplicates`, `merge_duplicates`, `dismiss_duplicate` | editor | Scan a table, merge a group (a data change), or mark it as not duplicates. |
 | `submit_script`, `validate_script`, `get_script` | editor | Load a pg_dump-style SQL script as gated operations. |
+| `begin_load`, `append_rows`, `finish_load`, `get_load`, `cancel_load` | editor | Load thousands of rows (up to `limits.maxScriptRows`, default 200,000) into an existing table from chat, no shell needed. |
 | `approve_change`, `reject_change`, `list_pending` | approver | Decide a change, after the user confirms. |
 | `revert_change` | approver | Undo an applied change that has a stored reverse. |
 | `get_audit_log` | approver | Who did what and when. |
@@ -58,6 +59,8 @@ Every tool states the role it needs; a client only sees the tools its user's rol
 | `reindex_search` | approver | Refresh the schema search index. |
 
 ## Raw SQL
+
+**Loading big data over MCP.** `insert_rows` is for a few hundred rows. For more, an AI client calls `begin_load(table, columns)`, then `append_rows(load_id, seq, csv)` once per chunk of about 2,000 rows (header-less CSV; an unquoted empty field is NULL, `""` is the empty string; a failed call is retried with the same `seq`), then `finish_load(load_id)`. Nothing touches the database until `finish_load`, which runs the same checks as a script upload (rules gate, foreign keys, a rolled-back dry run) and submits one approvable change; undoing it deactivates the loaded rows. Optional `refs` fill a foreign key from a parent business key (districts by province code). Open loads expire 24 hours after their last chunk; limits are tunable in Settings (`limits.maxLoadChunkBytes`, `limits.maxLoadChunkRows`, `limits.maxLoadBytes`, `loads.ttlHours`, `loads.maxOpenPerUser`).
 
 When no operation fits (functions, triggers, grants, bulk updates), an editor or approver can call `propose_sql` (MCP or the chat assistant) with the SQL and a reason of at least 10 characters.
 

@@ -22,6 +22,18 @@ def script_dir(settings, tmp_path):
     invalidate_overrides()
 
 
+@pytest.fixture(autouse=True)
+def _cleanup_schemas(master_db):
+    yield
+    from tests import pgsetup
+    with pgsetup.connect("singularity_master_rw", master_db) as rw:
+        for (n,) in rw.execute(
+            "SELECT nspname FROM pg_namespace n JOIN pg_roles r ON r.oid = n.nspowner "
+            "WHERE r.rolname = 'singularity_master_rw' AND nspname <> 'master'"
+        ).fetchall():
+            rw.execute(f'DROP SCHEMA "{n}" CASCADE')
+
+
 @pytest.fixture
 def ctx():
     u = make_users()
