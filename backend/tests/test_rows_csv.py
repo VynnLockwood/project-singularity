@@ -173,9 +173,18 @@ def test_csv_writes_one_audit_entry(data):
 
 
 def test_csv_cell_rules():
+    import decimal
     assert rows.csv_cell(None, "text") == ""
     assert rows.csv_cell("=x", "text") == "'=x"
-    assert rows.csv_cell("=x", "character varying(20)") == "'=x"
     assert rows.csv_cell(-5, "integer") == "-5"
-    assert rows.csv_cell("-5", "numeric(12,2)") == "-5"
-    assert rows.csv_cell(True, "boolean") == "True"
+    assert rows.csv_cell(decimal.Decimal("-5.00"), "numeric(12,2)") == "-5.00"
+    assert rows.csv_cell(True, "boolean") == "true" and rows.csv_cell(False, "boolean") == "false"
+
+
+def test_csv_cell_decides_by_value_not_type_name():
+    # an enum label and a jsonb string are free text: guarded like text columns
+    assert rows.csv_cell("=cmd", "status_enum") == "'=cmd"
+    assert rows.csv_cell("=HYPERLINK(1)", "jsonb") == "'=HYPERLINK(1)"
+    # jsonb objects are JSON text, not a Python repr
+    assert rows.csv_cell({"a": None, "b": True, "c": "x'y"}, "jsonb") == '{"a": null, "b": true, "c": "x\'y"}'
+    assert rows.csv_cell(["ส", 1], "jsonb") == '["ส", 1]'

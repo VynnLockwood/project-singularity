@@ -192,7 +192,14 @@ export function GridEditor({ me, table, live, onProposed, onBusy, schema, view, 
     return hit ? hit.label : `#${text}`;
   };
 
-  if (error && !page) return <p className="problems" role="alert">{error}</p>;
+  if (error && !page) {
+    return (
+      <div className="grid-error">
+        <p className="problems" role="alert">{error}</p>
+        {loadFailed && <Button size="sm" onClick={() => setReload((n) => n + 1)}>Try again</Button>}
+      </div>
+    );
+  }
   if (!page) return <div role="status"><span className="sr-only">Loading…</span><Skeleton rows={8} /></div>;
 
   const last = Math.min(offset + pageSize, page.total);

@@ -305,4 +305,18 @@ describe("GridEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Export CSV" }));
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
   });
+
+  it("a first load that fails shows the message and Try again", async () => {
+    vi.resetModules();
+    const getRows = vi.fn().mockRejectedValueOnce(new Error("x")).mockResolvedValue(page(ROWS));
+    vi.doMock("@/lib/api", async (orig) => ({
+      ...(await orig<typeof import("@/lib/api")>()), getRows,
+      getOptions: vi.fn().mockResolvedValue({ labelColumn: "name", truncated: false, options: [] }),
+    }));
+    const { GridEditor } = await import("./GridEditor");
+    render(<GridEditor me={me("editor")} table="orderHeader" live={[]} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load rows.");
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await screen.findByText(/\d+–\d+ of \d+/);
+  });
 });

@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import datetime
 import io
+import json
 
 import psycopg
 from psycopg import sql
@@ -47,7 +48,7 @@ def _run(query: sql.Composable, params=()) -> list[dict]:
         raise RowsError(exc.diag.message_primary or "query failed") from exc
 
 
-def _plan(d: dict, cols: dict, role_cols: dict, *, sort, direction, filters, include_inactive):
+def _plan(cols: dict, role_cols: dict, *, sort, direction, filters, include_inactive):
     """The WHERE clause, ORDER BY and params for a filtered, sorted view. Shared by the rows endpoint and CSV export."""
     if direction not in ("asc", "desc"):
         raise RowsError("direction must be asc or desc")
@@ -84,7 +85,7 @@ def read_rows(table: str, *, offset: int = 0, limit: int = 50, sort: str | None 
     conv = roles.conventions()
     role_cols = roles.roles_of(d, conv)
     hidden = roles.hidden_columns(conv)
-    clause, order, params = _plan(d, cols, role_cols, sort=sort, direction=direction, filters=filters,
+    clause, order, params = _plan(cols, role_cols, sort=sort, direction=direction, filters=filters,
                                   include_inactive=include_inactive)
     pk = role_cols.get("primary_key")
 
@@ -147,20 +148,26 @@ def options(table: str, *, q: str = "", limit: int = 100, schema: str = "master"
     }
 
 
-_TEXT_TYPES = ("text", "character varying", "character", "citext")
 _FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
 CSV_BATCH = 1000
 
 
-def csv_cell(value, type_name: str) -> str:
-    """One CSV field. NULL is empty; text that a spreadsheet could run as a formula gets a leading apostrophe."""
+def csv_cell(value, type_name: str = "") -> str:
+    """One CSV field, decided by the value (the column type only mattered for text, enums and jsonb alike).
+
+    NULL is empty; any string a spreadsheet could run as a formula gets a leading apostrophe; booleans are
+    `true`/`false` as in Postgres and the rows endpoint; jsonb objects and arrays are JSON text.
+    """
     if value is None:
         return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return "'" + value if value.startswith(_FORMULA_START) else value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
     v = jsonable(value)
-    text = v if isinstance(v, str) else str(v)
-    if type_name.startswith(_TEXT_TYPES) and text.startswith(_FORMULA_START):
-        return "'" + text
-    return text
+    return v if isinstance(v, str) else str(v)
 
 
 class CsvExport:
@@ -208,7 +215,7 @@ def open_csv(table: str, *, sort: str | None = None, direction: str = "asc", fil
     d = _describe(table, schema)
     cols = {c["name"]: c for c in d["columns"]}
     role_cols = roles.roles_of(d, roles.conventions())
-    clause, order, params = _plan(d, cols, role_cols, sort=sort, direction=direction, filters=filters,
+    clause, order, params = _plan(cols, role_cols, sort=sort, direction=direction, filters=filters,
                                   include_inactive=include_inactive)
     t = sql.Identifier(schema, table)
     total = _run(sql.SQL("SELECT count(*) AS n FROM {}{}").format(t, clause), params)[0]["n"]

@@ -10,7 +10,7 @@ const page: RowsPage = {
 };
 const me = (role: Me["role"] = "editor"): Me => ({ id: 1, email: "e@x.com", name: "", role });
 const SCHEMAS = [{ name: "master", tables: 2, comment: null }, { name: "empty", tables: 0, comment: null }];
-const graph = (names: string[]) => ({ tables: names.map((name) => ({ name, comment: null, rowEstimate: 3, columns: [] })), relations: [] });
+const graph = (names: string[]) => ({ tables: names.map((name) => ({ name, comment: null, rowEstimate: 3, columns: [{ name: "id", type: "bigint", nullable: false, primaryKey: true }, { name: "name", type: "text", nullable: true, primaryKey: false }] })), relations: [] });
 
 async function setup(route: Route, opts: { role?: Me["role"]; tables?: string[]; schemas?: typeof SCHEMAS } = {}) {
   vi.resetModules();
@@ -55,6 +55,27 @@ describe("DataView", () => {
     const { getGraph } = await setup({ view: "data", schema: "ghost", table: "t" });
     expect(await screen.findByText("There is no database ghost.")).toBeInTheDocument();
     expect(getGraph).not.toHaveBeenCalled();
+  });
+
+  it("a hand-edited link with unknown columns and junk values sends none of them", async () => {
+    history.replaceState(null, "", "/data/master/customer?sort=nope&dir=up&f.x=1&f.name=ab&inactive=2");
+    const { getRows } = await setup({ view: "data", schema: "master", table: "customer" });
+    await waitFor(() => expect(getRows).toHaveBeenCalled());
+    for (const [, q] of getRows.mock.calls) expect(q).toMatchObject({ sort: undefined, dir: "asc", filters: { name: "ab" }, inactive: false });
+  });
+
+  it("switching tables from a filtered view asks for the new table once, with a clean view", async () => {
+    history.replaceState(null, "", "/data/master/customer?sort=name&f.name=ab");
+    const { getRows, rerender } = await setup({ view: "data", schema: "master", table: "customer" });
+    await screen.findByText(/1–1 of 1/);
+    getRows.mockClear();
+    history.replaceState(null, "", "/data/master/order_header");
+    rerender({ view: "data", schema: "master", table: "order_header" });
+    await waitFor(() => expect(getRows).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 30));
+    const calls = getRows.mock.calls.filter((c) => c[0] === "order_header");
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1]).toMatchObject({ sort: undefined, filters: {} });
   });
 
   it("a link's query string reaches the grid", async () => {
