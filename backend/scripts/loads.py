@@ -273,3 +273,32 @@ def finish(user, load_id: int, note: str = "") -> dict:
                {"load_id": load.pk, "rows": load.rows, "change_id": change.pk})
         return {"ok": True, "load_id": load.pk, "script_id": script.pk, "change_id": change.pk,
                 "report": _row_report(report)}
+
+
+def purge_expired(now=None) -> int:
+    """Expire open loads past expires_at and delete their files; also remove files still held by cancelled or
+    finished loads. Each row is locked (skip_locked) and re-checked under the lock. Returns loads changed."""
+    from django.db import transaction
+    from django.db.models import Q
+
+    now = now or timezone.now()
+    count = 0
+    ids = StagedLoad.objects.filter(
+        Q(status=StagedLoad.Status.OPEN, expires_at__lte=now)
+        | (Q(status__in=[StagedLoad.Status.CANCELLED, StagedLoad.Status.FINISHED]) & ~Q(path=""))
+    ).values_list("pk", flat=True)
+    for pk in list(ids):
+        with transaction.atomic():
+            load = StagedLoad.objects.select_for_update(skip_locked=True).filter(pk=pk).first()
+            if load is None:
+                continue
+            if load.status == StagedLoad.Status.OPEN:
+                if load.expires_at > now:
+                    continue
+                load.status = StagedLoad.Status.EXPIRED
+            elif not load.path:
+                continue
+            _remove_file(load)
+            load.save(update_fields=["status", "path"])
+            count += 1
+    return count
