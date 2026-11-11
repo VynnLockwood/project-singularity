@@ -438,6 +438,13 @@ export interface ScriptReport {
   errors: { kind: string; line: number; statement: string; message: string }[];
   errors_truncated?: number;
   ignored: { line: number; statement: string }[];
+  ignored_truncated?: number;
+  skipped?: { line: number; statement: string; reason: string; kind: string }[];
+  skipped_truncated?: number;
+  /** Background check: only a report that is still running or failed carries these. */
+  state?: "running" | "done" | "failed";
+  phase?: string;
+  message?: string;
   ops_summary?: { total: number; by_op: Record<string, number>; tables: string[] };
   gate?: { errors: string[]; truncated?: number };
   tables?: { name: string; source: string; rows: number; orphans: number; sample_orphans: { line: number; row: number; column: string; value: string; parent: string }[] }[];
@@ -475,6 +482,55 @@ export async function uploadScript(file: File): Promise<{ script_id: number; sha
 /** Paste path: the file picker isn't the only way in — send SQL text directly. */
 export const pasteScript = (name: string, content: string) =>
   call<{ script_id: number; sha256: string; size: number }>("POST", "/scripts", { name, content });
+
+/** What the page needs before a file is chosen: the largest file and the size of one upload part. */
+export const getScriptLimits = () => call<{ max_bytes: number; chunk_bytes: number }>("GET", "/scripts/limits");
+
+const RETRIES = 3;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Big files go up in parts (resumable): begin, put each part (3 retries, asking the server what it has), complete. */
+export async function uploadScriptChunked(
+  file: File,
+  onProgress: (done: number, total: number) => void,
+  signal?: AbortSignal,
+): Promise<{ script_id: number; sha256: string; size: number }> {
+  const begin = await call<{ upload_id: number; chunk_bytes: number; chunks: number }>(
+    "POST", "/scripts/uploads", { name: file.name, size: file.size });
+  const base = `/scripts/uploads/${begin.upload_id}`;
+  onProgress(0, file.size);
+  for (let n = 0; n < begin.chunks; n++) {
+    const start = n * begin.chunk_bytes;
+    const part = file.slice(start, Math.min(file.size, start + begin.chunk_bytes));
+    for (let attempt = 0; ; attempt++) {
+      if (signal?.aborted) throw new DOMException("aborted", "AbortError");
+      try {
+        const res = await fetch(`${BASE}${base}/${n}`, {
+          method: "PUT", credentials: "same-origin", signal,
+          headers: { "X-CSRFToken": csrfToken(), "Content-Type": "application/octet-stream" },
+          body: part,
+        });
+        if (res.ok) break;
+        const data = await res.json().catch(() => ({}));
+        if (res.status < 500) throw new ApiError(res.status, data.error ?? `upload failed (${res.status})`);
+        throw new Error(data.error ?? `upload failed (${res.status})`);
+      } catch (e) {
+        if (e instanceof ApiError || (e instanceof DOMException && e.name === "AbortError")) throw e;
+        if (attempt >= RETRIES) throw new ApiError(0, "The connection dropped while sending the file. Try again.");
+        await sleep(300 * 2 ** attempt);
+        // it may have arrived although the answer was lost: ask before sending it again
+        const have = await call<{ received: number[] }>("GET", base).then((r) => r.received, () => null);
+        if (have?.includes(n)) break;
+      }
+    }
+    onProgress(Math.min(file.size, start + part.size), file.size);
+  }
+  return call("POST", `${base}/complete`, {});
+}
+
+/** Starts the check in the background; poll getScript(id).report.state until it is done or failed. */
+export const validateScriptAsync = (id: number, mapping?: unknown) =>
+  call<{ state: "running" }>("POST", `/scripts/${id}/validate?async=1`, mapping ? { mapping } : {});
 
 export const validateScript = (id: number, mapping?: unknown) =>
   call<ScriptReport>("POST", `/scripts/${id}/validate`, mapping ? { mapping } : {});
