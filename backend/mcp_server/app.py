@@ -221,7 +221,7 @@ async def list_pending() -> dict:
         "columns: {...}}; leave out to let the system suggest one. The script loads into one database (schema, default master)."
     ),
 )
-async def submit_script(name: str, content: str, mapping: dict | None = None, schema: str = "master") -> dict:
+async def submit_script(name: str, content: str, mapping: dict | None = None, schema: str | None = None) -> dict:
     return await run("submit_script", name=name, content=content, mapping=mapping, schema=schema)
 
 
@@ -255,10 +255,11 @@ async def cancel_load(load_id: int) -> dict:
     description=(
         "Re-validate a previously uploaded script and return the trimmed report "
         "(errors with line numbers, ignored statements, ops summary, gate result, orphan samples, dry-run rows). "
-        "Returns the same report as at upload, so re-validation is idempotent."
+        "Returns the same report as at upload, so re-validation is idempotent. Leave schema out and the database the file names "
+        "(master_thach.x) is used when it exists; the report says which one in schema and schema_source."
     ),
 )
-async def validate_script(script_id: int, mapping: dict | None = None, schema: str = "master") -> dict:
+async def validate_script(script_id: int, mapping: dict | None = None, schema: str | None = None) -> dict:
     return await run("validate_script", script_id=script_id, mapping=mapping, schema=schema)
 
 

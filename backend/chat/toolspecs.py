@@ -52,12 +52,12 @@ SPECS = {
         {"name": {"type": "string", "description": "file name to show (e.g. master.sql)"},
          "content": {"type": "string", "description": "the whole SQL file contents"},
          "mapping": {"type": "object", "description": "optional table/column mapping; omit to auto-suggest"},
-         **SCHEMA},
+         "schema": {"type": "string", "description": "optional: the database to check against; default is the one the file names (master_thach.x) if it exists, else master"}},
         ["name", "content"]),
     "validate_script": (
         "Re-validate an uploaded script and return the trimmed report (errors with line numbers, gate result, "
         "orphan samples, dry-run rows).",
-        {"script_id": {"type": "integer"}, "mapping": {"type": "object"}, **SCHEMA}, ["script_id"]),
+        {"script_id": {"type": "integer"}, "mapping": {"type": "object"}, "schema": {"type": "string", "description": "optional: the database to check against; default is the one the file names (master_thach.x) if it exists, else master"}}, ["script_id"]),
     "get_script": (
         "Status, stored report and change link of an uploaded/submitted script.",
         {"script_id": {"type": "integer"}}, ["script_id"]),
