@@ -2,6 +2,7 @@
 from django.http import JsonResponse
 
 from accounts.api import endpoint, error
+from config.siconfig import get_config
 from schema.http import schema_param, unknown_schema_is_400
 
 from . import jobs, service, storage, uploads
@@ -66,6 +67,12 @@ def scripts(request):
     if not request.user.can_approve:
         qs = qs.filter(owner=request.user)
     return JsonResponse({"scripts": [_summary(s) for s in qs[:50]]})
+
+
+@endpoint("GET", min_role="editor")
+def scripts_limits(request):
+    """What the upload page needs before a file is chosen: the size cap and the chunk size."""
+    return JsonResponse({"max_bytes": get_config()["limits"]["maxScriptBytes"], "chunk_bytes": uploads.CHUNK_BYTES})
 
 
 @endpoint("POST", min_role="editor")

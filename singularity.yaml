@@ -12,7 +12,7 @@ limits:
   queryTimeoutMs: 5000
   maxOpsPerProposal: 50
   maxRowsPerDataOp: 1000
-  maxScriptBytes: 52428800
+  maxScriptBytes: 536870912
   maxScriptRows: 200000
   maxOpsPerScript: 1000
   maxInlineScriptBytes: 20480

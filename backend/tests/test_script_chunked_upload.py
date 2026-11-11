@@ -190,3 +190,14 @@ def test_http_flow():
     assert c.put(f"/api/scripts/uploads/{uid}/0", b"x", content_type="application/octet-stream").status_code == 410
     bad = c.post("/api/scripts/uploads", json.dumps({"name": "h.sql", "size": 0}), content_type="application/json")
     assert bad.status_code == 400
+
+
+def test_limits_endpoint():
+    c = Client()
+    c.force_login(user())
+    r = c.get("/api/scripts/limits")
+    assert r.status_code == 200
+    assert r.json() == {"max_bytes": 536870912, "chunk_bytes": CH}
+    v = Client()
+    v.force_login(user(Role.VIEWER, "vv"))
+    assert v.get("/api/scripts/limits").status_code == 403

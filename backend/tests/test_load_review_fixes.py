@@ -87,7 +87,8 @@ def test_cancel_rechecks_status_under_lock(ctx, monkeypatch):  # finding 3 (the 
 def test_total_bytes_limit_never_exceeds_script_cap(ctx):      # finding 4
     ed, appr = ctx
     out = loads.begin(ed, "customer", ["code"])
-    assert out["limits"]["total_bytes"] < 52428800      # maxScriptBytes default, minus the header
+    from config.siconfig import get_config
+    assert out["limits"]["total_bytes"] < get_config()["limits"]["maxScriptBytes"]      # the script cap, minus the header
 
 
 def test_failed_finish_leaves_no_script(ctx):                  # finding 5

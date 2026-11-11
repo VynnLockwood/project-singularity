@@ -50,6 +50,7 @@ urlpatterns = [
     path("api/chat/conversations/<int:conv_id>", chat_views.conversation_detail),
     path("api/chat/conversations/<int:conv_id>/messages", chat_views.send_message),
     path("api/scripts", scripts_api.scripts),
+    path("api/scripts/limits", scripts_api.scripts_limits),
     path("api/scripts/uploads", scripts_api.upload_begin),
     path("api/scripts/uploads/<int:upload_id>", scripts_api.upload_status),
     path("api/scripts/uploads/<int:upload_id>/complete", scripts_api.upload_complete),
