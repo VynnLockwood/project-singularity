@@ -64,11 +64,20 @@ def _bound_ops(script: Script) -> list[dict]:
     """The script's stored mapping -> ops bound to the stored script; reads (and checksums) the file."""
     text = storage.read(script).decode("utf-8")
     parsed = parse_script(text)
-    mapped = apply_mapping(parsed, script.mapping)
+    schema = (script.report or {}).get("validated_schema", "master")
+    mapped = apply_mapping(parsed, script.mapping, introspect.external_state(schema=schema))
     if mapped.issues:
         raise storage.ScriptError(f"script #{script.pk} no longer maps cleanly: {mapped.issues[0].message}")
     out = copy.deepcopy(mapped.ops)
     for o in out:
         if o.get("op") == "bulk_insert":
             o["source"]["script_id"] = script.pk
+    return out
+
+
+def trim_report(report: dict) -> dict:
+    """A validation report small enough for an AI client: at most 20 errors and 10 sample orphans per table."""
+    out = dict(report)
+    out["errors"] = report.get("errors", [])[:20]
+    out["tables"] = [{**t, "sample_orphans": t.get("sample_orphans", [])[:10]} for t in out.get("tables", [])]
     return out

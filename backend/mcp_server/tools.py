@@ -603,12 +603,7 @@ def get_script(user, script_id: int) -> dict:
             "change_id": s.change_id, "report": _trim_report(s.report or {}) if s.report else None}
 
 
-def _trim_report(report: dict) -> dict:
-    out = dict(report)
-    out["errors"] = report.get("errors", [])[:20]
-    for t in out.get("tables", []):
-        t["sample_orphans"] = t.get("sample_orphans", [])[:10]
-    return out
+_trim_report = script_service.trim_report
 
 
 IMPL = {

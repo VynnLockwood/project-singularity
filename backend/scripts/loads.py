@@ -211,3 +211,65 @@ def append(user, load_id: int, seq: int, csv_text: str) -> dict:
         load.save()
         return {"ok": True, "stored": True, "rows_in_chunk": len(rows), "total_rows": load.rows,
                 "next_seq": load.next_seq}
+
+
+def _row_report(report: dict) -> dict:
+    """Script line numbers become load row numbers (line 1 is the COPY header, so row = line - 1)."""
+    from .service import trim_report
+    out = trim_report(report)
+    out["errors"] = [({**{k: v for k, v in e.items() if k != "line"}, "row": e["line"] - 1}
+                      if e.get("kind") == "rows" and isinstance(e.get("line"), int) else e) for e in out["errors"]]
+    for t in out.get("tables", []):
+        t["sample_orphans"] = [{k: v for k, v in o.items() if k != "line"} for o in t["sample_orphans"]]
+    return out
+
+
+def finish(user, load_id: int, note: str = "") -> dict:
+    from django.db import transaction
+
+    from . import service
+    from .models import Script
+
+    _mine(user, load_id)
+    if user.rank < EDITOR:
+        raise PermissionError("Finishing a load needs the editor role.")
+    with transaction.atomic():
+        load = StagedLoad.objects.select_for_update().get(pk=load_id)
+        if load.status == StagedLoad.Status.FINISHED:
+            script = Script.objects.filter(pk=load.script_id).first()
+            return {"ok": True, "load_id": load.pk, "script_id": load.script_id, "change_id": load.change_id,
+                    "report": _row_report(script.report or {}) if script else {}}
+        if load.status != StagedLoad.Status.OPEN:
+            raise LoadError(f"load #{load.pk} is {load.status}; only an open load can be finished")
+        if load.expires_at <= timezone.now():
+            raise LoadError(f"load #{load.pk} has expired; start a new load")
+        if load.rows == 0:
+            raise LoadError("the load has no rows; call append_rows first")
+        state = introspect.snapshot(load.schema)
+        _column_specs(load, state)   # table and columns must still exist
+
+        with open(_full(load), "rb") as f:
+            rows_text = f.read(load.bytes)
+        header = f"COPY {load.schema}.staged_load ({', '.join(load.columns)}) FROM stdin;\n".encode()
+        try:
+            script = storage.save(user, f"load-{load.pk}-{load.table}.sql", header + rows_text + b"\\.\n")
+        except storage.ScriptError as exc:
+            raise LoadError(f"{exc} (limits.maxScriptBytes also caps a finished load)") from exc
+        real = state[load.table]["columns"]
+        entry = {"target": load.table, "columns": {c: c for c in load.columns if c in real}}
+        if load.refs:
+            entry["refs"] = [{"column": r["column"], "parent": f"{load.schema}.{r['parent_table']}", "parent_key": r["parent_key"],
+                              "source_column": r["source_column"], "external": True} for r in load.refs]
+        report = service.validate(user, script.pk, {"tables": {"staged_load": entry}}, load.schema)
+        if not report.get("ok"):
+            return {"ok": False, "load_id": load.pk, "report": _row_report(report)}
+        change = service.submit(user, script.pk, note)
+        load.status = StagedLoad.Status.FINISHED
+        load.script = script
+        load.change = change
+        _remove_file(load)
+        load.save()
+        record(user, "load.finish", f"{load.schema}.{load.table}",
+               {"load_id": load.pk, "rows": load.rows, "change_id": change.pk})
+        return {"ok": True, "load_id": load.pk, "script_id": script.pk, "change_id": change.pk,
+                "report": _row_report(report)}
