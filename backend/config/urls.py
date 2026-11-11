@@ -32,6 +32,7 @@ urlpatterns = [
     path("api/schema/graph", schema_views.graph),
     path("api/schema/export", schema_views.export),
     path("api/schema/tables/<str:name>", schema_views.table_detail),
+    path("api/schema/tables/<str:name>/export.csv", schema_views.table_export_csv),
     path("api/schema/tables/<str:name>/rows", schema_views.table_rows),
     path("api/schema/tables/<str:name>/options", schema_views.table_options),
     path("api/query", schema_views.run_query),

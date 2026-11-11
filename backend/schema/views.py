@@ -118,3 +118,37 @@ def table_options(request, name):
         return error("limit is not valid")
     except rows_mod.RowsError as exc:
         return _rows_error(exc)
+
+
+@endpoint("GET")
+@unknown_schema_is_400
+def table_export_csv(request, name):
+    """The whole filtered, sorted view of one table as CSV (editor role). Capped by limits.maxExportRows."""
+    if not ROLE_CHECK["editor"](request.user):
+        return error("exporting data needs the editor role", 403)
+    g = request.GET
+    schema = schema_param(request)
+    try:
+        filters = json.loads(g.get("filters", "{}") or "{}")
+        if not isinstance(filters, dict):
+            raise ValueError
+    except (ValueError, TypeError):
+        return error("filters are not valid")
+    try:
+        ex = rows_mod.open_csv(name, sort=g.get("sort") or None, direction=g.get("dir", "asc"), filters=filters,
+                               include_inactive=g.get("inactive") == "1", schema=schema,
+                               cap=get_config()["limits"]["maxExportRows"])
+    except rows_mod.RowsError as exc:
+        return _rows_error(exc)
+    try:
+        record(request.user, "table.export_csv", name,
+               {"table": name, "schema": schema, "rows": ex.total, "filters": filters,
+                "sort": g.get("sort") or None, "dir": g.get("dir", "asc"), "inactive": g.get("inactive") == "1"})
+        chunks = ex.async_chunks() if hasattr(request, "scope") else ex.chunks()
+        resp = StreamingHttpResponse(chunks, content_type="text/csv; charset=utf-8")
+        resp["Content-Disposition"] = f'attachment; filename="{ex.filename()}"'
+        resp["Cache-Control"] = "no-store"
+    except BaseException:
+        ex.close()
+        raise
+    return resp
