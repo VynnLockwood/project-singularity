@@ -17,6 +17,7 @@ from settings_app import tunables
 # Minimum role for each tool. Tools above a user's role are hidden from their client.
 TOOL_ROLES = {
     "get_rules": "viewer",
+    "get_rule_history": "viewer",
     "list_schemas": "viewer",
     "list_tables": "viewer",
     "describe_table": "viewer",
@@ -42,6 +43,11 @@ TOOL_ROLES = {
     "get_duplicate": "viewer",
     "merge_duplicates": "editor",
     "dismiss_duplicate": "editor",
+    "reopen_duplicate": "editor",
+    "profile_column": "viewer",
+    "lookup_options": "viewer",
+    "create_backup": "approver",
+    "list_backups": "approver",
     "revert_change": "approver",
     "reindex_search": "approver",
     "recheck_change": "editor",
@@ -143,7 +149,30 @@ DESCRIPTIONS = {
         "are deactivated. This is a data change and goes through approval. Show the user the records first "
         "(get_duplicate) and ask which one to keep."
     ),
+    "get_rule_history": (
+        "Version history of one gate rule, newest first: version, action, the rule as it was, who changed it and when. "
+        "To undo a rule change, call propose_config_change with {\"op\":\"rollback_rule\",\"name\":<rule>,\"version\":<n>}."
+    ),
     "dismiss_duplicate": "Mark a group as not duplicates, so a scan does not bring it back.",
+    "profile_column": (
+        "What is in one column: total rows (active only), null count, distinct count, min and max (for numbers, text, dates), "
+        "and the 10 most common values with counts (cut at 80 characters). Look before you add a constraint, a type change or a "
+        "reference, so the data you are about to constrain does not surprise the change."
+    ),
+    "lookup_options": (
+        "id and label pairs of a table you want to reference, optionally filtered by text in the label (q, default all, "
+        "limit default 100). Use it to find the id to write into a foreign key column instead of guessing."
+    ),
+    "create_backup": (
+        "Take a backup (pg_dump, custom format) of one database (schema, default master) into the server's backup folder. "
+        "Minimum role: approver. It blocks until pg_dump finishes (up to 10 minutes for a big database). Old backups are "
+        "pruned by the configured retention. There is no restore tool: a person restores in the web app or with pg_restore."
+    ),
+    "list_backups": "The backups in the server's backup folder, newest first (approvers only). Optional: only one database's.",
+    "reopen_duplicate": (
+        "Bring a dismissed duplicate group back to open, for when it was dismissed by mistake. Only dismissed groups "
+        "can be reopened; a merged or merge-pending group cannot."
+    ),
     "revert_change": (
         "Undo an applied change by applying its stored reverse (approvers only). Changes that dropped something "
         "cannot be undone this way; the error says so."
@@ -225,6 +254,22 @@ def get_rules(user) -> dict:
         "rules": [
             {k: r[k] for k in ("name", "type", "severity", "description", "params")}
             for r in rule_services.active_rules() if r["enabled"]
+        ],
+    }
+
+
+def get_rule_history(user, rule: str) -> dict:
+    from settings_app.models import Rule
+
+    r = Rule.objects.filter(name=rule).first() if isinstance(rule, str) else None
+    if r is None:
+        raise ToolFailure(f"No rule named {rule!r}. Call get_rules or get_settings to see the rules.")
+    return {
+        "rule": r.name, "current_version": r.version,
+        "versions": [
+            {"version": v.version, "action": v.action, "snapshot": v.snapshot,
+             "changed_by": v.changed_by.email if v.changed_by_id else None, "created_at": v.created_at.isoformat()}
+            for v in r.versions.select_related("changed_by")
         ],
     }
 
@@ -311,6 +356,34 @@ def read_rows(user, table: str, schema: str = "master", offset: int = 0, limit: 
         hint = " Call describe_table to see the columns." if "unknown column" in str(exc) else ""
         raise ToolFailure(f"{exc}.{hint}") from exc
     return {**out, "truncated": out["offset"] + len(out["rows"]) < out["total"]}
+
+
+def _read_failure(exc, table: str, schema: str):
+    if isinstance(exc, introspect.UnknownSchema):
+        return ToolFailure(f"{exc} Call list_schemas to see the databases.")
+    if exc.status == 404:
+        return ToolFailure(f"table {table!r} does not exist in {schema!r}. Call list_tables to see what exists.")
+    hint = " Call describe_table to see the columns." if "unknown column" in str(exc) else ""
+    return ToolFailure(f"{exc}.{hint}")
+
+
+def profile_column(user, table: str, column: str, schema: str = "master") -> dict:
+    from schema import rows as rows_mod
+
+    try:
+        return rows_mod.profile(table, column, schema=schema)
+    except (introspect.UnknownSchema, rows_mod.RowsError) as exc:
+        raise _read_failure(exc, table, schema) from exc
+
+
+def lookup_options(user, table: str, q: str = "", limit: int | None = None, schema: str = "master") -> dict:
+    from schema import rows as rows_mod
+
+    try:
+        out = rows_mod.options(table, q=q if isinstance(q, str) else "", limit=clamp(limit, 100, rows_mod.MAX_PAGE), schema=schema)
+    except (introspect.UnknownSchema, rows_mod.RowsError) as exc:
+        raise _read_failure(exc, table, schema) from exc
+    return {"label_column": out["labelColumn"], "truncated": out["truncated"], "options": out["options"]}
 
 
 def reindex_search(user, rebuild: bool = False) -> dict:
@@ -457,7 +530,7 @@ def merge_duplicates(user, group_id: int, survivor_id: int, *, source: str = "mc
     if dup.state(g) == "dismissed":
         raise ToolFailure(
             f"group #{g.pk} was dismissed as not duplicates, so it cannot be merged. If that was a mistake, the "
-            "user can reopen it in the web app (Duplicates); find_duplicates will not bring a dismissed group back.")
+            f"call reopen_duplicate with group_id={g.pk}; find_duplicates will not bring a dismissed group back.")
     try:
         change = dup.propose_merge(g, survivor_id, user, source=source, conversation_id=conversation_id)
     except dup.DuplicateError as exc:
@@ -471,6 +544,35 @@ def merge_duplicates(user, group_id: int, survivor_id: int, *, source: str = "mc
 
 def dismiss_duplicate(user, group_id: int) -> dict:
     return _dup(lambda d: d.dismiss(d.get_group(group_id), user))
+
+
+def create_backup(user, schema: str = "master", label: str = "manual") -> dict:
+    from audit.models import record
+    from config.siconfig import get_config
+    from schema import backup
+
+    try:
+        introspect.require_managed(schema)
+        path = backup.backup_schema(schema, label, get_config()["backups"]["retentionDays"])
+    except introspect.UnknownSchema as exc:
+        raise ToolFailure(f"{exc} Call list_schemas to see the databases.") from exc
+    except backup.BackupError as exc:
+        raise ToolFailure(f"backup failed, nothing was kept: {exc}") from exc
+    record(user, "backup.created", target=path.name)
+    d = backup.describe(path)
+    return {k: d[k] for k in ("file", "schema", "bytes", "created_at")}
+
+
+def list_backups(user, schema: str | None = None) -> dict:
+    from schema import backup
+
+    if schema is not None and not isinstance(schema, str):
+        raise ToolFailure("schema must be a database name, for example \"master\".")
+    return {"backups": backup.list_backups(schema or None)}
+
+
+def reopen_duplicate(user, group_id: int) -> dict:
+    return _dup(lambda d: d.reopen(d.get_group(group_id), user))
 
 
 def _next_step(user, change: Change) -> str:
@@ -692,6 +794,7 @@ def cancel_load(user, load_id: int) -> dict:
 
 IMPL = {
     "get_rules": get_rules,
+    "get_rule_history": get_rule_history,
     "list_schemas": list_schemas,
     "list_tables": list_tables,
     "describe_table": describe_table,
@@ -723,6 +826,11 @@ IMPL = {
     "get_duplicate": get_duplicate,
     "merge_duplicates": merge_duplicates,
     "dismiss_duplicate": dismiss_duplicate,
+    "reopen_duplicate": reopen_duplicate,
+    "profile_column": profile_column,
+    "lookup_options": lookup_options,
+    "create_backup": create_backup,
+    "list_backups": list_backups,
     "revert_change": revert_change,
     "reindex_search": reindex_search,
     "recheck_change": recheck_change,

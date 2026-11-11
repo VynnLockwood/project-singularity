@@ -203,6 +203,19 @@ def list_groups(*, schema: str | None = "master", table: str | None = None, stat
     return [g for g in items if g["status"] == status] if status else items
 
 
+def reopen(g: DuplicateGroup, user) -> dict:
+    """Undo a dismissal. Only a dismissed group can be reopened; one that is merged or being merged cannot."""
+    shown = state(g)
+    if shown != "dismissed":
+        raise DuplicateError(f"group #{g.pk} is {shown}; only a dismissed group can be reopened", 409)
+    if introspect.describe_table(g.table_name, g.schema) is None:
+        raise DuplicateError(f"table {g.table_name!r} of group #{g.pk} no longer exists", 404)
+    g.status = DuplicateGroup.Status.OPEN
+    g.save(update_fields=["status"])
+    record(user, "duplicates.reopened", target=f"#{g.pk}", details={"table": g.table_name})
+    return summary(g)
+
+
 def dismiss(g: DuplicateGroup, user) -> dict:
     """Mark a group as not duplicates; a later scan will not bring it back."""
     g.status, g.decided_by = DuplicateGroup.Status.DISMISSED, user

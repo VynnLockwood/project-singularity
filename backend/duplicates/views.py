@@ -73,9 +73,10 @@ def reopen(request, group_id):
     g = _group(group_id)
     if g is None:
         return error("not found", 404)
-    g.status = DuplicateGroup.Status.OPEN
-    g.save(update_fields=["status"])
-    return JsonResponse(service.summary(g))
+    try:
+        return JsonResponse(service.reopen(g, request.user))
+    except service.DuplicateError as exc:
+        return _fail(exc)
 
 
 @endpoint("POST", min_role="editor")

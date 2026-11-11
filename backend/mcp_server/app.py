@@ -31,7 +31,7 @@ current_user: ContextVar = ContextVar("current_user", default=None)
 
 INSTRUCTIONS = """\
 Singularity manages master-data PostgreSQL databases (each "database" is a Postgres schema; master is the default).
-Start with get_rules (it has an example of every newer operation) and list_schemas. Find things with list_tables, describe_table, search_schema, read_rows
+Start with get_rules (it has an example of every newer operation) and list_schemas. Find things with list_tables, describe_table, search_schema, read_rows, profile_column (what a column holds), lookup_options (ids to reference)
 (one table, paged) and query (one read-only SELECT).
 Prefer propose_change with structured operations. Use propose_sql only when no operation fits (functions,
 triggers, grants, bulk updates); say why in 'reason'. Raw SQL skips the rules, cannot be undone and is approved
@@ -41,8 +41,9 @@ calling approve_change. Schema changes by editors wait for an approver. Dropping
 Never say a change is applied until its status is 'applied'.
 History: list_changes and get_change; approvers also have get_audit_log, revert_change and list_pending.
 A stale change is re-checked with recheck_change.
-Data quality: find_duplicates, list_duplicates, get_duplicate, then merge_duplicates (a data change) or dismiss_duplicate.
-Settings, gate rules and roles: get_settings and list_users, then propose_config_change. These always wait for an approver.
+Data quality: find_duplicates, list_duplicates, get_duplicate, then merge_duplicates (a data change), dismiss_duplicate or reopen_duplicate.
+Settings, gate rules and roles: get_settings, get_rule_history and list_users, then propose_config_change. These always wait for an approver.
+Backups (approvers): create_backup and list_backups. Restoring is done by a person, not here.
 Whole SQL files: submit_script parses a pg_dump-style script into the same gated operations (small scripts inline;
 big ones are uploaded in the web app, then validate_script with the script_id). export_schema returns a database as SQL.
 Big data: when a table needs more rows than propose_change takes, load them yourself with begin_load, append_rows
@@ -152,6 +153,11 @@ async def propose_sql(sql: str, reason: str, schema: str = "master") -> dict:
     return await run("propose_sql", sql=sql, reason=reason, schema=schema)
 
 
+@mcp.tool(name="get_rule_history", description=tools.DESCRIPTIONS["get_rule_history"])
+async def get_rule_history(rule: str) -> dict:
+    return await run("get_rule_history", rule=rule)
+
+
 @mcp.tool(
     name="get_settings",
     description="The quality settings (search confidence, duplicate similarity, limits, chat model...) with ranges, and every gate rule including switched-off ones.",
@@ -166,7 +172,7 @@ async def get_settings() -> dict:
         "Propose a change to settings, gate rules or people's roles. These are important, so the change NEVER applies on its own: "
         "it is checked, shown with a diff, and waits in the approval queue for an approver (live in their web app). "
         "%s Returns the checked change; tell the user it is waiting as change #id. Only an approver can approve it."
-    ) % """Configuration operations (settings, rules, roles). Each is an object with an 'op': set_setting{key,value}, reset_setting{key}, update_rule{name,severity?('block'|'warn'),enabled?,params?,description?}, create_rule{name,type,params,severity?,enabled?,description?}, set_user_role{email,role('viewer'|'editor'|'approver')}. Call get_settings first for the keys, allowed ranges and current rules. Never mix these with table or data operations.""",
+    ) % """Configuration operations (settings, rules, roles). Each is an object with an 'op': set_setting{key,value}, reset_setting{key}, update_rule{name,severity?('block'|'warn'),enabled?,params?,description?}, create_rule{name,type,params,severity?,enabled?,description?}, rollback_rule{name,version} (restore an earlier version of a rule; see get_rule_history), set_user_role{email,role('viewer'|'editor'|'approver')}. Call get_settings first for the keys, allowed ranges and current rules. Never mix these with table or data operations.""",
 )
 async def propose_config_change(operations: list[dict], prompt: str = "") -> dict:
     return await run("propose_config_change", operations=operations, prompt=prompt)
@@ -318,6 +324,31 @@ async def merge_duplicates(group_id: int, survivor_id: int) -> dict:
 @mcp.tool(name="dismiss_duplicate", description=tools.DESCRIPTIONS["dismiss_duplicate"])
 async def dismiss_duplicate(group_id: int) -> dict:
     return await run("dismiss_duplicate", group_id=group_id)
+
+
+@mcp.tool(name="profile_column", description=tools.DESCRIPTIONS["profile_column"])
+async def profile_column(table: str, column: str, schema: str = "master") -> dict:
+    return await run("profile_column", table=table, column=column, schema=schema)
+
+
+@mcp.tool(name="lookup_options", description=tools.DESCRIPTIONS["lookup_options"])
+async def lookup_options(table: str, q: str = "", limit: int | None = None, schema: str = "master") -> dict:
+    return await run("lookup_options", table=table, q=q, limit=limit, schema=schema)
+
+
+@mcp.tool(name="create_backup", description=tools.DESCRIPTIONS["create_backup"])
+async def create_backup(schema: str = "master", label: str = "manual") -> dict:
+    return await run("create_backup", schema=schema, label=label)
+
+
+@mcp.tool(name="list_backups", description=tools.DESCRIPTIONS["list_backups"])
+async def list_backups(schema: str | None = None) -> dict:
+    return await run("list_backups", schema=schema)
+
+
+@mcp.tool(name="reopen_duplicate", description=tools.DESCRIPTIONS["reopen_duplicate"])
+async def reopen_duplicate(group_id: int) -> dict:
+    return await run("reopen_duplicate", group_id=group_id)
 
 
 @mcp.tool(name="export_schema", description=tools.DESCRIPTIONS["export_schema"] + " " + DB_NOTE)

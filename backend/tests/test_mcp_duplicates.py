@@ -147,3 +147,50 @@ def test_rest_duplicates_unchanged(users):
     assert done.status_code == 200 and done.json()["status"] == "dismissed"
     assert c.post("/api/duplicates/999999/dismiss", json.dumps({}), content_type="application/json").status_code == 404
     assert c.get("/api/duplicates?table=supplier&status=dismissed").json()["groups"][0]["id"] == g["id"]
+
+
+def test_reopen_brings_a_dismissed_group_back_and_audits(users):
+    ed = users[Role.EDITOR]
+    g = found(users)
+    tools.dismiss_duplicate(ed, g["id"])
+    out = tools.reopen_duplicate(ed, g["id"])
+    assert out["status"] == "open" and out["id"] == g["id"]
+    assert [x["id"] for x in tools.list_duplicates(ed, table="supplier")["groups"]] == [g["id"]]
+    row = AuditLog.objects.get(action="duplicates.reopened")
+    assert row.target == f"#{g['id']}"
+
+
+def test_reopen_refuses_groups_that_are_not_dismissed(users):
+    ed, ap = users[Role.EDITOR], users[Role.APPROVER]
+    g = found(users)
+    with pytest.raises(tools.ToolFailure, match="open.*only a dismissed group"):
+        tools.reopen_duplicate(ed, g["id"])                          # already open
+    tools.merge_duplicates(ed, g["id"], 1)
+    with pytest.raises(tools.ToolFailure, match="merge_pending.*only a dismissed group"):
+        tools.reopen_duplicate(ed, g["id"])                          # merge waiting for approval
+    change_id = tools.list_changes(ed, kind="data", status="pending")["changes"][0]["id"]
+    tools.approve_change(ap, change_id)
+    with pytest.raises(tools.ToolFailure, match="merged.*only a dismissed group"):
+        tools.reopen_duplicate(ed, g["id"])                          # merged
+    assert not AuditLog.objects.filter(action="duplicates.reopened").exists()
+
+
+def test_reopen_unknown_group_points_at_list_duplicates(users):
+    with pytest.raises(tools.ToolFailure, match="does not exist.*list_duplicates"):
+        tools.reopen_duplicate(users[Role.EDITOR], 999999)
+
+
+def test_reopen_needs_an_editor(users):
+    assert tools.TOOL_ROLES["reopen_duplicate"] == "editor"
+    assert not tools.allowed(users[Role.VIEWER], "reopen_duplicate")
+    assert tools.allowed(users[Role.EDITOR], "reopen_duplicate")
+
+
+def test_reopen_refuses_a_group_whose_table_is_gone(users):
+    from duplicates.models import DuplicateGroup
+    g = DuplicateGroup.objects.create(schema="master", table_name="vanished", fields=["name"], key="k" * 8,
+                                      member_ids=[1, 2], score=0.9, status="dismissed")
+    with pytest.raises(tools.ToolFailure, match="vanished.*no longer exists"):
+        tools.reopen_duplicate(users[Role.EDITOR], g.pk)
+    g.refresh_from_db()
+    assert g.status == "dismissed"
