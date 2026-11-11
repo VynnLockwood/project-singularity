@@ -17,6 +17,7 @@ from settings_app import tunables
 # Minimum role for each tool. Tools above a user's role are hidden from their client.
 TOOL_ROLES = {
     "get_rules": "viewer",
+    "get_rule_history": "viewer",
     "list_schemas": "viewer",
     "list_tables": "viewer",
     "describe_table": "viewer",
@@ -143,6 +144,10 @@ DESCRIPTIONS = {
         "are deactivated. This is a data change and goes through approval. Show the user the records first "
         "(get_duplicate) and ask which one to keep."
     ),
+    "get_rule_history": (
+        "Version history of one gate rule, newest first: version, action, the rule as it was, who changed it and when. "
+        "To undo a rule change, call propose_config_change with {\"op\":\"rollback_rule\",\"name\":<rule>,\"version\":<n>}."
+    ),
     "dismiss_duplicate": "Mark a group as not duplicates, so a scan does not bring it back.",
     "revert_change": (
         "Undo an applied change by applying its stored reverse (approvers only). Changes that dropped something "
@@ -225,6 +230,22 @@ def get_rules(user) -> dict:
         "rules": [
             {k: r[k] for k in ("name", "type", "severity", "description", "params")}
             for r in rule_services.active_rules() if r["enabled"]
+        ],
+    }
+
+
+def get_rule_history(user, rule: str) -> dict:
+    from settings_app.models import Rule
+
+    r = Rule.objects.filter(name=rule).first() if isinstance(rule, str) else None
+    if r is None:
+        raise ToolFailure(f"No rule named {rule!r}. Call get_rules or get_settings to see the rules.")
+    return {
+        "rule": r.name, "current_version": r.version,
+        "versions": [
+            {"version": v.version, "action": v.action, "snapshot": v.snapshot,
+             "changed_by": v.changed_by.email if v.changed_by_id else None, "created_at": v.created_at.isoformat()}
+            for v in r.versions.select_related("changed_by")
         ],
     }
 
@@ -692,6 +713,7 @@ def cancel_load(user, load_id: int) -> dict:
 
 IMPL = {
     "get_rules": get_rules,
+    "get_rule_history": get_rule_history,
     "list_schemas": list_schemas,
     "list_tables": list_tables,
     "describe_table": describe_table,

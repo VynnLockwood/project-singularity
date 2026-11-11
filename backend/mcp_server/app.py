@@ -42,7 +42,7 @@ Never say a change is applied until its status is 'applied'.
 History: list_changes and get_change; approvers also have get_audit_log, revert_change and list_pending.
 A stale change is re-checked with recheck_change.
 Data quality: find_duplicates, list_duplicates, get_duplicate, then merge_duplicates (a data change) or dismiss_duplicate.
-Settings, gate rules and roles: get_settings and list_users, then propose_config_change. These always wait for an approver.
+Settings, gate rules and roles: get_settings, get_rule_history and list_users, then propose_config_change. These always wait for an approver.
 Whole SQL files: submit_script parses a pg_dump-style script into the same gated operations (small scripts inline;
 big ones are uploaded in the web app, then validate_script with the script_id). export_schema returns a database as SQL.
 Big data: when a table needs more rows than propose_change takes, load them yourself with begin_load, append_rows
@@ -152,6 +152,11 @@ async def propose_sql(sql: str, reason: str, schema: str = "master") -> dict:
     return await run("propose_sql", sql=sql, reason=reason, schema=schema)
 
 
+@mcp.tool(name="get_rule_history", description=tools.DESCRIPTIONS["get_rule_history"])
+async def get_rule_history(rule: str) -> dict:
+    return await run("get_rule_history", rule=rule)
+
+
 @mcp.tool(
     name="get_settings",
     description="The quality settings (search confidence, duplicate similarity, limits, chat model...) with ranges, and every gate rule including switched-off ones.",
@@ -166,7 +171,7 @@ async def get_settings() -> dict:
         "Propose a change to settings, gate rules or people's roles. These are important, so the change NEVER applies on its own: "
         "it is checked, shown with a diff, and waits in the approval queue for an approver (live in their web app). "
         "%s Returns the checked change; tell the user it is waiting as change #id. Only an approver can approve it."
-    ) % """Configuration operations (settings, rules, roles). Each is an object with an 'op': set_setting{key,value}, reset_setting{key}, update_rule{name,severity?('block'|'warn'),enabled?,params?,description?}, create_rule{name,type,params,severity?,enabled?,description?}, set_user_role{email,role('viewer'|'editor'|'approver')}. Call get_settings first for the keys, allowed ranges and current rules. Never mix these with table or data operations.""",
+    ) % """Configuration operations (settings, rules, roles). Each is an object with an 'op': set_setting{key,value}, reset_setting{key}, update_rule{name,severity?('block'|'warn'),enabled?,params?,description?}, create_rule{name,type,params,severity?,enabled?,description?}, rollback_rule{name,version} (restore an earlier version of a rule; see get_rule_history), set_user_role{email,role('viewer'|'editor'|'approver')}. Call get_settings first for the keys, allowed ranges and current rules. Never mix these with table or data operations.""",
 )
 async def propose_config_change(operations: list[dict], prompt: str = "") -> dict:
     return await run("propose_config_change", operations=operations, prompt=prompt)

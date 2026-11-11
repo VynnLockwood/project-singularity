@@ -34,10 +34,11 @@ SPECS = {
     "propose_sql": (D["propose_sql"],
                     {"sql": {"type": "string"}, "reason": {"type": "string", "description": "why, at least 10 characters"}, **SCHEMA},
                     ["sql", "reason"]),
+    "get_rule_history": (D["get_rule_history"], {"rule": {"type": "string"}}, ["rule"]),
     "get_settings": ("The quality settings with their ranges, and every gate rule including switched-off ones.", {}, []),
     "propose_config_change": (
         "Propose a change to settings, gate rules or roles. Important, so it always waits for an approver in the approval queue. "
-        "%s" % """Configuration operations (settings, rules, roles). Each is an object with an 'op': set_setting{key,value}, reset_setting{key}, update_rule{name,severity?('block'|'warn'),enabled?,params?,description?}, create_rule{name,type,params,severity?,enabled?,description?}, set_user_role{email,role('viewer'|'editor'|'approver')}. Call get_settings first for the keys, allowed ranges and current rules. Never mix these with table or data operations.""",
+        "%s" % """Configuration operations (settings, rules, roles). Each is an object with an 'op': set_setting{key,value}, reset_setting{key}, update_rule{name,severity?('block'|'warn'),enabled?,params?,description?}, create_rule{name,type,params,severity?,enabled?,description?}, rollback_rule{name,version} (restore an earlier version of a rule; see get_rule_history), set_user_role{email,role('viewer'|'editor'|'approver')}. Call get_settings first for the keys, allowed ranges and current rules. Never mix these with table or data operations.""",
         {"operations": {"type": "array", "items": {"type": "object"}},
          "prompt": {"type": "string", "description": "the user's request, in their words"}},
         ["operations"]),

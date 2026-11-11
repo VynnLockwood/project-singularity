@@ -21,7 +21,7 @@ from settings_app import services as rule_services
 from settings_app import tunables
 from settings_app.models import Rule, Setting
 
-CONFIG_OPS = frozenset({"set_setting", "reset_setting", "update_rule", "create_rule", "set_user_role"})
+CONFIG_OPS = frozenset({"set_setting", "reset_setting", "update_rule", "create_rule", "rollback_rule", "set_user_role"})
 MAX_OPS = 20
 RULE_FIELDS = ("severity", "enabled", "params", "description")
 
@@ -107,6 +107,25 @@ def _create_rule(res: Result, actor, op):
     res.reverse.append({"op": "update_rule", "name": rule.name, "enabled": False})  # rules are never deleted; undo = switch off
 
 
+def _rollback_rule(res: Result, actor, op):
+    rule = Rule.objects.filter(name=op.get("name")).first()
+    if rule is None:
+        res.errors.append(f"no rule named {op.get('name')!r}")
+        return
+    version = op.get("version")
+    if not isinstance(version, int) or isinstance(version, bool):
+        res.errors.append(f"rollback_rule {rule.name}: version must be a whole number (see get_rule_history)")
+        return
+    before_version = rule.version
+    try:
+        rule_services.rollback_rule(actor, rule, version)
+    except rule_services.RuleError as exc:
+        res.errors += [f"rule {rule.name}: {e}" for e in exc.errors]
+        return
+    res.diff.append(f"~ rule {rule.name}: rolled back to version {version}")
+    res.reverse.append({"op": "rollback_rule", "name": rule.name, "version": before_version})
+
+
 def _set_role(res: Result, actor, op):
     target = User.objects.filter(email__iexact=str(op.get("email", ""))).first()
     if target is None:
@@ -150,6 +169,8 @@ def run(ops, actor, *, dry_run: bool) -> Result:
                     _update_rule(res, actor, op)
                 elif kind == "create_rule":
                     _create_rule(res, actor, op)
+                elif kind == "rollback_rule":
+                    _rollback_rule(res, actor, op)
                 else:
                     _set_role(res, actor, op)
             if res.errors or dry_run:
