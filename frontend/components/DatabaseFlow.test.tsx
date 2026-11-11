@@ -104,6 +104,7 @@ describe("Database tab flow", () => {
     fireEvent.click(screen.getByLabelText("Show audit columns"));
     expect(screen.getByText("created_at")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Rename created_at" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "More actions for email" }));
     expect(screen.getByRole("button", { name: "Rename email" })).toBeInTheDocument();
 
     // Add field

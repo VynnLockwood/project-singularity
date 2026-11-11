@@ -6,3 +6,4 @@ export { EmptyState, Kbd, ProgressBar, Skeleton } from "./feedback";
 export { MAX_TOASTS, TOAST_MS, ToastProvider, useToast, type ToastApi, type ToastOpts } from "./Toast";
 export { Tray } from "./Tray";
 export { Palette } from "./Palette";
+export { Menu, type MenuItem } from "./Menu";

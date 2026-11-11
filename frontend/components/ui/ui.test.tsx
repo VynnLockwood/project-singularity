@@ -1,6 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { Badge, Button, EmptyState, Icon, Kbd, Panel, ProgressBar, Skeleton, statusMeta } from "@/components/ui";
+import { Badge, Button, EmptyState, Icon, Kbd, Menu, Panel, ProgressBar, Skeleton, statusMeta } from "@/components/ui";
+import { vi } from "vitest";
 
 describe("Icon", () => {
   it("is decorative unless it is given a label", () => {
@@ -74,5 +75,43 @@ describe("feedback parts", () => {
   it("Kbd renders a keyboard key", () => {
     const { container } = render(<Kbd>K</Kbd>);
     expect(container.querySelector("kbd")).toHaveTextContent("K");
+  });
+});
+
+describe("Menu", () => {
+  const items = (onSelect = () => {}) => [{ label: "Rename", ariaLabel: "Rename email", onSelect }, { label: "Drop", danger: true, onSelect: () => {} }];
+  it("renders no items while closed", () => {
+    render(<Menu label="More actions for email" items={items()} />);
+    expect(screen.getByRole("button", { name: "More actions for email" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: "Rename email" })).toBeNull();
+  });
+  it("opens on click", () => {
+    render(<Menu label="More" items={items()} />);
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.getByRole("button", { name: "More" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Rename email" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Drop" })).toHaveAttribute("data-danger", "true");
+  });
+  it("Escape closes it and returns focus to the trigger", () => {
+    render(<Menu label="More" items={items()} />);
+    const trigger = screen.getByRole("button", { name: "More" });
+    fireEvent.click(trigger);
+    fireEvent.keyDown(screen.getByRole("button", { name: "Rename email" }), { key: "Escape" });
+    expect(screen.queryByRole("button", { name: "Rename email" })).toBeNull();
+    expect(trigger).toHaveFocus();
+  });
+  it("a click outside closes it", () => {
+    render(<><Menu label="More" items={items()} /><p>elsewhere</p></>);
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    fireEvent.mouseDown(screen.getByText("elsewhere"));
+    expect(screen.queryByRole("button", { name: "Rename email" })).toBeNull();
+  });
+  it("choosing an item calls it once and closes", () => {
+    const onSelect = vi.fn();
+    render(<Menu label="More" items={items(onSelect)} />);
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("button", { name: "Rename email" }));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Rename email" })).toBeNull();
   });
 });
