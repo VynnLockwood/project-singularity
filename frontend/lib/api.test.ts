@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { exportUrl, getGraph, getOptions, getRows, getSchemas, getTable, listChanges, proposeChange, revertChange, searchSchema } from "./api";
+import { csvUrl, exportUrl, getGraph, getOptions, getRows, getSchemas, getTable, listChanges, proposeChange, revertChange, searchSchema } from "./api";
 
 describe("exportUrl", () => {
   it("builds the export link", () => {
@@ -90,5 +90,19 @@ describe("schema-aware calls", () => {
     await revertChange(7);
     expect(calls[0].url).toBe("/api/changes/7/revert");
     expect(calls[0].init?.method).toBe("POST");
+  });
+});
+
+describe("csvUrl", () => {
+  it("carries the view", () => {
+    const u = csvUrl("order header", "master", { sort: "name", dir: "desc", filters: { name: "a" }, inactive: true });
+    expect(u).toContain("order%20header/export.csv");
+    expect(u).toContain("sort=name");
+    expect(u).toContain("dir=desc");
+    expect(u).toContain("inactive=1");
+    expect(u).toContain("filters=%7B%22name%22%3A%22a%22%7D");
+  });
+  it("has only the schema for an empty view", () => {
+    expect(csvUrl("t", "master", { sort: null, dir: "asc", filters: {}, inactive: false })).toBe("/api/schema/tables/t/export.csv?schema=master");
   });
 });

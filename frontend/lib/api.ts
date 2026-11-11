@@ -1,3 +1,5 @@
+import type { DataView } from "./dataRoute";
+
 export type Role = "viewer" | "editor" | "approver";
 
 export interface Me {
@@ -22,6 +24,19 @@ export const googleLoginUrl = `${BASE}/auth/google/login`;
 /** Link for the SQL export; a plain href lets the browser stream the download. */
 export function exportUrl(schema: string, data: boolean): string {
   return `${BASE}/schema/export?schema=${encodeURIComponent(schema)}&data=${data ? 1 : 0}`;
+}
+
+/** Link for the CSV export of one table's filtered, sorted view; the view is the Data tab's address state. */
+export function csvUrl(table: string, schema: string, view: DataView): string {
+  const q = new URLSearchParams({ schema });
+  if (view.sort) {
+    q.set("sort", view.sort);
+    q.set("dir", view.dir);
+  }
+  const filters = Object.fromEntries(Object.entries(view.filters).filter(([, t]) => t !== ""));
+  if (Object.keys(filters).length) q.set("filters", JSON.stringify(filters));
+  if (view.inactive) q.set("inactive", "1");
+  return `${BASE}/schema/tables/${encodeURIComponent(table)}/export.csv?${q}`;
 }
 
 function csrfToken(): string {
