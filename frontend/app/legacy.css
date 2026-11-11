@@ -249,3 +249,6 @@ textarea.code { width: 100%; color: var(--text); }
 .data-view { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: var(--space-4); align-items: start; }
 .data-main { min-width: 0; }
 @media (max-width: 800px) { .data-view { grid-template-columns: minmax(0, 1fr); } }
+.db-rail-box > summary { cursor: pointer; font-size: var(--size-small); color: var(--text-faint); padding: var(--space-1) 0; }
+.db-rail-box[open] > summary { margin-bottom: var(--space-2); }
+.db-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }

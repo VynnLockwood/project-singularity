@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Me, SchemaGraph } from "@/lib/api";
 
@@ -12,7 +12,8 @@ type Api = { getTable: ReturnType<typeof vi.fn>; getSchemas: ReturnType<typeof v
 const viewer: Me = { ...editor, role: "viewer" };
 const aChange = { id: 9, status: "pending", kind: "schema", source: "web", requester: "e@x.io", prompt: "t", createdAt: "", decidedBy: null, error: "", decisionNote: "", tables: [], diff: ["+ x"], check: {} };
 
-async function setup(api: Partial<Api> = {}, refreshKey = 0, me: Me = editor) {
+async function setup(api: Partial<Api> = {}, refreshKey = 0, me: Me = editor, path = "/database") {
+  history.replaceState(null, "", path);
   vi.resetModules();
   const mocks: Api = {
     getSchemas: api.getSchemas ?? vi.fn().mockResolvedValue([{ name: "master", tables: 3, comment: null }, { name: "crm", tables: 0, comment: null }]),
@@ -24,13 +25,18 @@ async function setup(api: Partial<Api> = {}, refreshKey = 0, me: Me = editor) {
   vi.doMock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), ...mocks }));
   vi.doMock("./UniverseScene", () => ({ webglAvailable: () => false, UniverseScene: () => null }));
   const { DatabaseView } = await import("./DatabaseView");
+  const { useRoute } = await import("@/lib/useRoute");
   const props = { me, live: [], onProposed: () => {}, onAskAssistant: () => {} };
-  const r = render(<DatabaseView {...props} refreshKey={refreshKey} />);
-  return { mocks, rerender: (k: number) => r.rerender(<DatabaseView {...props} refreshKey={k} />) };
+  function Host({ k }: { k: number }) {
+    const [route, navigate] = useRoute();
+    return <DatabaseView {...props} route={route} navigate={navigate} refreshKey={k} />;
+  }
+  const r = render(<Host k={refreshKey} />);
+  return { mocks, rerender: (k: number) => r.rerender(<Host k={k} />) };
 }
 
 describe("DatabaseView", () => {
-  beforeEach(() => vi.resetModules());
+  beforeEach(() => { vi.resetModules(); history.replaceState(null, "", "/database"); });
 
   it("lists schemas with table counts and marks the selected one", async () => {
     await setup();
@@ -410,5 +416,79 @@ describe("DatabaseView", () => {
     expect(await screen.findByText("no renames today")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.getByLabelText("New name")).toHaveValue("clients");
+  });
+
+  describe("address", () => {
+    it("/database replaces itself with /database/master", async () => {
+      await setup();
+      await waitFor(() => expect(location.pathname).toBe("/database/master"));
+    });
+
+    it("starts at the database in the address", async () => {
+      const { mocks } = await setup({}, 0, editor, "/database/crm");
+      await waitFor(() => expect(mocks.getGraph).toHaveBeenCalledWith("crm"));
+      expect(screen.getByRole("button", { name: "crm (0)" })).toHaveAttribute("aria-current", "true");
+    });
+
+    it("an unknown database says so and never loads its graph", async () => {
+      const { mocks } = await setup({}, 0, editor, "/database/ghost");
+      expect(await screen.findByText("There is no database ghost.")).toBeInTheDocument();
+      expect(mocks.getGraph).not.toHaveBeenCalledWith("ghost");
+    });
+
+    it("an unknown table says so, keeps the list and never loads its detail", async () => {
+      const { mocks } = await setup({}, 0, editor, "/database/master/nope");
+      expect(await screen.findByText("There is no table nope in master.")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "customer" })).toBeInTheDocument();
+      expect(mocks.getTable).not.toHaveBeenCalled();
+    });
+
+    it("?tab=relations opens Relations, junk opens Fields", async () => {
+      await setup({}, 0, editor, "/database/master/customer?tab=relations");
+      await waitFor(() => expect(screen.getByRole("tab", { name: "Relations" })).toHaveAttribute("aria-selected", "true"));
+      cleanup();
+      await setup({}, 0, editor, "/database/master/customer?tab=bogus");
+      await waitFor(() => expect(screen.getByRole("tab", { name: "Fields" })).toHaveAttribute("aria-selected", "true"));
+    });
+
+    it("choosing a table navigates, choosing it again goes back to the database", async () => {
+      await setup();
+      fireEvent.click(await screen.findByRole("button", { name: "customer" }));
+      await waitFor(() => expect(location.pathname).toBe("/database/master/customer"));
+      expect(screen.getByRole("tab", { name: "Fields" })).toHaveAttribute("aria-selected", "true");
+      fireEvent.click(screen.getByRole("button", { name: "customer" }));
+      await waitFor(() => expect(location.pathname).toBe("/database/master"));
+    });
+
+    it("clicking a tab writes ?tab= without changing the path", async () => {
+      await setup({}, 0, editor, "/database/master/customer");
+      fireEvent.click(await screen.findByRole("tab", { name: "Relations" }));
+      expect(location.search).toBe("?tab=relations");
+      expect(location.pathname).toBe("/database/master/customer");
+    });
+
+    it("switching database keeps ?tab=erd only when the ERD was open", async () => {
+      await setup({}, 0, editor, "/database/master?tab=erd");
+      fireEvent.click(await screen.findByRole("button", { name: "crm (0)" }));
+      await waitFor(() => expect(location.pathname).toBe("/database/crm"));
+      expect(location.search).toBe("?tab=erd");
+      fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
+      fireEvent.click(screen.getByRole("button", { name: "master (3)" }));
+      await waitFor(() => expect(location.pathname).toBe("/database/master"));
+      expect(location.search).toBe("");
+    });
+
+    it("a selected table that vanishes after a reload falls back to the database", async () => {
+      const getGraph = vi.fn().mockResolvedValueOnce(master).mockResolvedValue({ tables: [tbl("customer")], relations: [] });
+      const { rerender } = await setup({ getGraph }, 0, editor, "/database/master/orders");
+      await screen.findByRole("tab", { name: "Fields" });
+      rerender(1);
+      await waitFor(() => expect(location.pathname).toBe("/database/master"));
+    });
+
+    it("the left pane is a disclosure", async () => {
+      await setup();
+      expect(screen.getByText("Databases and tables").closest("details")).not.toBeNull();
+    });
   });
 });

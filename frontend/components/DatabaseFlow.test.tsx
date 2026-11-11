@@ -31,12 +31,15 @@ async function setup(me: Me) {
   vi.doMock("./UniverseScene", () => ({ webglAvailable: () => false, UniverseScene: () => null }));
   const { DatabaseView } = await import("./DatabaseView");
   const { useState } = await import("react");
+  const { useRoute } = await import("@/lib/useRoute");
+  history.replaceState(null, "", "/database");
   function Host() {
     const [key, setKey] = useState(0);
+    const [route, navigate] = useRoute();
     return (
       <>
         <button onClick={() => setKey((k) => k + 1)}>applied</button>
-        <DatabaseView me={me} live={[]} refreshKey={key} onProposed={() => {}} onAskAssistant={() => {}} />
+        <DatabaseView me={me} live={[]} route={route} navigate={navigate} refreshKey={key} onProposed={() => {}} onAskAssistant={() => {}} />
       </>
     );
   }

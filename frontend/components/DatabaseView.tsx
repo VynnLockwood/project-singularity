@@ -2,6 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { getGraph, getSchemas, type Change, type Me, type SchemaGraph, type SchemaInfo } from "@/lib/api";
+import type { Route } from "@/lib/route";
+import type { Navigate } from "@/lib/useRoute";
+import { parseTab, tabToSearch, type DbTab } from "@/lib/databaseRoute";
 import { SchemaView } from "./SchemaView";
 import { NewDatabaseForm } from "./NewDatabaseForm";
 import { ProposeDialog } from "./ProposeDialog";
@@ -11,8 +14,10 @@ import { FieldsTab } from "./FieldsTab";
 import { RelationsTab } from "./RelationsTab";
 import { ExportMenu } from "./ExportMenu";
 import { OverviewTab } from "./OverviewTab";
+import { TableList } from "./TableList";
+import { Button } from "./ui";
 
-export type DbTab = "fields" | "relations" | "erd" | "overview";
+export type { DbTab };
 
 const TABS: { id: DbTab; label: string }[] = [
   { id: "fields", label: "Fields" },
@@ -21,29 +26,56 @@ const TABS: { id: DbTab; label: string }[] = [
   { id: "overview", label: "Overview" },
 ];
 
-export function DatabaseView({ me, live, refreshKey, onProposed, onAskAssistant }: {
-  me: Me; live: Change[]; refreshKey: number;
+type Panel = "new" | "rename" | "rename-review" | "drop" | "trename" | "trename-review" | "tdrop" | "newtable" | null;
+
+export function DatabaseView({ me, live, route, navigate, refreshKey, onProposed, onAskAssistant }: {
+  me: Me; live: Change[]; route: Route; navigate: Navigate; refreshKey: number;
   onProposed: (c: Change) => void; onAskAssistant: (text: string) => void;
 }) {
+  const addrSchema = route.view === "database" ? route.schema : undefined;
+  const addrTable = route.view === "database" ? route.table : undefined;
   const [schemas, setSchemas] = useState<SchemaInfo[] | null>(null);
   const [schemasError, setSchemasError] = useState("");
-  const [schema, setSchema] = useState("master");
-  const [graph, setGraph] = useState<SchemaGraph | null>(null);
-  const [graphError, setGraphError] = useState("");
-  const [table, setTable] = useState<string | null>(null);
-  const [tab, setTab] = useState<DbTab>("overview");
-  const [filter, setFilter] = useState("");
-  const [panel, setPanel] = useState<"new" | "rename" | "rename-review" | "drop" | "trename" | "trename-review" | "tdrop" | "newtable" | null>(null);
+  const [graphState, setGraphState] = useState<{ schema: string; graph: SchemaGraph } | null>(null);
+  const [graphFail, setGraphFail] = useState<{ schema: string; msg: string } | null>(null);
+  const [tabState, setTabState] = useState<{ key: string; tab: DbTab } | null>(null);
+  const [panel, setPanel] = useState<Panel>(null);
   const [newName, setNewName] = useState("");
   const [target, setTarget] = useState("");
   const seq = useRef(0);
-  const schemaRef = useRef(schema);
-  schemaRef.current = schema;
-  const panelRef = useRef<typeof panel>(null);
+  const panelRef = useRef<Panel>(null);
   panelRef.current = panel;
-  const tableRef = useRef(table);
-  tableRef.current = table;
+  const tableRef = useRef(addrTable);
+  tableRef.current = addrTable;
+  const schemaRef = useRef<string | null>(null);
   const created = useRef<{ name: string; id: number } | null>(null);
+  const lastSchema = useRef<string | null>(null);
+  const lastTable = useRef<string | null>(null);
+  const rail = useRef<HTMLDetailsElement>(null);
+
+  const first = schemas && schemas.length ? (schemas.some((x) => x.name === "master") ? "master" : schemas[0].name) : undefined;
+  const wanted = addrSchema ?? first; // /database means "the first database" before the address catches up
+  const known = !!wanted && !!schemas && schemas.some((x) => x.name === wanted);
+  const schema = known ? wanted! : null;
+  schemaRef.current = schema;
+  const graph = schema && graphState?.schema === schema ? graphState.graph : null;
+  const graphError = schema && graphFail?.schema === schema ? graphFail.msg : "";
+  const tableOk = !!(graph && addrTable && graph.tables.some((t) => t.name === addrTable));
+  const table = tableOk ? addrTable! : null;
+
+  const go = (name: string, tbl?: string, tab?: DbTab, replace?: boolean) => {
+    navigate({ view: "database", schema: name, ...(tbl ? { table: tbl } : {}) }, replace ? { replace: true } : undefined);
+    const q = tab ? tabToSearch(tab, !!tbl) : "";
+    if (q) history.replaceState(null, "", location.pathname + q);
+    setTabState({ key: `${name}/${tbl ?? ""}`, tab: tab ?? parseTab("", !!tbl) });
+  };
+
+  const key = `${schema ?? ""}/${table ?? ""}`;
+  const tab: DbTab = tabState?.key === key ? tabState.tab : parseTab(typeof location === "undefined" ? "" : location.search, !!table);
+  const chooseTab = (t: DbTab) => {
+    setTabState({ key, tab: t });
+    history.replaceState(null, "", location.pathname + tabToSearch(t, !!table));
+  };
 
   // A remembered create that was rejected/failed/went stale must not auto-select later.
   useEffect(() => {
@@ -53,17 +85,6 @@ export function DatabaseView({ me, live, refreshKey, onProposed, onAskAssistant 
     }
   }, [live]);
 
-  // One reset for every schema change (user pick, created, or the selected one vanished).
-  const resetTo = (name: string) => {
-    seq.current++;
-    setGraph(null);
-    setTable(null);
-    setTab((t) => (t === "erd" ? t : "overview"));
-    setFilter("");
-    setPanel((p) => (p === "new" || p === "rename-review" || p === "drop" ? p : null));
-    setSchema(name);
-  };
-
   useEffect(() => {
     let current = true;
     getSchemas()
@@ -71,51 +92,74 @@ export function DatabaseView({ me, live, refreshKey, onProposed, onAskAssistant 
         if (!current) return;
         setSchemas(list);
         setSchemasError("");
-        const has = (n: string) => list.some((x) => x.name === n);
-        if (created.current && has(created.current.name)) {
+        if (created.current && list.some((x) => x.name === created.current!.name)) {
           const n = created.current.name;
           created.current = null;
           // Only take over the view when the user is not in the middle of something else.
-          const idle = (panelRef.current === "new" || panelRef.current === null) && tableRef.current === null;
+          const idle = (panelRef.current === "new" || panelRef.current === null) && !tableRef.current;
           if (idle) {
             setPanel((p) => (p === "new" ? null : p));
-            if (n !== schemaRef.current) resetTo(n);
+            if (n !== schemaRef.current) go(n);
           }
-        } else if (!has(schemaRef.current)) {
-          resetTo("master");
         }
       })
       .catch(() => { if (current) setSchemasError("Could not load the databases."); });
     return () => { current = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
+  // The address names no database, or one that has gone: land on a real one.
   useEffect(() => {
-    const id = ++seq.current;
-    setGraphError("");
-    getGraph(schema)
-      .then((g) => { if (id === seq.current) setGraph(g); })
-      .catch(() => { if (id === seq.current) setGraphError("Could not load the tables."); });
-  }, [schema, refreshKey]);
+    if (!schemas || schemas.length === 0) return;
+    if (!addrSchema) go(first!, undefined, undefined, true);
+    else if (!known && lastSchema.current === addrSchema) go(first!, undefined, undefined, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [schemas, addrSchema, known]);
+  useEffect(() => { if (known) lastSchema.current = addrSchema!; }, [known, addrSchema]);
+
+  // Panels belong to the place they were opened in.
+  useEffect(() => {
+    setPanel((p) => (p === "new" || p === "rename-review" || p === "drop" ? p : null));
+  }, [schema]);
+  useEffect(() => {
+    setPanel((p) => (p === "trename" || p === "trename-review" || p === "tdrop" ? null : p));
+  }, [table]);
 
   useEffect(() => {
-    if (graph && table && !graph.tables.some((t) => t.name === table)) {
-      setTable(null);
-      setTab((t) => (t === "erd" ? t : "overview"));
-    }
-  }, [graph, table]);
+    if (!schema) return;
+    const id = ++seq.current;
+    setGraphFail(null);
+    getGraph(schema)
+      .then((g) => { if (id === seq.current) setGraphState({ schema, graph: g }); })
+      .catch(() => { if (id === seq.current) setGraphFail({ schema, msg: "Could not load the tables." }); });
+  }, [schema, refreshKey]);
+
+  // A table that was there and has gone: fall back to its database.
+  useEffect(() => {
+    if (!graph || !addrTable) return;
+    const here = `${schema}/${addrTable}`;
+    if (graph.tables.some((t) => t.name === addrTable)) lastTable.current = here;
+    else if (lastTable.current === here) go(schema!, undefined, undefined, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [graph, addrTable]);
+
+  const closeRail = () => {
+    if (typeof matchMedia === "function" && matchMedia("(max-width: 800px)").matches && rail.current) rail.current.open = false;
+  };
 
   const pickSchema = (name: string) => {
     if (name === schema) return;
     setPanel(null);
     created.current = null;
-    resetTo(name);
+    go(name, undefined, tab === "erd" ? "erd" : undefined);
+    closeRail();
   };
 
-  const pickTable = (name: string | null) => {
-    if (name) created.current = null;
-    setPanel((p) => (p === "trename" || p === "trename-review" || p === "tdrop" ? null : p));
-    setTable(name);
-    setTab(name ? "fields" : "overview");
+  const pickTable = (name: string) => {
+    created.current = null;
+    if (name === table) go(schema!);
+    else go(schema!, name, "fields");
+    closeRail();
   };
 
   const info = (schemas ?? []).find((x) => x.name === schema);
@@ -127,87 +171,97 @@ export function DatabaseView({ me, live, refreshKey, onProposed, onAskAssistant 
   const tableRenameError = newName === "" ? null : validateName(newName, (graph?.tables ?? []).map((t) => t.name));
   const closePanel = () => { setPanel(null); setNewName(""); };
 
-  const shown = (graph?.tables ?? []).filter((t) => t.name.toLowerCase().includes(filter.trim().toLowerCase()));
+  const noDatabase = !!schemas && !!addrSchema && !known && lastSchema.current !== addrSchema;
+  const noTable = !!graph && !!addrTable && !tableOk && lastTable.current !== `${schema}/${addrTable}`;
 
   return (
     <div className="db-layout">
       <nav className="db-rail" aria-label="Databases">
-        {schemasError && <p className="problems">{schemasError}</p>}
-        {schemas === null && !schemasError && <p className="muted">Loading…</p>}
-        <ul className="db-list">
-          {(schemas ?? []).map((s) => (
-            <li key={s.name}>
-              <button className="link" aria-current={s.name === schema ? "true" : undefined} onClick={() => pickSchema(s.name)}>
-                {`${s.name} (${s.tables})`}
-              </button>
-            </li>
-          ))}
-        </ul>
-        <div className="db-rail-actions">
-          {canWrite && schemas && panel !== "new" && (
-            <button className="button" onClick={() => { setNewName(""); setPanel("new"); }}>New database</button>
+        <details className="db-rail-box" open ref={rail}>
+          <summary>Databases and tables</summary>
+          {schemasError && <p className="problems">{schemasError}</p>}
+          {schemas === null && !schemasError && <p className="muted">Loading…</p>}
+          <ul className="db-list">
+            {(schemas ?? []).map((s) => (
+              <li key={s.name}>
+                <button className="link" aria-current={s.name === schema ? "true" : undefined} onClick={() => pickSchema(s.name)}>
+                  {`${s.name} (${s.tables})`}
+                </button>
+              </li>
+            ))}
+          </ul>
+          <div className="db-rail-actions">
+            {canWrite && schemas && panel !== "new" && (
+              <Button size="sm" icon="plus" onClick={() => { setNewName(""); setPanel("new"); }}>New database</Button>
+            )}
+            {canWrite && schemas && panel === "new" && (
+              <NewDatabaseForm
+                me={me}
+                existing={taken}
+                onClose={closePanel}
+                onProposed={(c, name) => {
+                  created.current = c.status === "rejected" || c.status === "failed" || c.status === "stale"
+                    ? null : { name, id: c.id };
+                  onProposed(c);
+                }}
+              />
+            )}
+          </div>
+          <h3>Tables</h3>
+          {canWrite && graph && panel !== "newtable" && (
+            <Button size="sm" icon="plus" onClick={() => { created.current = null; setPanel("newtable"); }}>New table</Button>
           )}
-          {canWrite && schemas && panel === "new" && (
-            <NewDatabaseForm
+          {canWrite && graph && schema && panel === "newtable" && (
+            <NewTableForm
+              key={schema}
               me={me}
-              existing={taken}
+              schema={schema}
+              tables={graph.tables}
               onClose={closePanel}
-              onProposed={(c, name) => {
-                created.current = c.status === "rejected" || c.status === "failed" || c.status === "stale"
-                  ? null : { name, id: c.id };
-                onProposed(c);
-              }}
+              onProposed={(c) => onProposed(c)}
             />
           )}
-        </div>
-        <h3>Tables</h3>
-        {canWrite && graph && panel !== "newtable" && (
-          <button className="button" onClick={() => { created.current = null; setPanel("newtable"); }}>New table</button>
-        )}
-        {canWrite && graph && panel === "newtable" && (
-          <NewTableForm
-            key={schema}
-            me={me}
-            schema={schema}
-            tables={graph.tables}
-            onClose={closePanel}
-            onProposed={(c) => onProposed(c)}
-          />
-        )}
-        <input aria-label="Filter tables" placeholder="Filter tables" value={filter} onChange={(e) => setFilter(e.target.value)} />
-        {graphError ? <p className="problems">{graphError}</p>
-          : !graph ? <p className="muted">Loading…</p>
-          : graph.tables.length === 0 ? <p className="muted">No tables yet.</p>
-          : shown.length === 0 ? <p className="muted">No matching tables.</p>
-          : (
-            <ul className="db-list" aria-label="Tables">
-              {shown.map((t) => (
-                <li key={t.name}>
-                  <button className="link" aria-current={t.name === table ? "true" : undefined} onClick={() => pickTable(t.name === table ? null : t.name)}>{t.name}</button>
-                </li>
-              ))}
-            </ul>
-          )}
+          {graphError ? <p className="problems">{graphError}</p>
+            : !graph ? <p className="muted">{schema ? "Loading…" : ""}</p>
+            : (
+              <TableList
+                key={`list-${schema}`}
+                tables={graph.tables}
+                selected={table ?? ""}
+                onSelect={pickTable}
+                searchLabel="Filter tables"
+                emptyText="No tables yet."
+                noMatchText="No matching tables."
+                estimates={false}
+                listLabel="Tables"
+              />
+            )}
+        </details>
       </nav>
       <section className="db-main">
+        {noDatabase && <p className="muted">There is no database {addrSchema}.</p>}
+        {!noDatabase && !schema && <p className="muted">Loading…</p>}
+        {schema && (
+          <>
         <div className="grid-bar">
           <h2>{schema}{table ? <> / {table}</> : null}</h2>
-          <div>
+          <div className="db-actions">
             {canManage && (
               <>
-                <button className="link" onClick={() => { created.current = null; setNewName(""); setTarget(schema); setPanel("rename"); }}>Rename</button>{" "}
-                <button
-                  className="link"
+                <Button size="sm" onClick={() => { created.current = null; setNewName(""); setTarget(schema); setPanel("rename"); }}>Rename</Button>
+                <Button
+                  size="sm"
+                  variant="danger"
                   disabled={hasTables}
                   title={hasTables ? "Only empty databases can be deleted" : undefined}
                   onClick={() => { created.current = null; setTarget(schema); setPanel("drop"); }}
-                >Delete</button>{" "}
+                >Delete</Button>
               </>
             )}
             {canWrite && table && (
               <>
-                <button className="link" onClick={() => { created.current = null; setNewName(""); setPanel("trename"); }}>Rename table</button>{" "}
-                <button className="link" onClick={() => { created.current = null; setPanel("tdrop"); }}>Drop table</button>{" "}
+                <Button size="sm" onClick={() => { created.current = null; setNewName(""); setPanel("trename"); }}>Rename table</Button>
+                <Button size="sm" variant="danger" onClick={() => { created.current = null; setPanel("tdrop"); }}>Drop table</Button>
               </>
             )}
             <ExportMenu schema={schema} canExportData={me.role !== "viewer"} />
@@ -267,9 +321,10 @@ export function DatabaseView({ me, live, refreshKey, onProposed, onAskAssistant 
         )}
         <div className="db-tabs" role="tablist" aria-label="Database sections">
           {TABS.map((t) => (
-            <button key={t.id} role="tab" className="tab" aria-selected={tab === t.id} data-active={tab === t.id} onClick={() => setTab(t.id)}>{t.label}</button>
+            <button key={t.id} role="tab" className="tab" aria-selected={tab === t.id} data-active={tab === t.id} onClick={() => chooseTab(t.id)}>{t.label}</button>
           ))}
         </div>
+        {noTable && <p className="muted">There is no table {addrTable} in {schema}.</p>}
         {tab === "fields" && (table
           ? <FieldsTab key={`${schema}/${table}`} me={me} schema={schema} table={table} refreshKey={refreshKey} onProposed={onProposed} />
           : <p className="muted">Select a table to see its fields.</p>)}
@@ -278,6 +333,8 @@ export function DatabaseView({ me, live, refreshKey, onProposed, onAskAssistant 
           : <p className="muted">Select a table to see its relations.</p>)}
         {tab === "overview" && <OverviewTab me={me} schema={schema} comment={info?.comment} graph={graph} onAskAssistant={onAskAssistant} />}
         {tab === "erd" && <SchemaView schema={schema} refreshKey={refreshKey} />}
+          </>
+        )}
       </section>
     </div>
   );

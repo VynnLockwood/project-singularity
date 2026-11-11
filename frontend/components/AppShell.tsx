@@ -103,7 +103,7 @@ function Shell({ me, onLogout }: Props) {
             <ChatView me={me} live={live} onDecide={changes.decide} busy={busy} draft={draft} onDraftUsed={() => setDraft("")} />
           )}
           {view === "database" && (
-            <DatabaseView me={me} live={live} refreshKey={schemaKey} onProposed={onProposed}
+            <DatabaseView me={me} live={live} route={route} navigate={navigate} refreshKey={schemaKey} onProposed={onProposed}
               onAskAssistant={(t) => { setDraft(t); navigate({ view: "chat" }); }} />
           )}
           {view === "data" && <DataView me={me} live={live} route={route} navigate={navigate} refreshKey={schemaKey} onProposed={onProposed} />}
