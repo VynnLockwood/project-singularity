@@ -148,6 +148,46 @@ def options(table: str, *, q: str = "", limit: int = 100, schema: str = "master"
     }
 
 
+_ORDERABLE = ("text", "character", "smallint", "integer", "bigint", "numeric", "real", "double precision",
+              "date", "time", "timestamp")
+TOP_VALUES = 10
+VALUE_CUT = 80
+
+
+def profile(table: str, column: str, *, schema: str = "master") -> dict:
+    """What is in one column: counts, range for orderable types and the most common values.
+
+    Table and column are checked against the real table first, then only ever used as identifiers.
+    Counts only active rows when the table has an is_active role column.
+    """
+    d = _describe(table, schema)
+    cols = {c["name"]: c for c in d["columns"]}
+    if not isinstance(column, str) or column not in cols:
+        raise RowsError(f"unknown column {column!r}")
+    kind = cols[column]["type"].lower()
+    role_cols = roles.roles_of(d, roles.conventions())
+    t, col = sql.Identifier(schema, table), sql.Identifier(column)
+    active = role_cols.get("is_active")
+    where = sql.SQL(" WHERE {} IS DISTINCT FROM false").format(sql.Identifier(active)) if active else sql.SQL("")
+    orderable = kind.startswith(_ORDERABLE) and not kind.endswith("]")
+    distinct_of = sql.SQL("{}::text").format(col) if kind == "json" else col     # json has no equality operator
+    head = _run(sql.SQL("SELECT count(*) AS total, count({c}) AS non_null, count(DISTINCT {dc}) AS distinct_count, "
+                        "{lo} AS lo, {hi} AS hi FROM {t}{w}").format(
+        c=col, dc=distinct_of, t=t, w=where,
+        lo=sql.SQL("min({})").format(col) if orderable else sql.SQL("NULL"),
+        hi=sql.SQL("max({})").format(col) if orderable else sql.SQL("NULL")))[0]
+    present = sql.SQL("{} IS NOT NULL").format(col)
+    top_where = (where + sql.SQL(" AND ") + present) if active else (sql.SQL(" WHERE ") + present)
+    top = _run(sql.SQL("SELECT left(v, {cut}) AS value, count(*) AS n FROM (SELECT {c}::text AS v FROM {t}{w}) x "
+                       "GROUP BY v ORDER BY count(*) DESC, v LIMIT {n}").format(
+        cut=sql.Literal(VALUE_CUT), c=col, t=t, w=top_where, n=sql.Literal(TOP_VALUES)))
+    return {
+        "total": int(head["total"]), "null_count": int(head["total"]) - int(head["non_null"]),
+        "distinct_count": int(head["distinct_count"]), "min": jsonable(head["lo"]), "max": jsonable(head["hi"]),
+        "top_values": [{"value": r["value"], "count": int(r["n"])} for r in top],
+    }
+
+
 _FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
 CSV_BATCH = 1000
 

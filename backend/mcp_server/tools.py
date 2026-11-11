@@ -44,6 +44,8 @@ TOOL_ROLES = {
     "merge_duplicates": "editor",
     "dismiss_duplicate": "editor",
     "reopen_duplicate": "editor",
+    "profile_column": "viewer",
+    "lookup_options": "viewer",
     "create_backup": "approver",
     "list_backups": "approver",
     "revert_change": "approver",
@@ -152,6 +154,15 @@ DESCRIPTIONS = {
         "To undo a rule change, call propose_config_change with {\"op\":\"rollback_rule\",\"name\":<rule>,\"version\":<n>}."
     ),
     "dismiss_duplicate": "Mark a group as not duplicates, so a scan does not bring it back.",
+    "profile_column": (
+        "What is in one column: total rows (active only), null count, distinct count, min and max (for numbers, text, dates), "
+        "and the 10 most common values with counts (cut at 80 characters). Look before you add a constraint, a type change or a "
+        "reference, so the data you are about to constrain does not surprise the change."
+    ),
+    "lookup_options": (
+        "id and label pairs of a table you want to reference, optionally filtered by text in the label (q, default all, "
+        "limit default 100). Use it to find the id to write into a foreign key column instead of guessing."
+    ),
     "create_backup": (
         "Take a backup (pg_dump, custom format) of one database (schema, default master) into the server's backup folder. "
         "Minimum role: approver. It blocks until pg_dump finishes (up to 10 minutes for a big database). Old backups are "
@@ -345,6 +356,34 @@ def read_rows(user, table: str, schema: str = "master", offset: int = 0, limit: 
         hint = " Call describe_table to see the columns." if "unknown column" in str(exc) else ""
         raise ToolFailure(f"{exc}.{hint}") from exc
     return {**out, "truncated": out["offset"] + len(out["rows"]) < out["total"]}
+
+
+def _read_failure(exc, table: str, schema: str):
+    if isinstance(exc, introspect.UnknownSchema):
+        return ToolFailure(f"{exc} Call list_schemas to see the databases.")
+    if exc.status == 404:
+        return ToolFailure(f"table {table!r} does not exist in {schema!r}. Call list_tables to see what exists.")
+    hint = " Call describe_table to see the columns." if "unknown column" in str(exc) else ""
+    return ToolFailure(f"{exc}.{hint}")
+
+
+def profile_column(user, table: str, column: str, schema: str = "master") -> dict:
+    from schema import rows as rows_mod
+
+    try:
+        return rows_mod.profile(table, column, schema=schema)
+    except (introspect.UnknownSchema, rows_mod.RowsError) as exc:
+        raise _read_failure(exc, table, schema) from exc
+
+
+def lookup_options(user, table: str, q: str = "", limit: int | None = None, schema: str = "master") -> dict:
+    from schema import rows as rows_mod
+
+    try:
+        out = rows_mod.options(table, q=q if isinstance(q, str) else "", limit=clamp(limit, 100, rows_mod.MAX_PAGE), schema=schema)
+    except (introspect.UnknownSchema, rows_mod.RowsError) as exc:
+        raise _read_failure(exc, table, schema) from exc
+    return {"label_column": out["labelColumn"], "truncated": out["truncated"], "options": out["options"]}
 
 
 def reindex_search(user, rebuild: bool = False) -> dict:
@@ -788,6 +827,8 @@ IMPL = {
     "merge_duplicates": merge_duplicates,
     "dismiss_duplicate": dismiss_duplicate,
     "reopen_duplicate": reopen_duplicate,
+    "profile_column": profile_column,
+    "lookup_options": lookup_options,
     "create_backup": create_backup,
     "list_backups": list_backups,
     "revert_change": revert_change,

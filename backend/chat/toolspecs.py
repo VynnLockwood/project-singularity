@@ -95,6 +95,8 @@ SPECS = {
                          {"group_id": {"type": "integer"}, "survivor_id": {"type": "integer", "description": "the record to keep"}},
                          ["group_id", "survivor_id"]),
     "dismiss_duplicate": (D["dismiss_duplicate"], {"group_id": {"type": "integer"}}, ["group_id"]),
+    "profile_column": (D["profile_column"], {**SCHEMA, "table": {"type": "string"}, "column": {"type": "string"}}, ["table", "column"]),
+    "lookup_options": (D["lookup_options"], {**SCHEMA, "table": {"type": "string"}, "q": {"type": "string"}, "limit": {"type": "integer"}}, ["table"]),
     "create_backup": (D["create_backup"], {**SCHEMA, "label": {"type": "string", "description": "letters, digits, dots, dashes and underscores; default manual"}}, []),
     "list_backups": (D["list_backups"], {"schema": {"type": "string"}}, []),
     "reopen_duplicate": (D["reopen_duplicate"], {"group_id": {"type": "integer"}}, ["group_id"]),

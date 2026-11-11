@@ -31,7 +31,7 @@ current_user: ContextVar = ContextVar("current_user", default=None)
 
 INSTRUCTIONS = """\
 Singularity manages master-data PostgreSQL databases (each "database" is a Postgres schema; master is the default).
-Start with get_rules (it has an example of every newer operation) and list_schemas. Find things with list_tables, describe_table, search_schema, read_rows
+Start with get_rules (it has an example of every newer operation) and list_schemas. Find things with list_tables, describe_table, search_schema, read_rows, profile_column (what a column holds), lookup_options (ids to reference)
 (one table, paged) and query (one read-only SELECT).
 Prefer propose_change with structured operations. Use propose_sql only when no operation fits (functions,
 triggers, grants, bulk updates); say why in 'reason'. Raw SQL skips the rules, cannot be undone and is approved
@@ -324,6 +324,16 @@ async def merge_duplicates(group_id: int, survivor_id: int) -> dict:
 @mcp.tool(name="dismiss_duplicate", description=tools.DESCRIPTIONS["dismiss_duplicate"])
 async def dismiss_duplicate(group_id: int) -> dict:
     return await run("dismiss_duplicate", group_id=group_id)
+
+
+@mcp.tool(name="profile_column", description=tools.DESCRIPTIONS["profile_column"])
+async def profile_column(table: str, column: str, schema: str = "master") -> dict:
+    return await run("profile_column", table=table, column=column, schema=schema)
+
+
+@mcp.tool(name="lookup_options", description=tools.DESCRIPTIONS["lookup_options"])
+async def lookup_options(table: str, q: str = "", limit: int | None = None, schema: str = "master") -> dict:
+    return await run("lookup_options", table=table, q=q, limit=limit, schema=schema)
 
 
 @mcp.tool(name="create_backup", description=tools.DESCRIPTIONS["create_backup"])
