@@ -70,4 +70,4 @@ Streaming; markdown in the user's own messages; syntax highlighting (language la
 
 - `react-markdown` is a new dependency: pinned to a major version; its output is the only place model text becomes elements, so the no-raw-HTML test is the guard.
 - History can be long on an old install: the 50-row cap and Show more bound the work; the endpoint is already indexed by creation order.
-- Revert is destructive by nature: the button reuses the confirmation the review tray already uses for decisions, and the server remains the authority on what can be reverted.
+- Revert is destructive by nature: the button asks for confirmation before it sends, and the server remains the authority on what can be reverted.
