@@ -32,7 +32,7 @@ const graph: SchemaGraph = {
   ],
 };
 
-async function setup(opts: { me?: Me; getTable?: ReturnType<typeof vi.fn>; graph?: SchemaGraph | null; proposeChange?: ReturnType<typeof vi.fn> } = {}) {
+async function setup(opts: { me?: Me; getTable?: ReturnType<typeof vi.fn>; graph?: SchemaGraph | null; onOpenTable?: ReturnType<typeof vi.fn>; proposeChange?: ReturnType<typeof vi.fn> } = {}) {
   vi.resetModules();
   const mocks = {
     getTable: opts.getTable ?? vi.fn().mockResolvedValue(detail),
@@ -41,12 +41,13 @@ async function setup(opts: { me?: Me; getTable?: ReturnType<typeof vi.fn>; graph
   vi.doMock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), ...mocks }));
   const { RelationsTab } = await import("./RelationsTab");
   const onProposed = vi.fn();
+  const onOpenTable = opts.onOpenTable ?? vi.fn();
   const el = (o: { schema?: string; table?: string; refreshKey?: number }) => (
     <RelationsTab me={opts.me ?? editor} schema={o.schema ?? "master"} table={o.table ?? "order"}
-      graph={opts.graph === undefined ? graph : opts.graph} refreshKey={o.refreshKey ?? 0} onProposed={onProposed} />
+      graph={opts.graph === undefined ? graph : opts.graph} refreshKey={o.refreshKey ?? 0} onProposed={onProposed} onOpenTable={onOpenTable} />
   );
   const r = render(el({}));
-  return { mocks, onProposed, rerender: (o: { schema?: string; table?: string; refreshKey?: number }) => r.rerender(el(o)) };
+  return { mocks, onProposed, onOpenTable, rerender: (o: { schema?: string; table?: string; refreshKey?: number }) => r.rerender(el(o)) };
 }
 const propose = async (mocks: { proposeChange: ReturnType<typeof vi.fn> }) => {
   fireEvent.click(screen.getByRole("button", { name: "Propose" }));
@@ -60,8 +61,8 @@ describe("RelationsTab", () => {
 
   it("lists both directions, constraints and indexes", async () => {
     await setup();
-    expect(await screen.findByText("customer_id → customer.id")).toBeInTheDocument();
-    expect(screen.getByText("line.order_id → id")).toBeInTheDocument();
+    expect(await screen.findByText("order.customer_id → customer.id")).toBeInTheDocument();
+    expect(screen.getByText("line.order_id → order.id")).toBeInTheDocument();
     expect(screen.getByText("order_note_key")).toBeInTheDocument();
     expect(screen.getByText("primary key")).toBeInTheDocument();
     expect(screen.getByText("order_note_idx")).toBeInTheDocument();
@@ -82,7 +83,7 @@ describe("RelationsTab", () => {
   it("viewers see no write buttons", async () => {
     await setup({ me: viewer });
     await screen.findByText("order_note_key");
-    expect(screen.queryByRole("button")).toBeNull();
+    for (const n of [/add index/i, /add unique/i, /add foreign key/i, /^drop/i]) expect(screen.queryByRole("button", { name: n })).toBeNull();
   });
 
   it("sends add_index with columns and unique, hiding audit columns", async () => {
@@ -217,5 +218,42 @@ describe("RelationsTab", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.getByLabelText("note")).toBeChecked();
+  });
+
+  it("Points to and Referenced by are separate panels", async () => {
+    await setup();
+    await screen.findByText("order.customer_id → customer.id");
+    const panel = (title: string) => screen.getByRole("heading", { name: title }).closest(".ui-panel") as HTMLElement;
+    expect(within(panel("Points to")).getByText("order.customer_id → customer.id")).toBeInTheDocument();
+    expect(within(panel("Referenced by")).getByText("line.order_id → order.id")).toBeInTheDocument();
+    expect(panel("Indexes and constraints")).toBeInTheDocument();
+  });
+
+  it("each relation opens the other table", async () => {
+    const { onOpenTable } = await setup();
+    fireEvent.click(await screen.findByRole("button", { name: "Open customer" }));
+    expect(onOpenTable).toHaveBeenLastCalledWith("customer");
+    fireEvent.click(screen.getByRole("button", { name: "Open line" }));
+    expect(onOpenTable).toHaveBeenLastCalledWith("line");
+  });
+
+  it("a self-reference opens its own table", async () => {
+    const self: SchemaGraph = { tables: graph.tables, relations: [{ from: { table: "order", column: "parent_id" }, to: { table: "order", column: "id" } }] };
+    const { onOpenTable } = await setup({ graph: self });
+    fireEvent.click((await screen.findAllByRole("button", { name: "Open order" }))[0]);
+    expect(onOpenTable).toHaveBeenCalledWith("order");
+  });
+
+  it("constraint kinds are badges", async () => {
+    await setup();
+    await screen.findByText("order_note_key");
+    for (const k of ["primary key", "unique", "foreign key"]) expect(screen.getByText(k).closest("[data-kind]")).not.toBeNull();
+  });
+
+  it("empty panels say so", async () => {
+    await setup({ getTable: vi.fn().mockResolvedValue({ ...detail, constraints: [], indexes: [] }), graph: { tables: graph.tables, relations: [] } });
+    expect((await screen.findAllByText("Nothing.")).length).toBe(2);
+    expect(screen.getByText("No constraints.")).toBeInTheDocument();
+    expect(screen.getByText("No indexes.")).toBeInTheDocument();
   });
 });

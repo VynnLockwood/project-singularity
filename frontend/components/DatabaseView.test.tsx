@@ -310,9 +310,11 @@ describe("DatabaseView", () => {
     const { mocks } = await setup({ getGraph: vi.fn().mockResolvedValue(g) });
     fireEvent.click(await screen.findByRole("button", { name: "customer" }));
     fireEvent.click(screen.getByRole("tab", { name: "Relations" }));
-    expect(await screen.findByText("region_id → item.id")).toBeInTheDocument();
-    expect(screen.getByText("orders.customer_id → id")).toBeInTheDocument();
+    expect(await screen.findByText("customer.region_id → item.id")).toBeInTheDocument();
+    expect(screen.getByText("orders.customer_id → customer.id")).toBeInTheDocument();
     expect(mocks.getTable).toHaveBeenCalledWith("customer", "master");
+    fireEvent.click(screen.getByRole("button", { name: "Open item" }));
+    await waitFor(() => expect(location.pathname).toBe("/database/master/item"));
   });
 
   it("Overview mounts the search scoped to the selected database", async () => {

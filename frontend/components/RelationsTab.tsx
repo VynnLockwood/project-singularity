@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { getTable, type Change, type Me, type Operation, type SchemaGraph, type TableDetail } from "@/lib/api";
 import { addForeignKeyOp, addIndexOp, addUniqueOp, dropConstraintOp, dropIndexOp } from "@/lib/databaseOps";
 import { ProposeDialog } from "./ProposeDialog";
+import { Button, Panel } from "./ui";
 
 const ON_DELETE = ["restrict", "cascade", "set null", "no action"];
 const KIND_LABEL: Record<string, string> = {
@@ -14,8 +15,9 @@ type Form = "index" | "unique" | "fk";
 /** What the review step shows. Captured when the form is submitted, so later edits or reloads cannot change it. */
 interface Review { title: string; destructive?: boolean; build: (reason: string) => Operation[] }
 
-export function RelationsTab({ me, schema, table, graph, refreshKey, onProposed }: {
+export function RelationsTab({ me, schema, table, graph, refreshKey, onProposed, onOpenTable }: {
   me: Me; schema: string; table: string; graph: SchemaGraph | null; refreshKey: number; onProposed: (c: Change) => void;
+  onOpenTable: (name: string) => void;
 }) {
   const [detail, setDetail] = useState<TableDetail | null>(null);
   const [error, setError] = useState("");
@@ -86,70 +88,88 @@ export function RelationsTab({ me, schema, table, graph, refreshKey, onProposed 
   const constraintNames = new Set(detail.constraints.map((k) => k.name));
   const none = detail.constraints.length === 0 && detail.indexes.length === 0 && pointsTo.length === 0 && referencedBy.length === 0;
 
+  const kindBadge = (kind: string) => <span className="fields-badge" data-kind={kind}>{KIND_LABEL[kind] ?? kind}</span>;
   return (
-    <div>
+    <div className="relations-tab">
       {canWrite && (
         <div className="grid-bar">
-          <button className="button" onClick={() => openForm("index")}>Add index</button>
-          <button className="button" onClick={() => openForm("unique")}>Add unique</button>
-          <button className="button" onClick={() => openForm("fk")}>Add foreign key</button>
+          <Button size="sm" icon="plus" onClick={() => openForm("index")}>Add index</Button>
+          <Button size="sm" icon="plus" onClick={() => openForm("unique")}>Add unique</Button>
+          <Button size="sm" icon="plus" onClick={() => openForm("fk")}>Add foreign key</Button>
         </div>
       )}
       {none && <p className="muted">No relations, constraints or indexes.</p>}
-      <h3>Points to</h3>
-      {!graph ? <p className="muted">Loading…</p> : pointsTo.length === 0 ? <p className="muted">Nothing.</p> : (
-        <ul>{pointsTo.map((r, i) => <li key={i}>{r.from.column} → {r.to.table}.{r.to.column}</li>)}</ul>
-      )}
-      <h3>Referenced by</h3>
-      {!graph ? <p className="muted">Loading…</p> : referencedBy.length === 0 ? <p className="muted">Nothing.</p> : (
-        <ul>{referencedBy.map((r, i) => <li key={i}>{r.from.table}.{r.from.column} → {r.to.column}</li>)}</ul>
-      )}
-      <h3>Constraints</h3>
-      {detail.constraints.length === 0 ? <p className="muted">No constraints.</p> : (
-        <div className="schema-scroll">
-          <table>
-            <thead><tr><th>Name</th><th>Kind</th><th>Definition</th>{canWrite && <th>Actions</th>}</tr></thead>
-            <tbody>
-              {detail.constraints.map((k) => (
-                <tr key={k.name}>
-                  <td>{k.name}</td><td>{KIND_LABEL[k.kind] ?? k.kind}</td><td>{k.definition}</td>
-                  {canWrite && (
-                    <td>
-                      {k.kind !== "primary_key" && (
-                        <button className="link" aria-label={`Drop constraint ${k.name}`} onClick={() => { setForm(null); dropConstraint(k.name); }}>Drop</button>
-                      )}
-                    </td>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      <h3>Indexes</h3>
-      {detail.indexes.length === 0 ? <p className="muted">No indexes.</p> : (
-        <div className="schema-scroll">
-          <table>
-            <thead><tr><th>Name</th><th>Definition</th>{canWrite && <th>Actions</th>}</tr></thead>
-            <tbody>
-              {detail.indexes.map((x) => (
-                <tr key={x.name}>
-                  <td>{x.name}</td><td>{x.definition}</td>
-                  {canWrite && (
-                    <td>
-                      {/* An index that backs a constraint goes away with that constraint, not on its own. */}
-                      {!constraintNames.has(x.name) && (
-                        <button className="link" aria-label={`Drop index ${x.name}`} onClick={() => { setForm(null); dropIndex(x.name); }}>Drop</button>
-                      )}
-                    </td>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <Panel title="Points to">
+        {!graph ? <p className="muted">Loading…</p> : pointsTo.length === 0 ? <p className="muted">Nothing.</p> : (
+          <ul className="relation-list">
+            {pointsTo.map((r, i) => (
+              <li key={i}>
+                <span>{r.from.table}.{r.from.column} → {r.to.table}.{r.to.column}</span>
+                <Button size="sm" variant="ghost" icon="external" onClick={() => onOpenTable(r.to.table)}>Open {r.to.table}</Button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
+      <Panel title="Referenced by">
+        {!graph ? <p className="muted">Loading…</p> : referencedBy.length === 0 ? <p className="muted">Nothing.</p> : (
+          <ul className="relation-list">
+            {referencedBy.map((r, i) => (
+              <li key={i}>
+                <span>{r.from.table}.{r.from.column} → {r.to.table}.{r.to.column}</span>
+                <Button size="sm" variant="ghost" icon="external" onClick={() => onOpenTable(r.from.table)}>Open {r.from.table}</Button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
+      <Panel title="Indexes and constraints">
+        {detail.constraints.length === 0 ? <p className="muted">No constraints.</p> : (
+          <div className="schema-scroll">
+            <table>
+              <thead><tr><th>Name</th><th>Kind</th><th>Definition</th>{canWrite && <th><span className="visually-hidden">Actions</span></th>}</tr></thead>
+              <tbody>
+                {detail.constraints.map((k) => (
+                  <tr key={k.name}>
+                    <td>{k.name}</td><td>{kindBadge(k.kind)}</td><td><code>{k.definition}</code></td>
+                    {canWrite && (
+                      <td>
+                        {k.kind !== "primary_key" && (
+                          <Button size="sm" variant="danger" aria-label={`Drop constraint ${k.name}`} onClick={() => { setForm(null); dropConstraint(k.name); }}>Drop</Button>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {detail.indexes.length === 0 ? <p className="muted">No indexes.</p> : (
+          <div className="schema-scroll">
+            <table>
+              <thead><tr><th>Name</th><th>Definition</th>{canWrite && <th><span className="visually-hidden">Actions</span></th>}</tr></thead>
+              <tbody>
+                {detail.indexes.map((x) => (
+                  <tr key={x.name}>
+                    <td>{x.name}</td><td><code>{x.definition}</code></td>
+                    {canWrite && (
+                      <td>
+                        {/* An index that backs a constraint goes away with that constraint, not on its own. */}
+                        {!constraintNames.has(x.name) && (
+                          <Button size="sm" variant="danger" aria-label={`Drop index ${x.name}`} onClick={() => { setForm(null); dropIndex(x.name); }}>Drop</Button>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
       {canWrite && form && !review && (
+        <Panel title={form === "index" ? "Add index" : form === "unique" ? "Add unique constraint" : "Add foreign key"}>
         <form className="db-inline-form" onSubmit={(e) => { e.preventDefault(); submit(); }}>
           {form === "fk" ? (
             <>
@@ -198,10 +218,11 @@ export function RelationsTab({ me, schema, table, graph, refreshKey, onProposed 
             </>
           )}
           <div>
-            <button type="submit" className="button" disabled={!canReview}>Review</button>{" "}
-            <button type="button" className="link" onClick={close}>Cancel</button>
+            <Button type="submit" variant="primary" size="sm" disabled={!canReview}>Review</Button>{" "}
+            <Button type="button" variant="ghost" size="sm" onClick={close}>Cancel</Button>
           </div>
         </form>
+        </Panel>
       )}
       {canWrite && review && (
         <ProposeDialog
