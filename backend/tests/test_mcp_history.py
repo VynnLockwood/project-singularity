@@ -97,7 +97,7 @@ def test_rest_changes_and_audit_still_work():
     got = c.get("/api/changes?status=applied&mine=1").json()
     assert [x["id"] for x in got["changes"]] == [a.pk]
     assert len(c.get("/api/changes").json()["changes"]) == 3
-    assert c.get("/api/changes?schema=nope").json() == {"changes": []}
+    assert c.get("/api/changes?schema=nope").json() == {"changes": [], "more": False}
     entries = c.get("/api/audit?action=x.y").json()["entries"]
     assert [e["action"] for e in entries] == ["x.y"] and set(entries[0]) == {"id", "at", "actor", "action", "target", "details"}
     assert AuditLog.objects.count() >= 2
