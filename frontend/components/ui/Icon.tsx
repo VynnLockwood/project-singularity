@@ -25,6 +25,7 @@ const PATHS = {
   inbox: <path d="M3 13l3-8h12l3 8v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM3 13h5l1 3h6l1-3h5" />,
   undo: <path d="M8 5 4 9l4 4M4 9h10a6 6 0 0 1 0 12h-3" />,
   dot: <circle cx="12" cy="12" r="4" fill="currentColor" stroke="none" />,
+  key: <><circle cx="8" cy="15" r="4" /><path d="m11 12 9-9M16 7l3 3" /></>,
   more: <><circle cx="5" cy="12" r="1.4" fill="currentColor" /><circle cx="12" cy="12" r="1.4" fill="currentColor" /><circle cx="19" cy="12" r="1.4" fill="currentColor" /></>,
 } satisfies Record<string, ReactNode>;
 

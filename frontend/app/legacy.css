@@ -249,3 +249,43 @@ textarea.code { width: 100%; color: var(--text); }
 .data-view { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: var(--space-4); align-items: start; }
 .data-main { min-width: 0; }
 @media (max-width: 800px) { .data-view { grid-template-columns: minmax(0, 1fr); } }
+.db-rail-box > summary { cursor: pointer; font-size: var(--size-small); color: var(--text-faint); padding: var(--space-1) 0; }
+.db-rail-box[open] > summary { margin-bottom: var(--space-2); }
+.db-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+.ui-menu { position: relative; display: inline-block; }
+.ui-menu-list { position: absolute; right: 0; top: 100%; z-index: 5; min-width: 9rem; display: flex; flex-direction: column; padding: var(--space-1); background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-panel); box-shadow: 0 6px 20px rgba(0,0,0,.35); }
+.ui-menu-item { text-align: left; background: none; border: 0; color: var(--text); padding: 6px 10px; border-radius: 4px; cursor: pointer; font: inherit; }
+.ui-menu-item:hover, .ui-menu-item:focus-visible { background: var(--surface-3); }
+.ui-menu-item[data-danger="true"] { color: var(--danger, #e5736b); }
+.fields-panel { padding: 0; }
+.fields-panel .schema-scroll { border: 0; }
+.fields-table thead th { position: sticky; top: 0; background: var(--surface-2); z-index: 1; }
+.fields-table code { font-family: var(--font-code, monospace); font-size: var(--size-small); }
+.fields-form { margin-top: var(--space-3); }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.fields-badge { font-size: var(--size-small); color: var(--text-faint); border: 1px solid var(--line); border-radius: 999px; padding: 0 6px; }
+.relations-tab { display: flex; flex-direction: column; gap: var(--space-3); }
+.relation-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.relation-list li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); font-family: var(--font-code, monospace); font-size: var(--size-small); }
+.overview-tab { display: flex; flex-direction: column; gap: var(--space-3); }
+.stat-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: var(--space-3); }
+.stat-tile { display: flex; flex-direction: column; gap: 2px; padding: var(--space-3); background: var(--surface-1); border: 1px solid var(--line); border-radius: var(--radius-panel); }
+.stat-tile strong { font-size: var(--size-h2, 1.4rem); font-weight: 600; color: var(--text-bright); }
+.stat-tile span { font-size: var(--size-small); color: var(--text-faint); }
+.overview-tables { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr)); gap: var(--space-2); }
+.overview-table { width: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; padding: var(--space-2) var(--space-3); background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-panel); color: var(--text); cursor: pointer; font: inherit; overflow: hidden; }
+.overview-table:hover { background: var(--surface-3); }
+.overview-table-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.segmented { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius-panel); overflow: hidden; }
+.segmented button { background: var(--surface-1); color: var(--text); border: 0; padding: 4px 14px; cursor: pointer; font: inherit; }
+.segmented button[aria-pressed="true"] { background: var(--surface-3); color: var(--text-bright); font-weight: 500; }
+.schema-2d { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-3); }
+.schema-2d:has(.universe-panel) { grid-template-columns: minmax(0, 1fr) 16rem; }
+.schema-fit svg { width: 100%; height: auto; }
+.erd-card { cursor: pointer; }
+.erd-card:focus-visible .card, .erd-card[aria-pressed="true"] .card { stroke: var(--disk); stroke-width: 2; }
+.edge[data-hot="true"] { opacity: 1; stroke-width: 2.5; }
+.edge[data-dim="true"] { opacity: 0.15; }
+.card-col[data-fk="true"] { fill: var(--disk); }
+@media (max-width: 800px) { .schema-2d:has(.universe-panel) { grid-template-columns: minmax(0, 1fr); } }
+.fields-panel .schema-scroll { overflow: visible; } /* the row menu opens below the last row, so the box must not clip it */

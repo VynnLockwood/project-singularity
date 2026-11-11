@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Me, SchemaGraph } from "@/lib/api";
 
@@ -12,7 +12,8 @@ type Api = { getTable: ReturnType<typeof vi.fn>; getSchemas: ReturnType<typeof v
 const viewer: Me = { ...editor, role: "viewer" };
 const aChange = { id: 9, status: "pending", kind: "schema", source: "web", requester: "e@x.io", prompt: "t", createdAt: "", decidedBy: null, error: "", decisionNote: "", tables: [], diff: ["+ x"], check: {} };
 
-async function setup(api: Partial<Api> = {}, refreshKey = 0, me: Me = editor) {
+async function setup(api: Partial<Api> = {}, refreshKey = 0, me: Me = editor, path = "/database") {
+  history.replaceState(null, "", path);
   vi.resetModules();
   const mocks: Api = {
     getSchemas: api.getSchemas ?? vi.fn().mockResolvedValue([{ name: "master", tables: 3, comment: null }, { name: "crm", tables: 0, comment: null }]),
@@ -24,13 +25,18 @@ async function setup(api: Partial<Api> = {}, refreshKey = 0, me: Me = editor) {
   vi.doMock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), ...mocks }));
   vi.doMock("./UniverseScene", () => ({ webglAvailable: () => false, UniverseScene: () => null }));
   const { DatabaseView } = await import("./DatabaseView");
+  const { useRoute } = await import("@/lib/useRoute");
   const props = { me, live: [], onProposed: () => {}, onAskAssistant: () => {} };
-  const r = render(<DatabaseView {...props} refreshKey={refreshKey} />);
-  return { mocks, rerender: (k: number) => r.rerender(<DatabaseView {...props} refreshKey={k} />) };
+  function Host({ k }: { k: number }) {
+    const [route, navigate] = useRoute();
+    return <DatabaseView {...props} route={route} navigate={navigate} refreshKey={k} />;
+  }
+  const r = render(<Host k={refreshKey} />);
+  return { mocks, rerender: (k: number) => r.rerender(<Host k={k} />) };
 }
 
 describe("DatabaseView", () => {
-  beforeEach(() => vi.resetModules());
+  beforeEach(() => { vi.resetModules(); history.replaceState(null, "", "/database"); });
 
   it("lists schemas with table counts and marks the selected one", async () => {
     await setup();
@@ -81,7 +87,7 @@ describe("DatabaseView", () => {
 
   it("shows problems text when the schema list fails", async () => {
     await setup({ getSchemas: vi.fn().mockRejectedValue(new Error("x")) });
-    expect(await screen.findByText("Could not load the databases.")).toBeInTheDocument();
+    expect((await screen.findAllByText("Could not load the databases."))[0]).toBeInTheDocument();
   });
 
   it("falls back to master if the selected schema vanished", async () => {
@@ -107,7 +113,7 @@ describe("DatabaseView", () => {
     await screen.findByRole("button", { name: "customer" });
     fireEvent.click(screen.getByRole("tab", { name: "ERD" }));
     expect(screen.getByRole("tab", { name: "ERD" })).toHaveAttribute("aria-selected", "true");
-    expect(await screen.findByRole("img", { name: "Schema diagram" })).toBeInTheDocument();
+    expect(await screen.findByRole("group", { name: "Schema diagram" })).toBeInTheDocument();
     expect(mocks.getGraph).toHaveBeenCalledWith("master");
   });
 
@@ -263,7 +269,7 @@ describe("DatabaseView", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Fields" }));
     rerender(1);
     await waitFor(() => expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(/^master$/));
-    expect(screen.getByLabelText("Filter tables")).toHaveValue("");
+    expect(await screen.findByLabelText("Filter tables")).toHaveValue("");
     expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
   });
 
@@ -304,9 +310,11 @@ describe("DatabaseView", () => {
     const { mocks } = await setup({ getGraph: vi.fn().mockResolvedValue(g) });
     fireEvent.click(await screen.findByRole("button", { name: "customer" }));
     fireEvent.click(screen.getByRole("tab", { name: "Relations" }));
-    expect(await screen.findByText("region_id → item.id")).toBeInTheDocument();
-    expect(screen.getByText("orders.customer_id → id")).toBeInTheDocument();
+    expect(await screen.findByText("customer.region_id → item.id")).toBeInTheDocument();
+    expect(screen.getByText("orders.customer_id → customer.id")).toBeInTheDocument();
     expect(mocks.getTable).toHaveBeenCalledWith("customer", "master");
+    fireEvent.click(screen.getByRole("button", { name: "Open item" }));
+    await waitFor(() => expect(location.pathname).toBe("/database/master/item"));
   });
 
   it("Overview mounts the search scoped to the selected database", async () => {
@@ -314,7 +322,7 @@ describe("DatabaseView", () => {
     await setup({ searchSchema } as never);
     fireEvent.click(await screen.findByRole("button", { name: "crm (0)" }));
     await screen.findAllByText("No tables yet.");
-    expect(await screen.findByText("0 tables")).toBeInTheDocument();
+    expect(await screen.findByRole("group", { name: "0 tables" })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Search the schema"), { target: { value: "x" } });
     fireEvent.click(screen.getByRole("button", { name: "Search" }));
     await waitFor(() => expect(searchSchema).toHaveBeenCalledWith("x", "crm"));
@@ -410,5 +418,133 @@ describe("DatabaseView", () => {
     expect(await screen.findByText("no renames today")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.getByLabelText("New name")).toHaveValue("clients");
+  });
+
+  describe("address", () => {
+    it("/database replaces itself with /database/master", async () => {
+      await setup();
+      await waitFor(() => expect(location.pathname).toBe("/database/master"));
+    });
+
+    it("starts at the database in the address", async () => {
+      const { mocks } = await setup({}, 0, editor, "/database/crm");
+      await waitFor(() => expect(mocks.getGraph).toHaveBeenCalledWith("crm"));
+      expect(screen.getByRole("button", { name: "crm (0)" })).toHaveAttribute("aria-current", "true");
+    });
+
+    it("an unknown database says so and never loads its graph", async () => {
+      const { mocks } = await setup({}, 0, editor, "/database/ghost");
+      expect(await screen.findByText("There is no database ghost.")).toBeInTheDocument();
+      expect(mocks.getGraph).not.toHaveBeenCalledWith("ghost");
+    });
+
+    it("an unknown table says so, keeps the list and never loads its detail", async () => {
+      const { mocks } = await setup({}, 0, editor, "/database/master/nope");
+      expect(await screen.findByText("There is no table nope in master.")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "customer" })).toBeInTheDocument();
+      expect(mocks.getTable).not.toHaveBeenCalled();
+    });
+
+    it("?tab=relations opens Relations, junk opens Fields", async () => {
+      await setup({}, 0, editor, "/database/master/customer?tab=relations");
+      await waitFor(() => expect(screen.getByRole("tab", { name: "Relations" })).toHaveAttribute("aria-selected", "true"));
+      cleanup();
+      await setup({}, 0, editor, "/database/master/customer?tab=bogus");
+      await waitFor(() => expect(screen.getByRole("tab", { name: "Fields" })).toHaveAttribute("aria-selected", "true"));
+    });
+
+    it("choosing a table navigates, choosing it again goes back to the database", async () => {
+      await setup();
+      fireEvent.click(await screen.findByRole("button", { name: "customer" }));
+      await waitFor(() => expect(location.pathname).toBe("/database/master/customer"));
+      expect(screen.getByRole("tab", { name: "Fields" })).toHaveAttribute("aria-selected", "true");
+      fireEvent.click(screen.getByRole("button", { name: "customer" }));
+      await waitFor(() => expect(location.pathname).toBe("/database/master"));
+    });
+
+    it("clicking a tab writes ?tab= without changing the path", async () => {
+      await setup({}, 0, editor, "/database/master/customer");
+      fireEvent.click(await screen.findByRole("tab", { name: "Relations" }));
+      expect(location.search).toBe("?tab=relations");
+      expect(location.pathname).toBe("/database/master/customer");
+    });
+
+    it("switching database keeps ?tab=erd only when the ERD was open", async () => {
+      await setup({}, 0, editor, "/database/master?tab=erd");
+      fireEvent.click(await screen.findByRole("button", { name: "crm (0)" }));
+      await waitFor(() => expect(location.pathname).toBe("/database/crm"));
+      expect(location.search).toBe("?tab=erd");
+      fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
+      fireEvent.click(screen.getByRole("button", { name: "master (3)" }));
+      await waitFor(() => expect(location.pathname).toBe("/database/master"));
+      expect(location.search).toBe("");
+    });
+
+    it("a selected table that vanishes after a reload falls back to the database", async () => {
+      const getGraph = vi.fn().mockResolvedValueOnce(master).mockResolvedValue({ tables: [tbl("customer")], relations: [] });
+      const { rerender } = await setup({ getGraph }, 0, editor, "/database/master/orders");
+      await screen.findByRole("tab", { name: "Fields" });
+      rerender(1);
+      await waitFor(() => expect(location.pathname).toBe("/database/master"));
+    });
+
+    it("the left pane is a disclosure", async () => {
+      await setup();
+      expect(screen.getByText("Databases and tables").closest("details")).not.toBeNull();
+    });
+  });
+
+  describe("review fixes", () => {
+    it("the Rename database result stays after the database disappears", async () => {
+      const getSchemas = vi.fn()
+        .mockResolvedValueOnce([{ name: "master", tables: 3, comment: null }, { name: "crm", tables: 0, comment: null }])
+        .mockResolvedValue([{ name: "master", tables: 3, comment: null }, { name: "sales", tables: 0, comment: null }]);
+      const { rerender } = await setup({ getSchemas }, 0, editor, "/database/crm");
+      fireEvent.click(await screen.findByRole("button", { name: /^rename$/i }));
+      fireEvent.change(screen.getByLabelText("New name"), { target: { value: "sales" } });
+      fireEvent.click(screen.getByRole("button", { name: "Review" }));
+      fireEvent.click(screen.getByRole("button", { name: "Propose" }));
+      await screen.findByRole("status");
+      rerender(1);
+      await waitFor(() => expect(location.pathname).toBe("/database/master"));
+      expect(screen.getByRole("status")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Propose" })).toBeNull();
+    });
+
+    it("a create does not steal the view after the user navigated by address", async () => {
+      const { rerender } = await setup({ getSchemas: created2() });
+      await screen.findByRole("button", { name: "customer" });
+      await createSales();
+      act(() => { history.pushState(null, "", "/database/crm"); dispatchEvent(new PopStateEvent("popstate")); });
+      await waitFor(() => expect(screen.getByRole("button", { name: "crm (0)" })).toHaveAttribute("aria-current", "true"));
+      rerender(1);
+      await screen.findByRole("button", { name: "sales (0)" });
+      expect(location.pathname).toBe("/database/crm");
+    });
+
+    it("Back restores the tab written in the address", async () => {
+      await setup();
+      fireEvent.click(await screen.findByRole("button", { name: "customer" }));
+      fireEvent.click(screen.getByRole("tab", { name: "Relations" }));
+      fireEvent.click(screen.getByRole("button", { name: "customer" }));
+      fireEvent.click(screen.getByRole("button", { name: "customer" }));
+      expect(screen.getByRole("tab", { name: "Fields" })).toHaveAttribute("aria-selected", "true");
+      for (const p of ["/database/master", "/database/master/customer"]) {
+        history.back();
+        await waitFor(() => expect(location.pathname).toBe(p));
+      }
+      await waitFor(() => expect(screen.getByRole("tab", { name: "Relations" })).toHaveAttribute("aria-selected", "true"));
+    });
+
+    it("keeps ?tab= when /database redirects to the first database", async () => {
+      await setup({}, 0, editor, "/database?tab=erd");
+      await waitFor(() => expect(location.pathname).toBe("/database/master"));
+      expect(location.search).toBe("?tab=erd");
+    });
+
+    it("a failed database list says so in the main pane too", async () => {
+      await setup({ getSchemas: vi.fn().mockRejectedValue(new Error("x")) });
+      await waitFor(() => expect(screen.getAllByText("Could not load the databases.").length).toBe(2));
+    });
   });
 });

@@ -13,6 +13,7 @@ const graph: SchemaGraph = {
 const me = (role: Me["role"]): Me => ({ id: 1, email: "e@x.io", name: "", role });
 
 async function setup(role: Me["role"] = "editor", g: SchemaGraph | null = graph, comment: string | null = null) {
+  const onOpenTable = vi.fn();
   vi.resetModules();
   const searchSchema = vi.fn().mockResolvedValue({
     results: [{ kind: "column", table: "customer", schema: "billing", column: "phone", confidence: 0.9, description: "d" }],
@@ -21,8 +22,8 @@ async function setup(role: Me["role"] = "editor", g: SchemaGraph | null = graph,
   vi.doMock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), searchSchema }));
   const { OverviewTab } = await import("./OverviewTab");
   const onAsk = vi.fn();
-  render(<OverviewTab me={me(role)} schema="crm" comment={comment} graph={g} onAskAssistant={onAsk} />);
-  return { searchSchema, onAsk };
+  render(<OverviewTab me={me(role)} schema="crm" comment={comment} graph={g} onAskAssistant={onAsk} onOpenTable={onOpenTable} />);
+  return { searchSchema, onAsk, onOpenTable };
 }
 
 describe("OverviewTab", () => {
@@ -31,19 +32,20 @@ describe("OverviewTab", () => {
   it("shows the name, comment and counts", async () => {
     await setup("editor", graph, "Customer data");
     expect(screen.getByText("Customer data")).toBeInTheDocument();
-    expect(screen.getByText("2 tables")).toBeInTheDocument();
-    expect(screen.getByText("3 columns")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "2 tables" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "3 columns" })).toBeInTheDocument();
   });
 
   it("an empty database shows zero counts", async () => {
     await setup("editor", { tables: [], relations: [] });
-    expect(screen.getByText("0 tables")).toBeInTheDocument();
-    expect(screen.getByText("0 columns")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "0 tables" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "0 columns" })).toBeInTheDocument();
   });
 
   it("does not claim counts while the graph is loading", async () => {
     await setup("editor", null);
-    expect(screen.queryByText(/ tables$/)).toBeNull();
+    expect(screen.queryByRole("group", { name: /tables$/ })).toBeNull();
+    expect(document.querySelector(".ui-skeleton")).not.toBeNull();
   });
 
   it("searches the selected database and shows the schema of hits", async () => {
@@ -72,5 +74,41 @@ describe("OverviewTab", () => {
     await setup("viewer");
     expect(screen.getByLabelText("Search the schema")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Rebuild search index" })).toBeNull();
+  });
+
+  const big: SchemaGraph = {
+    tables: [
+      { name: "customer", comment: null, rowEstimate: 1500, columns: [col("id"), col("name")] },
+      { name: "<b>odd</b>", comment: null, rowEstimate: 2500, columns: [col("id")] },
+    ],
+    relations: [{ from: { table: "customer", column: "id" }, to: { table: "<b>odd</b>", column: "id" } }],
+  };
+
+  it("tiles show tables, columns, relations and approximate rows", async () => {
+    await setup("editor", big);
+    expect(screen.getByRole("group", { name: "2 tables" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "3 columns" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "1 relation" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "4,000 rows (approx.)" })).toBeInTheDocument();
+  });
+
+  it("lists each table with its columns and rows, and opens it", async () => {
+    const { onOpenTable } = await setup("editor", big);
+    const b = screen.getByRole("button", { name: /^customer/ });
+    expect(b).toHaveTextContent("2 columns");
+    expect(b).toHaveTextContent("1,500");
+    fireEvent.click(b);
+    expect(onOpenTable).toHaveBeenCalledWith("customer");
+  });
+
+  it("a table name with markup is text", async () => {
+    await setup("editor", big);
+    expect(screen.getByRole("button", { name: /^<b>odd<\/b>/ })).toBeInTheDocument();
+    expect(document.querySelector("b")).toBeNull();
+  });
+
+  it("says so when there are no tables", async () => {
+    await setup("editor", { tables: [], relations: [] });
+    expect(screen.getByText("No tables yet.")).toBeInTheDocument();
   });
 });

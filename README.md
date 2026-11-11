@@ -132,6 +132,7 @@ The disk also shows the state of the review queue: it spins up and brightens whi
 
 - A side rail groups the views (Work, Quality, Review, System). It shrinks to icons on a medium screen and becomes a bottom bar with a More sheet on a phone.
 - The address bar holds your place (`/settings`, `/data`, `/database/master/province`), so refresh, back and shared links work.
+- The Database tab lives at `/database/<db>/<table>`, and `?tab=fields|relations|erd|overview` picks the section. A hand-typed address that names nothing shows "There is no database …" or "There is no table …" instead of failing. On the ERD, click a table (or press Enter) to highlight its relations and open a panel with *Open fields*; Escape clears it, and *Fit to width* scales the diagram to the screen.
 - `Ctrl K` (`⌘ K` on a Mac) opens the command palette: jump to any view or table, or run an action. `Shift Enter` on a table opens it in Data.
 - Changes that need your decision arrive as a toast and collect in the review tray (`g` then `r`, or the Review button). The tray sits beside the page, so nothing covers your work. A change you just made opens the tray at once.
 - Loading shows on the part that loads (a thin bar on the grid, skeleton rows on first load). Nothing blocks the whole app.

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Me, TableDetail } from "@/lib/api";
 
@@ -27,6 +27,10 @@ async function setup(opts: { me?: Me; getTable?: ReturnType<typeof vi.fn>; schem
   const r = render(el(opts));
   return { mocks, onProposed, rerender: (o: { schema?: string; table?: string; refreshKey?: number }) => r.rerender(el(o)) };
 }
+const choose = (column: string, action: string) => {
+  fireEvent.click(screen.getByRole("button", { name: `More actions for ${column}` }));
+  fireEvent.click(screen.getByRole("button", { name: `${action} ${column}` }));
+};
 const propose = async (mocks: { proposeChange: ReturnType<typeof vi.fn> }) => {
   fireEvent.click(screen.getByRole("button", { name: "Propose" }));
   await waitFor(() => expect(mocks.proposeChange).toHaveBeenCalled());
@@ -43,7 +47,8 @@ describe("FieldsTab", () => {
     fireEvent.click(screen.getByLabelText("Show audit columns"));
     expect(screen.getByText("created_at")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Rename created_at" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Drop created_at" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "More actions for created_at" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "More actions for email" }));
     expect(screen.getByRole("button", { name: "Rename email" })).toBeInTheDocument();
     expect(window.localStorage.getItem("db.showAudit")).toBe("1");
   });
@@ -135,7 +140,7 @@ describe("FieldsTab", () => {
   it("Drop requires a reason and sends drop_column", async () => {
     const { mocks } = await setup();
     await screen.findByText("email");
-    fireEvent.click(screen.getByRole("button", { name: "Drop email" }));
+    choose("email", "Drop");
     expect(screen.getByRole("button", { name: "Propose" })).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "unused" } });
     const call = await propose(mocks);
@@ -145,7 +150,7 @@ describe("FieldsTab", () => {
   it("Rename sends rename_column and refuses an existing name", async () => {
     const { mocks } = await setup();
     await screen.findByText("email");
-    fireEvent.click(screen.getByRole("button", { name: "Rename email" }));
+    choose("email", "Rename");
     fireEvent.change(screen.getByLabelText("New name"), { target: { value: "id" } });
     expect(screen.getByRole("button", { name: "Review" })).toBeDisabled();
     fireEvent.change(screen.getByLabelText("New name"), { target: { value: "mail" } });
@@ -157,7 +162,7 @@ describe("FieldsTab", () => {
   it("Type sends alter_column_type and refuses an unsupported type", async () => {
     const { mocks } = await setup();
     await screen.findByText("email");
-    fireEvent.click(screen.getByRole("button", { name: "Type id" }));
+    choose("id", "Type");
     fireEvent.change(screen.getByLabelText("New type"), { target: { value: "bigint" } });
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
     const call = await propose(mocks);
@@ -168,7 +173,7 @@ describe("FieldsTab", () => {
     const d = { ...detail, columns: [c("id", "integer"), c("name", "character varying(40)")] };
     const { mocks } = await setup({ getTable: vi.fn().mockResolvedValue(d) });
     await screen.findByText("name");
-    fireEvent.click(screen.getByRole("button", { name: "Type name" }));
+    choose("name", "Type");
     expect(screen.queryByText(/Unsupported type/)).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.getByRole("button", { name: "Review" })).toBeDisabled();
@@ -181,7 +186,7 @@ describe("FieldsTab", () => {
   it("Type form keeps Review disabled while the current type is unchanged", async () => {
     await setup();
     await screen.findByText("email");
-    fireEvent.click(screen.getByRole("button", { name: "Type id" }));
+    choose("id", "Type");
     expect(screen.getByRole("button", { name: "Review" })).toBeDisabled();
   });
 
@@ -189,7 +194,7 @@ describe("FieldsTab", () => {
     const d = { ...detail, columns: [{ ...c("email"), comment: "login" }], hiddenColumns: [] };
     const { mocks } = await setup({ getTable: vi.fn().mockResolvedValue(d) });
     await screen.findByText("email");
-    fireEvent.click(screen.getByRole("button", { name: "Comment email" }));
+    choose("email", "Comment");
     fireEvent.change(screen.getByLabelText("Comment"), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
     const call = await propose(mocks);
@@ -199,7 +204,7 @@ describe("FieldsTab", () => {
   it("Comment sends set_column_comment", async () => {
     const { mocks } = await setup();
     await screen.findByText("email");
-    fireEvent.click(screen.getByRole("button", { name: "Comment email" }));
+    choose("email", "Comment");
     fireEvent.change(screen.getByLabelText("Comment"), { target: { value: "login" } });
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
     const call = await propose(mocks);
@@ -255,5 +260,33 @@ describe("FieldsTab", () => {
     fireEvent.change(screen.getByLabelText("Field type"), { target: { value: "varchar(n)" } });
     fireEvent.change(screen.getByLabelText("Exact type"), { target: { value: "integer" } });
     expect(screen.getByLabelText("Exact type")).toHaveValue("integer");
+  });
+
+  it("a viewer has no row menus and no Add field", async () => {
+    await setup({ me: viewer });
+    await screen.findByText("email");
+    expect(screen.queryByRole("button", { name: /More actions for/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add field" })).toBeNull();
+  });
+
+  it("marks the primary key with an icon and single-column unique with a badge", async () => {
+    const d: TableDetail = { ...detail, constraints: [
+      { name: "customer_pkey", kind: "primary_key", definition: "PRIMARY KEY (id)" },
+      { name: "customer_email_key", kind: "unique", definition: "UNIQUE (email)" },
+      { name: "customer_multi", kind: "unique", definition: "UNIQUE (id, email)" },
+    ] };
+    await setup({ getTable: vi.fn().mockResolvedValue(d) });
+    const row = (n: string) => screen.getByText(n, { selector: "td *, td" }).closest("tr") as HTMLElement;
+    await screen.findByText("email");
+    expect(within(row("id")).getByLabelText("primary key")).toBeInTheDocument();
+    expect(within(row("email")).getByText("unique")).toBeInTheDocument();
+    expect(within(row("id")).queryByText("unique")).toBeNull();
+    expect(within(row("email")).queryByLabelText("primary key")).toBeNull();
+  });
+
+  it("shows the fields inside a panel", async () => {
+    await setup();
+    await screen.findByText("email");
+    expect(document.querySelector(".ui-panel table")).not.toBeNull();
   });
 });

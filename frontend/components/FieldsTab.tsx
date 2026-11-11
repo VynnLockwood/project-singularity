@@ -8,6 +8,7 @@ import {
   validateName, validateType, type ColumnSpec,
 } from "@/lib/databaseOps";
 import { ProposeDialog } from "./ProposeDialog";
+import { Button, Icon, Menu, Panel } from "./ui";
 
 type Action =
   | { kind: "add" }
@@ -104,48 +105,65 @@ export function FieldsTab({ me, schema, table, refreshKey, onProposed }: {
   if (!detail) return <p className="muted">Loading…</p>;
 
   const formOpen = canWrite && action && action.kind !== "drop" && !review;
+  // "PRIMARY KEY (id)" / "UNIQUE (email)": only a constraint on this one column counts.
+  const single = (kind: string, column: string) =>
+    detail.constraints.some((k) => {
+      if (k.kind !== kind) return false;
+      const cols = /\(([^)]*)\)/.exec(k.definition)?.[1].split(",").map((x) => x.trim().replace(/^"|"$/g, ""));
+      return cols?.length === 1 && cols[0] === column;
+    });
   return (
-    <div>
+    <div className="fields-tab">
       <div className="grid-bar">
         <label>
           <input type="checkbox" checked={showAudit} onChange={(e) => setShowAudit(e.target.checked)} />{" "}
           Show audit columns
         </label>
-        {canWrite && <button className="button" onClick={() => open({ kind: "add" })}>Add field</button>}
+        {canWrite && <Button size="sm" icon="plus" onClick={() => open({ kind: "add" })}>Add field</Button>}
       </div>
       {columns.length === 0 ? <p className="muted">No fields.</p> : (
-        <div className="schema-scroll">
-          <table>
-            <thead>
-              <tr><th>Name</th><th>Type</th><th>Null?</th><th>Default</th><th>Comment</th>{canWrite && <th>Actions</th>}</tr>
-            </thead>
-            <tbody>
-              {columns.map((c) => (
-                <tr key={c.name}>
-                  <td>{c.name}</td>
-                  <td>{c.type}</td>
-                  <td>{c.nullable ? "yes" : "no"}</td>
-                  <td>{c.default ?? ""}</td>
-                  <td>{c.comment ?? ""}</td>
-                  {canWrite && (
+        <Panel className="fields-panel">
+          <div className="schema-scroll">
+            <table className="fields-table">
+              <thead>
+                <tr><th>Name</th><th>Type</th><th>Null?</th><th>Default</th><th>Comment</th>{canWrite && <th><span className="visually-hidden">Actions</span></th>}</tr>
+              </thead>
+              <tbody>
+                {columns.map((c) => (
+                  <tr key={c.name}>
                     <td>
-                      {!hidden.has(c.name) && (
-                        <>
-                          <button className="link" aria-label={`Rename ${c.name}`} onClick={() => open({ kind: "rename", column: c.name })}>Rename</button>{" "}
-                          <button className="link" aria-label={`Type ${c.name}`} onClick={() => open({ kind: "type", column: c.name }, validateType(c.type) === null ? normalizeType(c.type) : "")}>Type</button>{" "}
-                          <button className="link" aria-label={`Comment ${c.name}`} onClick={() => open({ kind: "comment", column: c.name }, c.comment ?? "")}>Comment</button>{" "}
-                          <button className="link" aria-label={`Drop ${c.name}`} onClick={() => { setAction({ kind: "drop", column: c.name }); setReview(true); }}>Drop</button>
-                        </>
-                      )}
+                      {single("primary_key", c.name) && <Icon name="key" size={14} label="primary key" />}{" "}
+                      {c.name}
+                      {single("unique", c.name) && <>{" "}<span className="fields-badge">unique</span></>}
                     </td>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                    <td><code>{c.type}</code></td>
+                    <td>{c.nullable ? <span className="muted">null</span> : "not null"}</td>
+                    <td>{c.default ? <code>{c.default}</code> : ""}</td>
+                    <td>{c.comment ?? ""}</td>
+                    {canWrite && (
+                      <td>
+                        {!hidden.has(c.name) && (
+                          <Menu
+                            label={`More actions for ${c.name}`}
+                            items={[
+                              { label: "Rename", ariaLabel: `Rename ${c.name}`, onSelect: () => open({ kind: "rename", column: c.name }) },
+                              { label: "Type", ariaLabel: `Type ${c.name}`, onSelect: () => open({ kind: "type", column: c.name }, validateType(c.type) === null ? normalizeType(c.type) : "") },
+                              { label: "Comment", ariaLabel: `Comment ${c.name}`, onSelect: () => open({ kind: "comment", column: c.name }, c.comment ?? "") },
+                              { label: "Drop", ariaLabel: `Drop ${c.name}`, danger: true, onSelect: () => { setAction({ kind: "drop", column: c.name }); setReview(true); } },
+                            ]}
+                          />
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
       )}
       {formOpen && action && (
+        <Panel className="fields-form" title={action.kind === "add" ? "Add field" : `${action.kind === "rename" ? "Rename" : action.kind === "type" ? "Change type of" : "Comment on"} ${action.column}`}>
         <form
           className="db-inline-form"
           onSubmit={(e) => { e.preventDefault(); if (canReview) setReview(true); }}
@@ -192,10 +210,11 @@ export function FieldsTab({ me, schema, table, refreshKey, onProposed }: {
           {action.kind === "add" && typeBlocked && <p className="problems small" role="alert">{validateType(fType)}</p>}
           {fieldError && !(action.kind === "add" && typeBlocked) && <p className="problems small" role="alert">{fieldError}</p>}
           <div>
-            <button type="submit" className="button" disabled={!canReview}>Review</button>{" "}
-            <button type="button" className="link" onClick={close}>Cancel</button>
+            <Button type="submit" variant="primary" size="sm" disabled={!canReview}>Review</Button>{" "}
+            <Button type="button" variant="ghost" size="sm" onClick={close}>Cancel</Button>
           </div>
         </form>
+        </Panel>
       )}
       {canWrite && dialog()}
     </div>
