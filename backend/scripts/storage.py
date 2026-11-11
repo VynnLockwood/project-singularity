@@ -16,6 +16,7 @@ from .models import Script
 SCRIPT_TTL = timedelta(days=7)
 BOM = b"\xef\xbb\xbf"
 NAME_MAX = 200
+BLOCK = 8 * 2**20
 
 
 class ScriptError(Exception):
@@ -122,6 +123,31 @@ def read(script: Script) -> bytes:
     if hashlib.sha256(data).hexdigest() != script.sha256:
         raise ScriptError("Script file does not match its checksum.")
     return data
+
+
+def read_text(script: Script) -> str:
+    """The script as text, checked against its checksum, without ever holding the whole file as bytes.
+
+    Decoding a few hundred MB in one call allocates up to three times its size at once; blocks keep the peak
+    near twice the final text."""
+    import codecs
+    if script.status == Script.Status.EXPIRED or not script.path:
+        raise ScriptError("Script has expired.")
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    digest, pieces = hashlib.sha256(), []
+    try:
+        with open(_full_path(script.path), "rb") as f:
+            while block := f.read(BLOCK):
+                digest.update(block)
+                pieces.append(decoder.decode(block))
+        pieces.append(decoder.decode(b"", final=True))
+    except FileNotFoundError:
+        raise ScriptError("Script file is missing.") from None
+    except UnicodeDecodeError:
+        raise ScriptError("Script is not valid UTF-8 text.") from None
+    if digest.hexdigest() != script.sha256:
+        raise ScriptError("Script file does not match its checksum.")
+    return "".join(pieces)
 
 
 def _candidate_ids(now) -> list[int]:

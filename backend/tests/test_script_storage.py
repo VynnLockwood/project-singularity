@@ -213,3 +213,17 @@ def test_stored_path_must_be_bare_filename(owner):
 @pytest.mark.parametrize("name", [".", "..", "", "a/..", "\x00"])
 def test_odd_names_fall_back(owner, name):
     assert storage.save(owner, name, b"select 1").name == "script.sql"
+
+
+def test_read_text_matches_read_and_checks_the_checksum(tmp_path, settings):
+    from accounts.models import Role, User
+    from scripts import storage
+    settings.SCRIPT_DIR = str(tmp_path / "s")
+    u = User.objects.create(username="rt@x.io", email="rt@x.io", role=Role.EDITOR)
+    text = "SELECT 1;\n" + "กรุงเทพ " * 1_000_000 + "\n"           # several 8 MiB blocks, multi-byte characters
+    s = storage.save(u, "t.sql", text.encode())
+    assert storage.read_text(s) == storage.read(s).decode() == text
+    with open(storage._full_path(s.path), "ab") as f:
+        f.write(b"-- tampered\n")
+    with pytest.raises(storage.ScriptError, match="checksum"):
+        storage.read_text(s)

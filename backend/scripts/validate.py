@@ -232,7 +232,7 @@ def _run(report: dict, script: Script, mapping: dict | None, schema: str = "mast
         script.mapping = mapping
         report["mapping_used"] = "given"
     try:
-        text = storage.read(script).decode("utf-8")
+        text = storage.read_text(script)
     except storage.ScriptError as exc:
         _add_error(report, "storage", 0, "", str(exc))
         return
@@ -267,7 +267,7 @@ def _run(report: dict, script: Script, mapping: dict | None, schema: str = "mast
                    f"script has {len(ops)} operations, above the limit maxOpsPerScript ({max_ops})")
         return
     rules = rule_service.active_rules()
-    res = check.run(ops, state, rules, actor=script.owner.email, max_ops=limits["maxOpsPerProposal"],
+    res = check.run(ops, state, rules, actor=script.owner.email, max_ops=max_ops,
                     allow_bulk=True, schema=schema)
     gate = report["gate"]
     for e in res.errors:
