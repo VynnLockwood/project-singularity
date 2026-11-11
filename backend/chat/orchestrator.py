@@ -19,7 +19,7 @@ SYSTEM_PROMPT = """\
 You are Singularity's assistant. You help a team design and manage a master-data PostgreSQL database.
 A "database" is a Postgres schema (default master); call list_schemas to see them and pass `schema` to the other tools.
 Start by calling get_rules and list_tables when you need to know the current rules or structure. Before adding a column or table, call search_schema to see whether the data already has a home.
-You never write SQL to change anything: call propose_change with structured operations. The gate checks
+Prefer propose_change with structured operations; use propose_sql only when no operation fits (say why in 'reason'): raw SQL skips the rules and a person approves it in the web app. The gate checks
 the proposal against the team's rules and returns a diff. The user then sees an Approve / Reject popup,
 so tell them what you proposed and that it is waiting for their decision. Never say a change is applied
 until get_change shows status 'applied'. Settings, gate rules and roles are changed with propose_config_change (call get_settings first); they always wait for an approver. Schema changes by editors wait for an approver. Dropping things
@@ -79,6 +79,8 @@ def run_tool(user, conv, name: str, raw_args: str) -> dict:
                     f"waiting for their decision (change #{result['id']}). Do not say it is applied."
                 )
             return result
+        if name == "propose_sql":
+            return mcp_tools.propose_sql(user, **args, source="web", conversation_id=conv.pk)
         if name == "propose_config_change":
             result = mcp_tools.propose_config_change(user, **args, source="web", conversation_id=conv.pk)
             if result.get("status") == "pending":

@@ -236,6 +236,44 @@ def list_tables(schema: str = "master") -> list[dict]:
         ]
 
 
+def schema_fingerprint(schema: str = "master") -> str:
+    """Hash of everything structural in a schema (tables, views, enums): raw SQL may touch any of it."""
+    names = [t["name"] for t in list_tables(schema)]
+    parts = {"tables": fingerprint(names, schema), "views": list_views(schema), "enums": list_enums(schema),
+             "objects": _object_definitions(schema)}
+    return hashlib.sha256(json.dumps(parts, sort_keys=True, default=str).encode()).hexdigest()
+
+
+_OBJECT_QUERIES = (
+    # relations: kind, privileges, row security, and the body of views / materialized views
+    "SELECT c.relname || ':' || c.relkind::text || ':' || coalesce(c.relacl::text, '') || ':' || c.relrowsecurity::text "
+    "|| c.relforcerowsecurity::text || ':' || CASE WHEN c.relkind IN ('v', 'm') THEN pg_get_viewdef(c.oid) ELSE '' END "
+    "FROM pg_class c WHERE c.relnamespace = %(s)s::regnamespace AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')",
+    "SELECT 'fn:' || p.proname || ':' || pg_get_functiondef(p.oid) FROM pg_proc p "
+    "WHERE p.pronamespace = %(s)s::regnamespace AND p.prokind IN ('f', 'p')",
+    "SELECT 'trg:' || pg_get_triggerdef(t.oid) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid "
+    "WHERE c.relnamespace = %(s)s::regnamespace AND NOT t.tgisinternal",
+    "SELECT 'rule:' || pg_get_ruledef(r.oid) FROM pg_rewrite r JOIN pg_class c ON c.oid = r.ev_class "
+    "WHERE c.relnamespace = %(s)s::regnamespace AND c.relkind IN ('r', 'p') AND r.rulename <> '_RETURN'",
+    "SELECT 'policy:' || p.polname || ':' || pg_get_expr(p.polqual, p.polrelid) FROM pg_policy p "
+    "JOIN pg_class c ON c.oid = p.polrelid WHERE c.relnamespace = %(s)s::regnamespace",
+    "SELECT 'domain:' || t.typname || ':' || t.typbasetype::regtype::text || ':' || t.typnotnull::text || ':' "
+    "|| coalesce(t.typdefault, '') FROM pg_type t WHERE t.typnamespace = %(s)s::regnamespace AND t.typtype = 'd'",
+    "SELECT 'seq:' || c.relname || ':' || s.seqstart::text || ':' || s.seqincrement::text || ':' || s.seqmax::text || ':' || s.seqmin::text "
+    "|| ':' || s.seqcycle::text FROM pg_sequence s JOIN pg_class c ON c.oid = s.seqrelid "
+    "WHERE c.relnamespace = %(s)s::regnamespace",
+)
+
+
+def _object_definitions(schema: str) -> list[str]:
+    """Definitions of what the table/view/enum listings miss: functions, triggers, rules, policies, grants, domains."""
+    out: list[str] = []
+    with ro_connection() as conn:
+        for q in _OBJECT_QUERIES:
+            out += [next(iter(r.values())) for r in conn.execute(q, {"s": schema})]
+    return sorted(out)
+
+
 def list_views(schema: str = "master") -> list[dict]:
     require_managed(schema)
     with ro_connection() as conn:

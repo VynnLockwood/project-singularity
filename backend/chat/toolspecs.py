@@ -31,6 +31,9 @@ SPECS = {
          "prompt": {"type": "string", "description": "the user's request, in their words"},
          **SCHEMA},
         ["operations"]),
+    "propose_sql": (D["propose_sql"],
+                    {"sql": {"type": "string"}, "reason": {"type": "string", "description": "why, at least 10 characters"}, **SCHEMA},
+                    ["sql", "reason"]),
     "get_settings": ("The quality settings with their ranges, and every gate rule including switched-off ones.", {}, []),
     "propose_config_change": (
         "Propose a change to settings, gate rules or roles. Important, so it always waits for an approver in the approval queue. "

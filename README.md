@@ -51,6 +51,16 @@ Every tool states the role it needs; a client only sees the tools its user's rol
 | `list_users` | approver | People and their roles. |
 | `reindex_search` | approver | Refresh the schema search index. |
 
+## Raw SQL
+
+When no operation fits (functions, triggers, grants, bulk updates), an editor or approver can call `propose_sql` (MCP or the chat assistant) with the SQL and a reason of at least 10 characters.
+
+- The SQL is parsed, checked against a refusal list (transaction control, `SET ROLE`, `COPY`, schema and role DDL, `CONCURRENTLY`, `VACUUM`, extensions) and dry-run in a rolled-back transaction. The rules gate is **not** applied.
+- Only an approver can approve it, and only in the web app. No AI client can, even for an approver.
+- On approval the database is backed up, then all statements run in one transaction. A failure changes nothing. It cannot be undone automatically.
+- The limits `limits.maxSqlBytes` and `limits.maxSqlStatements` and the switch `sql.enabled` are in Settings. Switching it off hides the tool and refuses raw SQL changes.
+- The database role is the real fence: it has no rights on the `singularity` schema and is not a superuser.
+
 ## Operations the gate understands
 
 Every change is a list of these structured operations, never SQL. Each one is checked against the rules, shown

@@ -25,6 +25,9 @@ TUNABLES = {
     "limits.maxExportRows": ("Export row cap", "The most rows one data export may contain.", "int", 1000, 20000000),
     "limits.maxInlineExportBytes": ("Inline export size (bytes)", "The largest schema export an AI client receives inline. Bigger exports are downloaded in the web app.", "int", 1024, 5000000),
     "limits.maxSchemas": ("Managed schemas", "The most managed schemas (including master) the database may hold.", "int", 1, 200),
+    "limits.maxSqlBytes": ("Raw SQL size (bytes)", "The largest raw SQL text one proposal may contain.", "int", 1024, 5000000),
+    "limits.maxSqlStatements": ("Raw SQL statements", "The most statements one raw SQL proposal may contain.", "int", 1, 500),
+    "sql.enabled": ("Raw SQL", "Lets editors propose raw SQL. Off hides the propose_sql tool and refuses raw SQL changes.", "bool", None, None),
     "limits.maxOpsPerScript": ("Operations per script", "The most operations one validated script may produce.", "int", 1, 100000),
     "limits.maxInlineScriptBytes": ("Inline script size (bytes)", "The largest script that may be pasted inline rather than uploaded.", "int", 1024, 1048576),
     "chat.provider": ("Chat provider", "Which service answers chats. Its API key comes from the server environment and is never shown here.", "choice", None, None),
@@ -100,6 +103,10 @@ def _clean(key, value):
     label, _, kind, lo, hi = TUNABLES[key]
     if kind == "models":
         return validate_models(value)
+    if kind == "bool":
+        if not isinstance(value, bool):
+            raise ValueError(f"{label}: must be true or false")
+        return value
     if kind in OPTIONS:
         if value not in OPTIONS[kind]():
             raise ValueError(f"{label}: choose one of the allowed {kind}s")

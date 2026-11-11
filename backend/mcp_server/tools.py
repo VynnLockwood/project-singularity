@@ -23,6 +23,7 @@ TOOL_ROLES = {
     "query": "viewer",
     "search_schema": "viewer",
     "propose_change": "editor",
+    "propose_sql": "editor",
     "get_settings": "viewer",
     "propose_config_change": "editor",
     "list_users": "approver",
@@ -97,6 +98,14 @@ OPERATION_EXAMPLES = {
 
 
 DESCRIPTIONS = {
+    "propose_sql": (
+        "Propose raw SQL for one database (schema, default master) when no propose_change operation fits "
+        "(functions, triggers, grants, bulk updates, anything else). Minimum role: editor. The rules are NOT checked, "
+        "the SQL is dry-run (nothing changes) and waits for an approver, who approves it in the web app: you cannot "
+        "approve it, even for an approver. It runs in one transaction after a backup and cannot be undone automatically. "
+        "Qualify table names with the database name. Give a clear 'reason' (at least 10 characters): the approver reads it. "
+        "Not allowed: transaction control, SET ROLE, COPY, schema and role DDL, CONCURRENTLY, VACUUM, extensions."
+    ),
     "list_changes": (
         "History of proposed changes, newest first: pending, applied, rejected, failed or stale. Filter by status, "
         "kind (schema, data, config), schema, or mine=true for your own. Summaries only; call get_change for the diff."
@@ -148,6 +157,8 @@ class ToolFailure(Exception):
 
 def allowed(user, tool: str) -> bool:
     need = TOOL_ROLES.get(tool)
+    if tool == "propose_sql" and not get_config()["sql"]["enabled"]:
+        return False
     return need is not None and user is not None and user.rank >= RANK[need]
 
 
@@ -421,6 +432,10 @@ def _next_step(user, change: Change) -> str:
         if change.kind == "config":
             return "This configuration change is not valid. Read 'check.errors', fix the operations and call propose_config_change again."
         return "The gate blocked this change. Fix the problems in 'check' (use the suggestions) and call propose_change again."
+    if change.status == "pending" and change.kind == "sql":
+        return (f"Raw SQL waits as change #{change.pk}. Tell the user an approver must approve it in the web app; "
+                "you cannot approve it, even when the user is an approver. It was dry-run only, the rules were not "
+                "checked, and it cannot be undone automatically.")
     if change.status == "pending":
         if user.can_approve and service.can_decide(user, change):   # approve_change is an approver-only tool
             return (
@@ -464,6 +479,15 @@ def propose_change(user, operations: list, prompt: str = "", *, source: str = "m
     return _result(user, change)
 
 
+def propose_sql(user, sql: str, reason: str, schema: str = "master", *, source: str = "mcp",
+                conversation_id: int | None = None) -> dict:
+    try:
+        change = service.propose_sql(user, sql, reason, schema=schema, source=source, conversation_id=conversation_id)
+    except service.ChangeError as exc:
+        raise ToolFailure(exc.message) from exc
+    return _result(user, change)
+
+
 def get_change(user, change_id: int) -> dict:
     change = Change.objects.select_related("requester", "decided_by").filter(pk=change_id).first()
     if change is None:
@@ -472,6 +496,9 @@ def get_change(user, change_id: int) -> dict:
 
 
 def approve_change(user, change_id: int) -> dict:
+    pending = Change.objects.filter(pk=change_id).values_list("kind", flat=True).first()
+    if pending == "sql":
+        raise ToolFailure("Raw SQL is approved by a person in the web app.")
     try:
         change = service.approve(user, change_id)
     except service.ChangeError as exc:
@@ -592,6 +619,7 @@ IMPL = {
     "query": run_query,
     "search_schema": search_schema,
     "propose_change": propose_change,
+    "propose_sql": propose_sql,
     "get_settings": get_settings,
     "propose_config_change": propose_config_change,
     "list_users": list_users,

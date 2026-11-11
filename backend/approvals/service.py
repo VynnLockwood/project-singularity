@@ -26,7 +26,7 @@ from schema import executor, introspect
 from schema.backup import BackupError, backup_schema
 from settings_app import services as rule_service
 
-from . import config_ops
+from . import config_ops, rawsql
 from .models import Change
 
 
@@ -116,8 +116,8 @@ def _mark_stale(change: Change, user, error: str) -> Change:
 
 
 def can_decide(user, change: Change) -> bool:
-    if change.source == "script" or change.kind in ("schema", "config"):
-        # structure, rules, settings, roles and every script load: approvers only
+    if change.source == "script" or change.kind in ("schema", "config", "sql"):
+        # structure, rules, settings, roles, raw SQL and every script load: approvers only
         return user.can_approve
     return user.can_approve or (user.can_edit and user.pk == change.requester_id)
 
@@ -222,6 +222,50 @@ def propose(user, raw_ops, *, source: str, prompt: str = "", conversation_id: in
     return change
 
 
+RAW_SQL_WARNING = "Rules were not checked: this is raw SQL."
+MIN_REASON = 10
+
+
+def propose_sql(user, sql: str, reason: str, *, schema: str = "master", source: str = "mcp",
+                conversation_id: int | None = None) -> Change:
+    """Queue raw SQL for an approver. Nothing runs for real here: parse, refuse, warn and a rolled-back dry run."""
+    if not user.can_edit:
+        raise ChangeError("forbidden", "your role cannot propose changes")
+    cfg = get_config()
+    if not cfg["sql"]["enabled"]:
+        raise ChangeError("invalid", "raw SQL is switched off (setting sql.enabled); use propose_change operations")
+    if not isinstance(reason, str) or len(reason.strip()) < MIN_REASON:
+        raise ChangeError("invalid", f"say why in 'reason' (at least {MIN_REASON} characters): the approver reads it")
+    if not isinstance(sql, str):
+        raise ChangeError("invalid", "sql must be text")
+    try:
+        introspect.require_managed(schema)
+    except introspect.UnknownSchema:
+        raise ChangeError("invalid", f"schema {schema!r} does not exist or is not managed by Singularity; call list_schemas") from None
+    limits = cfg["limits"]
+    try:
+        statements = rawsql.parse_statements(sql, max_bytes=limits["maxSqlBytes"], max_statements=limits["maxSqlStatements"])
+        diff = rawsql.dry_run(statements, schema)
+        violations = [{"rule": "rawSql", "severity": "warn", "message": RAW_SQL_WARNING, "op_index": None, "suggestion": None},
+                      *rawsql.warnings_for(statements, schema)]
+    except rawsql.RawSqlError as exc:
+        # the dry run may already have executed the script as the read/write role: keep a record of who ran what
+        record(user, "change.proposal_failed", target=f"schema {schema}",
+               details={"source": source, "kind": "sql", "schema": schema, "sql": sql, "error": exc.message})
+        raise ChangeError("invalid", exc.message) from exc
+    op = {"op": "raw_sql", "sql": sql, "reason": reason.strip()}
+    change = Change(
+        requester=user, source=source, prompt=reason.strip(), conversation_id=conversation_id, kind="sql", schema=schema,
+        original_operations=[op], operations=[op], generated_sql=[s.text for s in statements], diff=diff,
+        check_result={"errors": [], "violations": violations, "autoAdded": []}, affected_tables=[],
+        fingerprint=introspect.schema_fingerprint(schema), rules_hash="", status=Change.Status.PENDING,
+        reverse_operations=None,
+    )
+    change.save()
+    record(user, "change.proposed", target=f"#{change.pk}", details={"source": source, "kind": "sql", "status": change.status, "sql": sql})
+    return change
+
+
 def _script_row_source(change: Change):
     """Row provider for a script-sourced change; None for every other source (lazy import: no cycle)."""
     if change.source != "script":
@@ -253,6 +297,8 @@ def approve(user, change_id: int) -> Change:
 
         if change.kind == "config":
             return _apply_config(change, user)
+        if change.kind == "sql":
+            return _approve_sql(change, user, cfg)
 
         is_revert = change.source == "revert"
         try:
@@ -313,6 +359,73 @@ def approve(user, change_id: int) -> Change:
         record(user, "change.applied", target=f"#{change.pk}",
                details={"kind": change.kind, "tables": change.affected_tables, "reversible": result.reverse_ops is not None})
         return change
+
+
+def _raw_statements(change: Change):
+    """The statements of a kind-sql change, parsed again from the stored text (never trusted blindly)."""
+    limits = get_config()["limits"]
+    return rawsql.parse_statements(change.operations[0]["sql"], max_bytes=limits["maxSqlBytes"],
+                                   max_statements=limits["maxSqlStatements"])
+
+
+def _approve_sql(change: Change, user, cfg) -> Change:
+    if not cfg["sql"]["enabled"]:
+        raise ChangeError("bad_state", "raw SQL is switched off (setting sql.enabled); this change cannot be applied")
+    try:
+        if introspect.schema_fingerprint(change.schema) != change.fingerprint:
+            return _mark_stale(change, user, "the database changed since this SQL was checked; re-check it")
+    except introspect.UnknownSchema:
+        return _mark_stale(change, user, f"schema {change.schema!r} no longer exists (it was renamed or dropped); propose the change again")
+    change.decided_by, change.decided_at = user, timezone.now()
+    record(user, "change.approved", target=f"#{change.pk}")
+    try:
+        path = backup_schema(change.schema, f"change-{change.pk}", cfg["backups"]["retentionDays"])
+    except BackupError as exc:
+        return _fail(change, user, f"backup failed, nothing was changed: {exc}")
+    record(user, "backup.created", target=path.name)
+    try:
+        rawsql.run_in_transaction(_raw_statements(change), change.schema, expected=change.diff)
+    except rawsql.RawSqlChanged as exc:
+        return _mark_stale(change, user, exc.message)
+    except rawsql.RawSqlError as exc:
+        return _fail(change, user, exc.message)
+    change.status = Change.Status.APPLIED
+    change.applied_at = timezone.now()
+    change.reverse_operations = None
+    change.error = ""
+    change.save()
+    record(user, "change.applied", target=f"#{change.pk}",
+           details={"kind": "sql", "sql": change.operations[0]["sql"], "backup": path.name, "reversible": False})
+    return change
+
+
+def _recheck_sql(change: Change, user) -> Change:
+    if not get_config()["sql"]["enabled"]:
+        raise ChangeError("bad_state", "raw SQL is switched off (setting sql.enabled); this change cannot be re-checked")
+    try:
+        statements = _raw_statements(change)
+        diff = rawsql.dry_run(statements, change.schema)
+        violations = [{"rule": "rawSql", "severity": "warn", "message": RAW_SQL_WARNING, "op_index": None, "suggestion": None},
+                      *rawsql.warnings_for(statements, change.schema)]
+        change.fingerprint = introspect.schema_fingerprint(change.schema)
+    except introspect.UnknownSchema:
+        return _mark_stale(change, user, f"schema {change.schema!r} no longer exists (it was renamed or dropped); propose the change again")
+    except rawsql.RawSqlError as exc:
+        change.check_result = {"errors": [exc.message], "violations": [], "autoAdded": []}
+        change.status = Change.Status.REJECTED
+        change.decision_note = "blocked: the SQL no longer runs"
+        change.save()
+        record(user, "change.rechecked", target=f"#{change.pk}", details={"status": change.status})
+        return change
+    change.generated_sql = [s.text for s in statements]
+    change.diff = diff
+    change.check_result = {"errors": [], "violations": violations, "autoAdded": []}
+    change.status = Change.Status.PENDING
+    change.decision_note = ""
+    change.error = ""
+    change.save()
+    record(user, "change.rechecked", target=f"#{change.pk}", details={"status": change.status})
+    return change
 
 
 def _follow_renames(change: Change) -> None:
@@ -392,6 +505,8 @@ def recheck(user, change_id: int) -> Change:
             change.save()
             record(user, "change.rechecked", target=f"#{change.pk}", details={"status": change.status})
             return change
+        if change.kind == "sql":
+            return _recheck_sql(change, user)
         is_revert = change.source == "revert"
         try:
             res = check.run(

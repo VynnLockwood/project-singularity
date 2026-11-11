@@ -78,3 +78,13 @@ def wipe_master(dbname: str) -> None:
         for (e,) in rw.execute("SELECT t.typname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace "
                                "WHERE n.nspname = 'master' AND t.typtype = 'e'").fetchall():
             rw.execute(f'DROP TYPE IF EXISTS master."{e}" CASCADE')
+        for (m,) in rw.execute("SELECT matviewname FROM pg_matviews WHERE schemaname = 'master'").fetchall():
+            rw.execute(f'DROP MATERIALIZED VIEW IF EXISTS master."{m}" CASCADE')
+        for (d,) in rw.execute("SELECT t.typname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace "
+                               "WHERE n.nspname = 'master' AND t.typtype = 'd'").fetchall():
+            rw.execute(f'DROP DOMAIN IF EXISTS master."{d}" CASCADE')
+        for (f,) in rw.execute("SELECT format('master.%I(%s)', proname, pg_get_function_identity_arguments(oid)) "
+                               "FROM pg_proc WHERE pronamespace = 'master'::regnamespace").fetchall():
+            rw.execute(f"DROP FUNCTION IF EXISTS {f} CASCADE")
+        for (q,) in rw.execute("SELECT sequencename FROM pg_sequences WHERE schemaname = 'master'").fetchall():
+            rw.execute(f'DROP SEQUENCE IF EXISTS master."{q}" CASCADE')
