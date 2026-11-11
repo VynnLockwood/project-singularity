@@ -9,6 +9,7 @@ import { useShortcut } from "@/lib/shortcuts";
 import { activityLevel, useChanges } from "@/lib/useChanges";
 import { useRoute } from "@/lib/useRoute";
 import { ToastProvider, useToast } from "@/components/ui";
+import { ActivityView } from "./ActivityView";
 import { ChatView } from "./ChatView";
 import { CommandPalette } from "./CommandPalette";
 import { ConnectView } from "./ConnectView";
@@ -16,7 +17,6 @@ import { DatabaseView } from "./DatabaseView";
 import { DataView } from "./DataView";
 import { DuplicatesView } from "./DuplicatesView";
 import { NotFound } from "./NotFound";
-import { QueueView } from "./QueueView";
 import { Rail } from "./Rail";
 import { ReviewTray } from "./ReviewTray";
 import { ScriptsTab } from "./ScriptsTab";
@@ -114,7 +114,10 @@ function Shell({ me, onLogout }: Props) {
           {view === "settings" && (
             <SettingsView me={me} refreshKey={configApplied} waiting={configWaiting} onOpenQueue={() => navigate({ view: "activity" })} />
           )}
-          {view === "activity" && <QueueView me={me} changes={mine} onDecide={changes.decide} busy={busy} />}
+          {route.view === "activity" && (
+            <ActivityView me={me} tab={route.tab === "history" ? "history" : "queue"} navigate={navigate} pending={mine} live={live}
+              onDecide={changes.decide} busy={busy} />
+          )}
           {view === "notfound" && <NotFound path={route.path} onHome={() => navigate({ view: "chat" })} />}
         </main>
       </div>
