@@ -113,7 +113,7 @@ describe("DatabaseView", () => {
     await screen.findByRole("button", { name: "customer" });
     fireEvent.click(screen.getByRole("tab", { name: "ERD" }));
     expect(screen.getByRole("tab", { name: "ERD" })).toHaveAttribute("aria-selected", "true");
-    expect(await screen.findByRole("img", { name: "Schema diagram" })).toBeInTheDocument();
+    expect(await screen.findByRole("group", { name: "Schema diagram" })).toBeInTheDocument();
     expect(mocks.getGraph).toHaveBeenCalledWith("master");
   });
 

@@ -50,6 +50,7 @@ describe("buildPath", () => {
   it("puts chat at the root and encodes segments", () => {
     expect(buildPath({ view: "chat" })).toBe("/");
     expect(buildPath({ view: "data", schema: "sales", table: "my table" })).toBe("/data/sales/my%20table");
+    expect(buildPath({ view: "database", schema: "master", table: "a b" })).toBe("/database/master/a%20b");
   });
   it("drops a table that has no schema", () => expect(buildPath({ view: "data", table: "x" })).toBe("/data"));
   it("gives back the path of an unknown place", () => expect(buildPath({ view: "notfound", path: "/nope" })).toBe("/nope"));

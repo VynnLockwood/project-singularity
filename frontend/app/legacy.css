@@ -276,3 +276,15 @@ textarea.code { width: 100%; color: var(--text); }
 .overview-table { width: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; padding: var(--space-2) var(--space-3); background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-panel); color: var(--text); cursor: pointer; font: inherit; overflow: hidden; }
 .overview-table:hover { background: var(--surface-3); }
 .overview-table-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.segmented { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius-panel); overflow: hidden; }
+.segmented button { background: var(--surface-1); color: var(--text); border: 0; padding: 4px 14px; cursor: pointer; font: inherit; }
+.segmented button[aria-pressed="true"] { background: var(--surface-3); color: var(--text-bright); font-weight: 500; }
+.schema-2d { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-3); }
+.schema-2d:has(.universe-panel) { grid-template-columns: minmax(0, 1fr) 16rem; }
+.schema-fit svg { width: 100%; height: auto; }
+.erd-card { cursor: pointer; }
+.erd-card:focus-visible .card, .erd-card[aria-pressed="true"] .card { stroke: var(--disk); stroke-width: 2; }
+.edge[data-hot="true"] { opacity: 1; stroke-width: 2.5; }
+.edge[data-dim="true"] { opacity: 0.15; }
+.card-col[data-fk="true"] { fill: var(--disk); }
+@media (max-width: 800px) { .schema-2d:has(.universe-panel) { grid-template-columns: minmax(0, 1fr); } }
