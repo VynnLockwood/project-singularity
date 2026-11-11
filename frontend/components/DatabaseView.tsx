@@ -331,7 +331,7 @@ export function DatabaseView({ me, live, route, navigate, refreshKey, onProposed
         {tab === "relations" && (table
           ? <RelationsTab key={`${schema}/${table}`} me={me} schema={schema} table={table} graph={graph} refreshKey={refreshKey} onProposed={onProposed} onOpenTable={(n) => go(schema, n, "fields")} />
           : <p className="muted">Select a table to see its relations.</p>)}
-        {tab === "overview" && <OverviewTab me={me} schema={schema} comment={info?.comment} graph={graph} onAskAssistant={onAskAssistant} />}
+        {tab === "overview" && <OverviewTab me={me} schema={schema} comment={info?.comment} graph={graph} onAskAssistant={onAskAssistant} onOpenTable={(n) => go(schema, n, "fields")} />}
         {tab === "erd" && <SchemaView schema={schema} refreshKey={refreshKey} />}
           </>
         )}

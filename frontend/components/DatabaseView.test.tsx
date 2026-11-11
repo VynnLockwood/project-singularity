@@ -269,7 +269,7 @@ describe("DatabaseView", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Fields" }));
     rerender(1);
     await waitFor(() => expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(/^master$/));
-    expect(screen.getByLabelText("Filter tables")).toHaveValue("");
+    expect(await screen.findByLabelText("Filter tables")).toHaveValue("");
     expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
   });
 
@@ -322,7 +322,7 @@ describe("DatabaseView", () => {
     await setup({ searchSchema } as never);
     fireEvent.click(await screen.findByRole("button", { name: "crm (0)" }));
     await screen.findAllByText("No tables yet.");
-    expect(await screen.findByText("0 tables")).toBeInTheDocument();
+    expect(await screen.findByRole("group", { name: "0 tables" })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Search the schema"), { target: { value: "x" } });
     fireEvent.click(screen.getByRole("button", { name: "Search" }));
     await waitFor(() => expect(searchSchema).toHaveBeenCalledWith("x", "crm"));
