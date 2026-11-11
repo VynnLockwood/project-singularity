@@ -236,3 +236,14 @@ def test_scan_and_dismiss_are_audited(data):
     from audit.models import AuditLog
     actions = set(AuditLog.objects.values_list("action", flat=True))
     assert {"duplicates.scanned", "duplicates.dismissed"} <= actions
+
+
+def test_web_reopen_checks_the_state_and_audits(data):
+    from audit.models import AuditLog
+    scan()
+    g = DuplicateGroup.objects.first()
+    assert post(api(), f"/api/duplicates/{g.pk}/reopen").status_code == 409            # still open
+    post(api(), f"/api/duplicates/{g.pk}/dismiss")
+    r = post(api(), f"/api/duplicates/{g.pk}/reopen")
+    assert r.status_code == 200 and r.json()["status"] == "open"
+    assert AuditLog.objects.filter(action="duplicates.reopened", target=f"#{g.pk}").count() == 1

@@ -43,6 +43,7 @@ TOOL_ROLES = {
     "get_duplicate": "viewer",
     "merge_duplicates": "editor",
     "dismiss_duplicate": "editor",
+    "reopen_duplicate": "editor",
     "revert_change": "approver",
     "reindex_search": "approver",
     "recheck_change": "editor",
@@ -149,6 +150,10 @@ DESCRIPTIONS = {
         "To undo a rule change, call propose_config_change with {\"op\":\"rollback_rule\",\"name\":<rule>,\"version\":<n>}."
     ),
     "dismiss_duplicate": "Mark a group as not duplicates, so a scan does not bring it back.",
+    "reopen_duplicate": (
+        "Bring a dismissed duplicate group back to open, for when it was dismissed by mistake. Only dismissed groups "
+        "can be reopened; a merged or merge-pending group cannot."
+    ),
     "revert_change": (
         "Undo an applied change by applying its stored reverse (approvers only). Changes that dropped something "
         "cannot be undone this way; the error says so."
@@ -478,7 +483,7 @@ def merge_duplicates(user, group_id: int, survivor_id: int, *, source: str = "mc
     if dup.state(g) == "dismissed":
         raise ToolFailure(
             f"group #{g.pk} was dismissed as not duplicates, so it cannot be merged. If that was a mistake, the "
-            "user can reopen it in the web app (Duplicates); find_duplicates will not bring a dismissed group back.")
+            f"call reopen_duplicate with group_id={g.pk}; find_duplicates will not bring a dismissed group back.")
     try:
         change = dup.propose_merge(g, survivor_id, user, source=source, conversation_id=conversation_id)
     except dup.DuplicateError as exc:
@@ -492,6 +497,10 @@ def merge_duplicates(user, group_id: int, survivor_id: int, *, source: str = "mc
 
 def dismiss_duplicate(user, group_id: int) -> dict:
     return _dup(lambda d: d.dismiss(d.get_group(group_id), user))
+
+
+def reopen_duplicate(user, group_id: int) -> dict:
+    return _dup(lambda d: d.reopen(d.get_group(group_id), user))
 
 
 def _next_step(user, change: Change) -> str:
@@ -745,6 +754,7 @@ IMPL = {
     "get_duplicate": get_duplicate,
     "merge_duplicates": merge_duplicates,
     "dismiss_duplicate": dismiss_duplicate,
+    "reopen_duplicate": reopen_duplicate,
     "revert_change": revert_change,
     "reindex_search": reindex_search,
     "recheck_change": recheck_change,

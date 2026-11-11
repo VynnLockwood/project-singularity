@@ -41,7 +41,7 @@ calling approve_change. Schema changes by editors wait for an approver. Dropping
 Never say a change is applied until its status is 'applied'.
 History: list_changes and get_change; approvers also have get_audit_log, revert_change and list_pending.
 A stale change is re-checked with recheck_change.
-Data quality: find_duplicates, list_duplicates, get_duplicate, then merge_duplicates (a data change) or dismiss_duplicate.
+Data quality: find_duplicates, list_duplicates, get_duplicate, then merge_duplicates (a data change), dismiss_duplicate or reopen_duplicate.
 Settings, gate rules and roles: get_settings, get_rule_history and list_users, then propose_config_change. These always wait for an approver.
 Whole SQL files: submit_script parses a pg_dump-style script into the same gated operations (small scripts inline;
 big ones are uploaded in the web app, then validate_script with the script_id). export_schema returns a database as SQL.
@@ -323,6 +323,11 @@ async def merge_duplicates(group_id: int, survivor_id: int) -> dict:
 @mcp.tool(name="dismiss_duplicate", description=tools.DESCRIPTIONS["dismiss_duplicate"])
 async def dismiss_duplicate(group_id: int) -> dict:
     return await run("dismiss_duplicate", group_id=group_id)
+
+
+@mcp.tool(name="reopen_duplicate", description=tools.DESCRIPTIONS["reopen_duplicate"])
+async def reopen_duplicate(group_id: int) -> dict:
+    return await run("reopen_duplicate", group_id=group_id)
 
 
 @mcp.tool(name="export_schema", description=tools.DESCRIPTIONS["export_schema"] + " " + DB_NOTE)

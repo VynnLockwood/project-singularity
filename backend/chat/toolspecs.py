@@ -95,6 +95,7 @@ SPECS = {
                          {"group_id": {"type": "integer"}, "survivor_id": {"type": "integer", "description": "the record to keep"}},
                          ["group_id", "survivor_id"]),
     "dismiss_duplicate": (D["dismiss_duplicate"], {"group_id": {"type": "integer"}}, ["group_id"]),
+    "reopen_duplicate": (D["reopen_duplicate"], {"group_id": {"type": "integer"}}, ["group_id"]),
     "export_schema": (D["export_schema"], {**SCHEMA, "include_data": {"type": "boolean"}}, []),
     "reindex_search": (D["reindex_search"], {"rebuild": {"type": "boolean"}}, []),
 }
