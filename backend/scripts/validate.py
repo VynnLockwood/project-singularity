@@ -14,6 +14,7 @@ Report (JSON-serializable, bounded; saved on script.report):
    "errors": [{"kind": "storage"|"parse"|"mapping"|"rows", "line", "statement", "message"}],
    "errors_truncated": int,                                   # errors beyond MAX_ERRORS
    "ignored": [{"line", "statement"}], "ignored_truncated": int,
+   "skipped": [{"line", "statement", "reason", "kind"}], "skipped_truncated": int,
    "ops_summary": {"total": int, "by_op": {op: count}, "tables": [table, ...]},
    "gate": {"errors": [str], "blocked": [violation], "warnings": [violation], "truncated": int},
    "tables": [{"name", "source", "rows", "orphans", "sample_orphans": [
@@ -66,6 +67,7 @@ def _new_report(script: Script) -> dict:
     return {
         "ok": False, "script_id": script.pk, "statements": 0, "mapping_used": None,
         "errors": [], "errors_truncated": 0, "ignored": [], "ignored_truncated": 0,
+        "skipped": [], "skipped_truncated": 0,
         "ops_summary": {"total": 0, "by_op": {}, "tables": []},
         "gate": {"errors": [], "blocked": [], "warnings": [], "truncated": 0},
         "tables": [],
@@ -240,6 +242,11 @@ def _run(report: dict, script: Script, mapping: dict | None, schema: str = "mast
     parsed = parse_script(text)
     report["statements"] = parsed.statements
     _ignored(report, parsed.ignored)
+    report["skipped"] = parsed.skipped[:MAX_IGNORED]
+    report["skipped_truncated"] = max(0, len(parsed.skipped) - MAX_IGNORED)
+    if not parsed.errors and not parsed.ops and not parsed.streams:
+        _add_error(report, "parse", 0, "", "Nothing to import: the file has no tables or rows.")
+        return
     if parsed.errors:
         for e in parsed.errors:
             _add_error(report, "parse", e.line, e.statement, e.message)
