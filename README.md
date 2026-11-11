@@ -94,6 +94,8 @@ operation, and `list_tables` also lists a database's views and enum types.
 
 The Data tab edits one table at a time: server-side paging, sort and filter, reference columns as dropdowns (labelled by the target's name column), and a draft that collects your edits. **Save for approval** sends one proposal through the same rules gate as everything else: identical edits are grouped into one `update_rows`, new rows into one `insert_rows`, and removed rows are *deactivated* (`isActive = false`), never deleted. Editors approve their own data changes in the review tray. Viewers see the grid read-only.
 
+Pick a database and table in the left pane; the address `/data/<database>/<table>` opens it directly, and the view lives in the query string (`?sort=name&dir=desc&inactive=1&f.name=abc`), so a link reproduces it. Filters are chips above the grid (case-insensitive contains, combined with AND); click a header to sort ascending, again for descending, a third time to clear. **Export CSV** (editors and approvers) downloads the whole filtered, sorted view as UTF-8 with a byte order mark so Excel reads Thai text, with raw ids for reference columns. A view with more rows than the setting `limits.maxExportRows` is refused with a message asking you to narrow the filters; nothing is cut off silently. Text starting with `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading apostrophe so a spreadsheet cannot run it as a formula; numeric and boolean columns are not changed. Each export is written to the audit log as `table.export_csv`.
+
 Limits: the grid does not detect that someone else changed the same cell after you loaded the page (last approved write wins), and one save is capped by `maxOpsPerProposal` / `maxRowsPerDataOp` in `singularity.yaml`.
 
 ## Search
