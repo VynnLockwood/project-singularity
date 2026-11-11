@@ -190,7 +190,8 @@ def _orphans(report: dict, ops: list[dict], parsed, state: dict, schema: str = "
 
 # ---------------------------------------------------------------- main
 
-def validate(script: Script, mapping: dict | None, schema: str = "master") -> dict:
+def validate(script: Script, mapping: dict | None, schema: str = "master", progress=None) -> dict:
+    """`progress(phase)` is called with reading, parsing, checking, dry_run as a run reaches each one."""
     introspect.require_managed(schema)
     report = _new_report(script)
     report["schema"] = schema
@@ -202,7 +203,7 @@ def validate(script: Script, mapping: dict | None, schema: str = "master") -> di
         _save(script, report, kept)
         return report
     try:
-        _run(report, script, mapping, schema)
+        _run(report, script, mapping, schema, progress or (lambda phase: None))
     except Exception as exc:  # last resort: never crash, report a failed run instead
         _add_error(report, "rows", 0, "", f"unexpected error: {_clip(exc)}")
         report["dry_run"] = {"ok": False, "skipped": report["dry_run"]["skipped"],
@@ -229,16 +230,18 @@ def _save(script: Script, report: dict, kept: tuple) -> None:
     script.save(update_fields=fields)
 
 
-def _run(report: dict, script: Script, mapping: dict | None, schema: str = "master") -> None:
+def _run(report: dict, script: Script, mapping: dict | None, schema: str = "master", progress=lambda p: None) -> None:
     if mapping is not None:
         script.mapping = mapping
         report["mapping_used"] = "given"
+    progress("reading")
     try:
         text = storage.read_text(script)
     except storage.ScriptError as exc:
         _add_error(report, "storage", 0, "", str(exc))
         return
 
+    progress("parsing")
     parsed = parse_script(text)
     report["statements"] = parsed.statements
     _ignored(report, parsed.ignored)
@@ -252,6 +255,7 @@ def _run(report: dict, script: Script, mapping: dict | None, schema: str = "mast
             _add_error(report, "parse", e.line, e.statement, e.message)
         return
 
+    progress("checking")
     state = introspect.snapshot(schema)
     external = introspect.external_state(state, schema)  # tables the script does not create (external refs)
     if mapping is None:
@@ -291,6 +295,7 @@ def _run(report: dict, script: Script, mapping: dict | None, schema: str = "mast
 
     if res.blocked or any(t["orphans"] for t in report["tables"]):
         return
+    progress("dry_run")
     dry = report["dry_run"]
     dry["skipped"] = False
     try:

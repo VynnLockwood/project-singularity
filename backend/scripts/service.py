@@ -30,6 +30,8 @@ def validate(user, script_id: int, mapping: dict | None, schema: str = "master")
     script = Script.objects.filter(pk=script_id).first()
     if script is None:
         raise storage.ScriptError(f"script #{script_id} does not exist")
+    if script.owner_id != user.pk and not user.can_approve:
+        raise PermissionError("this script belongs to someone else")
     return validate_mod.validate(script, mapping, schema)
 
 

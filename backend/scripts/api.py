@@ -4,7 +4,7 @@ from django.http import JsonResponse
 from accounts.api import endpoint, error
 from schema.http import schema_param, unknown_schema_is_400
 
-from . import service, storage, uploads
+from . import jobs, service, storage, uploads
 from .models import Script
 
 
@@ -17,7 +17,7 @@ def _summary(s: Script) -> dict:
         "id": s.pk, "name": s.name, "sha256": s.sha256, "size": s.size,
         "status": s.status, "change_id": s.change_id,
         "created_at": s.created_at.isoformat(), "expires_at": s.expires_at.isoformat(),
-        "report": s.report or None,
+        "report": (jobs.STOPPED if jobs.is_stale(s.report) else s.report) or None,
     }
 
 
@@ -71,9 +71,21 @@ def scripts(request):
 @endpoint("POST", min_role="editor")
 @unknown_schema_is_400
 def validate_view(request, script_id):
+    if request.GET.get("async"):
+        try:
+            return JsonResponse(jobs.start(request.user, script_id, request.json.get("mapping"),
+                                           schema_param(request, request.json)), status=202)
+        except jobs.Forbidden as exc:
+            return error(str(exc), 403)
+        except jobs.Busy as exc:
+            return error(str(exc), 409)
+        except storage.ScriptError as exc:
+            return _err(exc)
     try:
         report = service.validate(request.user, script_id, request.json.get("mapping"),
                                   schema_param(request, request.json))
+    except PermissionError as exc:
+        return error(str(exc), 403)
     except storage.ScriptError as exc:
         return _err(exc)
     return JsonResponse(report)
