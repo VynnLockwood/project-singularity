@@ -6,6 +6,11 @@ describe("exportUrl", () => {
     expect(exportUrl("master", true)).toBe("/api/schema/export?schema=master&data=1");
     expect(exportUrl("master", false)).toBe("/api/schema/export?schema=master&data=0");
   });
+  it("asks for the psql-only format only with data", () => {
+    expect(exportUrl("master", true, "copy")).toBe("/api/schema/export?schema=master&data=1&format=copy");
+    expect(exportUrl("master", true, "insert")).toBe("/api/schema/export?schema=master&data=1");
+    expect(exportUrl("master", false, "copy")).toBe("/api/schema/export?schema=master&data=0");
+  });
   it("encodes the schema name", () => {
     expect(exportUrl("a b", false)).toBe("/api/schema/export?schema=a%20b&data=0");
   });

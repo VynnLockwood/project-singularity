@@ -117,8 +117,8 @@ def dst():
     pgsetup.drop_db(DST)
 
 
-def export_to(path, *, data):
-    exp = open_export("master", data=data, cap=10_000)
+def export_to(path, *, data, fmt="insert"):
+    exp = open_export("master", data=data, cap=10_000, fmt=fmt)
     try:
         with open(path, "wb") as f:
             for chunk in exp.chunks():
@@ -127,10 +127,11 @@ def export_to(path, *, data):
         exp.close()
 
 
-def test_roundtrip_matches_source(dst, tmp_path):
+@pytest.mark.parametrize("fmt", ["insert", "copy"])
+def test_roundtrip_matches_source(dst, tmp_path, fmt):
     populate()
     path = tmp_path / "full.sql"
-    export_to(path, data=True)
+    export_to(path, data=True, fmt=fmt)
     src = snapshot(pgsetup_src())
     res = load(path, dst)
     assert res.returncode == 0, f"psql failed:\n{res.stderr}"
@@ -145,11 +146,12 @@ def test_roundtrip_matches_source(dst, tmp_path):
         assert c.execute('INSERT INTO master."order" (parent_id) VALUES (1) RETURNING id').fetchone()[0] == 21
 
 
-def test_roundtrip_loads_under_a_non_utf8_client_encoding(dst, tmp_path):
+@pytest.mark.parametrize("fmt", ["insert", "copy"])
+def test_roundtrip_loads_under_a_non_utf8_client_encoding(dst, tmp_path, fmt):
     """The file sets client_encoding itself, so PGCLIENTENCODING=LATIN1 in the loader's environment is harmless."""
     populate()
     path = tmp_path / "full.sql"
-    export_to(path, data=True)
+    export_to(path, data=True, fmt=fmt)
     src = snapshot(pgsetup_src())
     res = load(path, dst, env={**os.environ, "PGCLIENTENCODING": "LATIN1"})
     assert res.returncode == 0, f"psql failed:\n{res.stderr}"
@@ -177,3 +179,14 @@ def test_roundtrip_structure_only(dst, tmp_path):
 def pgsetup_src():
     from django.conf import settings
     return settings.MASTER_DB["dbname"]
+
+
+def test_a_failed_load_keeps_nothing(dst, tmp_path):
+    """Loading the same file twice: the second run fails at CREATE TABLE and the data is not doubled."""
+    populate()
+    path = tmp_path / "full.sql"
+    export_to(path, data=True)
+    assert load(path, dst).returncode == 0
+    assert load(path, dst).returncode != 0
+    with pgsetup.connect(pgsetup.ADMIN, dst) as c:
+        assert c.execute("SELECT count(*) FROM master.parent").fetchone()[0] == 8

@@ -38,13 +38,27 @@ def _ordered(model: dict) -> list[dict]:
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 
-def render_header(schema: str, include_data: bool, counts: dict[str, int], today: datetime.date) -> str:
+FORMATS = ("insert", "copy")
+
+_RESTORE_HINT = {
+    "insert": ["-- format: insert (plain SQL: runs in psql, pgAdmin, DBeaver and any other SQL client)",
+               "-- restore: psql -v ON_ERROR_STOP=1 -f <this file>   (or open it in your SQL client and run it)"],
+    "copy": ["-- format: copy (uses COPY ... FROM stdin, so it runs in psql only, not in SQL editors)",
+             "-- restore: psql -v ON_ERROR_STOP=1 -f <this file>"],
+}
+
+
+def render_header(schema: str, include_data: bool, counts: dict[str, int], today: datetime.date,
+                  fmt: str | None = None) -> str:
     lines = [
         "-- Singularity export",
         f"-- schema: {schema}",
         f"-- date: {today.isoformat()}",
         f"-- data: {'included' if include_data else 'not included'}",
     ]
+    if include_data and fmt in _RESTORE_HINT:
+        lines += _RESTORE_HINT[fmt]
+        lines.append("-- The whole file is one transaction: if it stops or fails, nothing is kept.")
     lines += [f"-- {name}: {n} rows" for name, n in counts.items()]
     return "\n".join(_CONTROL.sub(" ", line) for line in lines) + "\n"
 
@@ -108,6 +122,13 @@ def render_identity_fix(model: dict, schema: str) -> str:
 
 
 EXPORT_TIMEOUT_MS = 600_000
+BATCH_BYTES = 256 * 1024            # what one stream chunk holds (a chunk per row would be ~3M hops for 250 MB)
+INSERT_ROWS = 500                   # rows per INSERT statement
+INSERT_MAX_BYTES = 1_000_000        # ...or fewer, when the rows are wide
+MAX_CONCURRENT_EXPORTS = 2          # data exports at once, across all workers (advisory locks)
+_LOCK_KEY = 1397510725              # first key of the pg advisory lock pair; the second is the slot number
+
+_BARE_INTS = {"smallint", "integer", "bigint"}
 
 
 class _Chunks:
@@ -171,7 +192,8 @@ class AsyncChunks:
 
 class Export:
     def __init__(self, schema: str, data: bool, conn, model: dict, counts: dict[str, int],
-                 today: datetime.date | None = None):
+                 today: datetime.date | None = None, fmt: str = "insert"):
+        self.fmt = fmt
         self.today = today or datetime.date.today()
         self.schema = schema
         self.data = data
@@ -193,20 +215,29 @@ class Export:
             self.conn.close()
 
     def _generate(self):
+        """The file in ~BATCH_BYTES chunks."""
+        buf: list[bytes] = []
+        size = 0
+        for piece in self._pieces():
+            buf.append(piece)
+            size += len(piece)
+            if size >= BATCH_BYTES:
+                yield b"".join(buf)
+                buf, size = [], 0
+        if buf:
+            yield b"".join(buf)
+
+    def _pieces(self):
         model, schema = self.model, self.schema
-        yield render_header(schema, self.data, self.counts, self.today).encode()
-        yield ("\n" + render_structure(model, schema)).encode()
+        yield render_header(schema, self.data, self.counts, self.today, self.fmt).encode()
+        yield ("\nBEGIN;\n" + render_structure(model, schema)).encode()
         if self.data:
             by_name = {t["name"]: t for t in model["tables"]}
             for name in table_order(model):
-                cols = ", ".join(_ident(c["name"]) for c in by_name[name]["columns"])
-                qt = _qualified(schema, name)
-                yield f"\nCOPY {qt} ({cols}) FROM stdin;\n".encode()
-                with self.conn.cursor() as cur:
-                    with cur.copy(f"COPY {qt} ({cols}) TO STDOUT") as copy:
-                        for chunk in copy:
-                            yield bytes(chunk)
-                yield b"\\.\n"
+                if self.fmt == "copy":
+                    yield from self._copy_table(by_name[name])
+                else:
+                    yield from self._insert_table(by_name[name])
         fk = render_foreign_keys(model, schema)
         if fk:
             yield ("\n" + fk).encode()
@@ -217,14 +248,79 @@ class Export:
             fix = render_identity_fix(model, schema)
             if fix:
                 yield ("\n" + fix).encode()
+        yield b"\nCOMMIT;\n\n-- end of export\n"
+
+    def _copy_table(self, table: dict):
+        cols = ", ".join(_ident(c["name"]) for c in table["columns"])
+        qt = _qualified(self.schema, table["name"])
+        yield f"\nCOPY {qt} ({cols}) FROM stdin;\n".encode()
+        with self.conn.cursor() as cur:
+            with cur.copy(f"COPY {qt} ({cols}) TO STDOUT") as copy:
+                for chunk in copy:
+                    yield bytes(chunk)
+        yield b"\\.\n"
+
+    def _insert_table(self, table: dict):
+        """Multi-row INSERTs. The server writes every literal (quote_nullable), so quoting is Postgres's own."""
+        qt = _qualified(self.schema, table["name"])
+        columns = table["columns"]
+        cols = ", ".join(_ident(c["name"]) for c in columns)
+        override = " OVERRIDING SYSTEM VALUE" if any(c.get("identity") == "always" for c in columns) else ""
+        head = f"INSERT INTO {qt} ({cols}){override} VALUES\n"
+        self.conn.execute(f"DECLARE exp_rows NO SCROLL CURSOR FOR SELECT {_row_literal(columns)} AS r FROM {qt}")
+        first = True
+        while True:
+            rows = self.conn.execute(f"FETCH {INSERT_ROWS} FROM exp_rows").fetchall()
+            if not rows:
+                break
+            if first:
+                yield b"\n"
+                first = False
+            batch: list[str] = []
+            size = 0
+            for row in rows:
+                batch.append(row["r"])
+                size += len(row["r"])
+                if size >= INSERT_MAX_BYTES:
+                    yield (head + ",\n".join(batch) + ";\n").encode()
+                    batch, size = [], 0
+            if batch:
+                yield (head + ",\n".join(batch) + ";\n").encode()
+        self.conn.execute("CLOSE exp_rows")
 
 
-def open_export(schema: str, *, data: bool, cap: int) -> Export:
+def _row_literal(columns: list[dict]) -> str:
+    """One SQL expression that renders a row as `(lit, lit, ...)`. Never NULL itself; chained with || (no 100-arg limit)."""
+    parts = []
+    for c in columns:
+        q = _ident(c["name"])
+        if c["type"] in _BARE_INTS:
+            parts.append(f"COALESCE({q}::text, 'NULL')")
+        elif c["type"] == "boolean":
+            parts.append(f"CASE WHEN {q} IS NULL THEN 'NULL' WHEN {q} THEN 'true' ELSE 'false' END")
+        else:
+            parts.append(f"quote_nullable({q}::text)")
+    return "'(' || " + " || ', ' || ".join(parts) + " || ')'"
+
+
+def _take_slot(conn) -> None:
+    """Hold one of MAX_CONCURRENT_EXPORTS advisory-lock slots for the life of `conn` (closing it frees the slot)."""
+    for slot in range(MAX_CONCURRENT_EXPORTS):
+        if conn.execute("SELECT pg_try_advisory_lock(%s, %s) AS ok", (_LOCK_KEY, slot)).fetchone()["ok"]:
+            return
+    raise ExportError(f"{MAX_CONCURRENT_EXPORTS} data exports are already running; try again in a few minutes.", 429)
+
+
+def open_export(schema: str, *, data: bool, cap: int, fmt: str = "insert") -> Export:
+    if fmt not in FORMATS:
+        raise ExportError(f"Unknown format {fmt!r}; use one of: {', '.join(FORMATS)}.", 400)
     if schema not in allowed_schemas():
         raise ExportError(f"Unknown schema {schema!r}.", 400)
     today = datetime.date.today()
     conn = ro_connection(autocommit=True)
     try:
+        if data:
+            _take_slot(conn)
         conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
         conn.execute(f"SET LOCAL statement_timeout = {int(EXPORT_TIMEOUT_MS)}")
         conn.execute(f"SET LOCAL idle_in_transaction_session_timeout = {int(EXPORT_TIMEOUT_MS)}")
@@ -244,7 +340,7 @@ def open_export(schema: str, *, data: bool, cap: int) -> Export:
                     raise ExportError(
                         f"Export is over the {cap}-row limit; the limit was crossed at table "
                         f"{_ident(name)}. Export without data or raise the limit.", 413)
-        return Export(schema, data, conn, model, counts, today)
+        return Export(schema, data, conn, model, counts, today, fmt)
     except BaseException:
         conn.close()
         raise

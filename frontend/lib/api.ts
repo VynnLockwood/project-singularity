@@ -21,9 +21,15 @@ export async function getMe(): Promise<Me | null> {
 
 export const googleLoginUrl = `${BASE}/auth/google/login`;
 
-/** Link for the SQL export; a plain href lets the browser stream the download. */
-export function exportUrl(schema: string, data: boolean): string {
-  return `${BASE}/schema/export?schema=${encodeURIComponent(schema)}&data=${data ? 1 : 0}`;
+export type ExportFormat = "insert" | "copy";
+
+/**
+ * Link for the SQL export; a plain href lets the browser stream the download.
+ * `insert` (the server default, so left out of the link) runs in any SQL client; `copy` is faster but psql-only.
+ */
+export function exportUrl(schema: string, data: boolean, format: ExportFormat = "insert"): string {
+  const fmt = data && format === "copy" ? "&format=copy" : "";
+  return `${BASE}/schema/export?schema=${encodeURIComponent(schema)}&data=${data ? 1 : 0}${fmt}`;
 }
 
 /** Link for the CSV export of one table's filtered, sorted view; the view is the Data tab's address state. */

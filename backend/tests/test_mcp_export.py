@@ -63,7 +63,7 @@ def test_data_needs_an_editor(users):
     with pytest.raises(tools.ToolFailure, match="editor"):
         tools.export_schema(users[Role.VIEWER], include_data=True)
     out = tools.export_schema(users[Role.EDITOR], include_data=True)
-    assert "COPY" in out["sql"] and "Central" in out["sql"]
+    assert "INSERT INTO" in out["sql"] and "Central" in out["sql"]
 
 
 @pytest.mark.django_db(transaction=True)
