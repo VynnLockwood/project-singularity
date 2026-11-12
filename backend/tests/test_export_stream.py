@@ -1,4 +1,4 @@
-"""open_export / Export: consistent snapshot streamed with COPY and a row cap."""
+"""open_export / Export (COPY format): consistent snapshot streamed with COPY and a row cap."""
 import datetime
 
 import pytest
@@ -40,7 +40,7 @@ def test_structure_only_has_no_copy_and_no_setval():
 
 def test_data_included_copy_blocks_terminated():
     seed()
-    exp = open_export("master", data=True, cap=100)
+    exp = open_export("master", data=True, cap=100, fmt="copy")
     out = text(exp)
     assert 'COPY "master"."parent" ("id", "name") FROM stdin;\n1\ta\n2\tb\n\\.\n' in out
     assert "-- parent: 2 rows" in out and "-- child: 2 rows" in out
@@ -53,7 +53,7 @@ def test_copy_escaping_round_trip_values():
     with conn.rw_connection(autocommit=True) as c:
         for i, v in enumerate(vals):
             c.execute("INSERT INTO master.t VALUES (%s, %s)", (i, v))
-    out = text(open_export("master", data=True, cap=100))
+    out = text(open_export("master", data=True, cap=100, fmt="copy"))
     body = out.split("FROM stdin;\n")[1].split("\\.\n")[0].split("\n")
     assert "0\ta\\tb" in body and "1\tx\\ny" in body
     assert "2\tback\\\\slash" in body and "3\t\\\\N" in body
@@ -63,7 +63,7 @@ def test_copy_escaping_round_trip_values():
 
 def test_order_parents_before_children_and_fks_after_data():
     seed()
-    out = text(open_export("master", data=True, cap=100))
+    out = text(open_export("master", data=True, cap=100, fmt="copy"))
     assert out.index('COPY "master"."parent"') < out.index('COPY "master"."child"')
     assert out.index("FOREIGN KEY") > out.rindex("\\.\n")
 
@@ -71,7 +71,7 @@ def test_order_parents_before_children_and_fks_after_data():
 def test_cap_raises_413_naming_table_before_streaming():
     seed()
     with pytest.raises(ExportError) as e:
-        open_export("master", data=True, cap=3)
+        open_export("master", data=True, cap=3, fmt="copy")
     assert e.value.status == 413 and "child" in str(e.value)
     open_export("master", data=False, cap=1).close()
 
@@ -85,7 +85,7 @@ def test_unknown_schema_is_400(bad):
 
 def test_snapshot_is_consistent():
     seed()
-    exp = open_export("master", data=True, cap=100)
+    exp = open_export("master", data=True, cap=100, fmt="copy")
     build("INSERT INTO master.parent (name) VALUES ('late')")
     out = text(exp)
     assert "late" not in out
@@ -94,22 +94,22 @@ def test_snapshot_is_consistent():
 
 def test_connection_closed_after_exhaust_and_after_early_close():
     seed()
-    exp = open_export("master", data=True, cap=100)
+    exp = open_export("master", data=True, cap=100, fmt="copy")
     list(exp.chunks())
     assert exp.conn.closed
-    exp = open_export("master", data=True, cap=100)
+    exp = open_export("master", data=True, cap=100, fmt="copy")
     ch = exp.chunks()
     next(ch)
     ch.close()
     assert exp.conn.closed
-    exp = open_export("master", data=True, cap=100)
+    exp = open_export("master", data=True, cap=100, fmt="copy")
     exp.chunks().close()
     assert exp.conn.closed
 
 
 def test_inactive_rows_are_exported():
     seed()
-    out = text(open_export("master", data=True, cap=100))
+    out = text(open_export("master", data=True, cap=100, fmt="copy"))
     assert "2\t2\tf\n" in out
 
 
@@ -121,7 +121,7 @@ def test_filename_and_cycles():
         "CREATE TABLE master.s (id integer PRIMARY KEY, p integer REFERENCES master.s(id))",
         "INSERT INTO master.s VALUES (1, NULL), (2, 1)",
     )
-    exp = open_export("master", data=True, cap=100)
+    exp = open_export("master", data=True, cap=100, fmt="copy")
     assert exp.filename(datetime.date(2026, 11, 9)) == "singularity-master-20261109.sql"
     out = text(exp)
     assert "2\t1\n" in out
@@ -129,7 +129,7 @@ def test_filename_and_cycles():
 
 def test_close_closes_connection_even_if_generator_close_raises(monkeypatch):
     seed()
-    exp = open_export("master", data=True, cap=100)
+    exp = open_export("master", data=True, cap=100, fmt="copy")
     ch = exp.chunks()
     next(ch)
 
@@ -145,7 +145,7 @@ def test_close_closes_connection_even_if_generator_close_raises(monkeypatch):
 
 def test_next_error_closes_connection_even_if_generator_close_raises():
     seed()
-    exp = open_export("master", data=True, cap=100)
+    exp = open_export("master", data=True, cap=100, fmt="copy")
     ch = exp.chunks()
 
     class Bad:
@@ -163,7 +163,7 @@ def test_next_error_closes_connection_even_if_generator_close_raises():
 
 def test_session_settings_on_export_connection():
     seed()
-    exp = open_export("master", data=True, cap=100)
+    exp = open_export("master", data=True, cap=100, fmt="copy")
     try:
         got = {k: exp.conn.execute("SELECT current_setting(%s) AS v", (k,)).fetchone()["v"]
                for k in ("DateStyle", "IntervalStyle", "idle_in_transaction_session_timeout")}

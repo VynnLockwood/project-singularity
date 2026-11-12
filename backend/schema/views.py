@@ -8,7 +8,7 @@ from config.siconfig import get_config
 
 from . import introspect, query, roles, rows as rows_mod
 from .dump_model import ExportError
-from .export import open_export
+from .export import FORMATS, open_export
 from .http import schema_param, unknown_schema_is_400
 
 
@@ -33,20 +33,26 @@ def graph(request):
 @endpoint("GET")
 @unknown_schema_is_400
 def export(request):
-    """Download a schema as Postgres SQL: `?schema=master&data=0|1`. Data needs the editor role."""
+    """Download a schema as Postgres SQL: `?schema=master&data=0|1&format=insert|copy`. Data needs the editor role.
+
+    `insert` (default) is plain SQL that any client runs; `copy` is faster but only psql can run it.
+    """
     schema = schema_param(request)
     flag = request.GET.get("data", "0")
     if flag not in ("0", "1"):
         return error("data must be 0 or 1", 400)
     with_data = flag == "1"
+    fmt = request.GET.get("format", "insert")
+    if fmt not in FORMATS:
+        return error(f"format must be one of: {', '.join(FORMATS)}", 400)
     if with_data and not ROLE_CHECK["editor"](request.user):
         return error("exporting data needs the editor role", 403)
     try:
-        ex = open_export(schema, data=with_data, cap=get_config()["limits"]["maxExportRows"])
+        ex = open_export(schema, data=with_data, cap=get_config()["limits"]["maxExportRows"], fmt=fmt)
     except ExportError as exc:
         return error(str(exc), exc.status)
     try:
-        record(request.user, "schema.export", schema, {"schema": schema, "data": with_data, "counts": ex.counts})
+        record(request.user, "schema.export", schema, {"schema": schema, "data": with_data, "format": fmt, "counts": ex.counts})
         # Under ASGI Django collects a sync iterator into a list first (whole file in memory): hand it an async one.
         chunks = ex.async_chunks() if hasattr(request, "scope") else ex.chunks()
         resp = StreamingHttpResponse(chunks, content_type="text/sql; charset=utf-8")

@@ -41,6 +41,20 @@ describe("ExportMenu", () => {
     expect(clicked[0]).toMatch(/schema=crm&data=1$/);
   });
 
+  it("offers the format only with data, defaulting to plain SQL", async () => {
+    const { clicked } = await setup(true, async () => json(200, {}));
+    expect(screen.queryByLabelText("Data format")).toBeNull();
+    fireEvent.click(screen.getByLabelText("Include data"));
+    const pick = screen.getByLabelText("Data format") as HTMLSelectElement;
+    expect(pick.value).toBe("insert");
+    expect(screen.getByRole("note").textContent).toMatch(/pgAdmin.*one transaction/);
+    fireEvent.change(pick, { target: { value: "copy" } });
+    expect(screen.getByRole("note").textContent).toMatch(/Only psql/);
+    download();
+    await waitFor(() => expect(clicked).toHaveLength(1));
+    expect(clicked[0]).toMatch(/data=1&format=copy$/);
+  });
+
   it("disables the checkbox for viewers and never asks for data", async () => {
     const { clicked, fetchMock } = await setup(false, async () => json(200, {}));
     const box = screen.getByLabelText("Include data") as HTMLInputElement;

@@ -147,7 +147,7 @@ def test_streaming_response_is_not_buffered():
     r = call(user(Role.EDITOR), "?data=1")
     assert isinstance(r, StreamingHttpResponse)
     out = body(r)
-    assert 'COPY "master"."province"' in out and out.rstrip().endswith(("\\.", ";"))
+    assert 'INSERT INTO "master"."province"' in out and out.rstrip().endswith("-- end of export")
 
 
 def test_limit_tunable_validates_range():
@@ -183,6 +183,7 @@ async def _collect(resp):
 
 def test_asgi_response_has_async_iterator_and_same_body():
     seed()
+    build("INSERT INTO master.province SELECT g, repeat('x', 40) FROM generate_series(10, 30000) g")  # > one 256 KiB chunk
     ed = user(Role.EDITOR)
     expected = body(call(ed, "?data=1"))
     resp = acall(ed, "?data=1")
@@ -261,6 +262,7 @@ def test_asyncclient_end_to_end_streams_asynchronously():
     from django.test import AsyncClient
 
     seed()
+    build("INSERT INTO master.province SELECT g, repeat('x', 40) FROM generate_series(10, 30000) g")  # > one 256 KiB chunk
     ed = user(Role.EDITOR)
     expected = body(call(ed, "?data=1"))
 
