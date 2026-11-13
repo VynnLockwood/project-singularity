@@ -26,3 +26,9 @@ def master(master_db, settings, tmp_path):
     pgsetup.wipe_master(master_db)
     yield master_db
     pgsetup.wipe_master(master_db)
+
+
+@pytest.fixture(autouse=True)
+def _script_dir(settings, tmp_path):
+    """Script uploads never touch the real /scripts (it does not exist, or is not writable, on CI)."""
+    settings.SCRIPT_DIR = str(tmp_path / "scripts")

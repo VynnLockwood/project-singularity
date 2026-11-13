@@ -26,7 +26,7 @@ for name, svc in services.items():
         errors.append(f"{name} publishes host ports; only nginx may")
 
 nginx_ports = {int(p["target"]) for p in services["nginx"].get("ports", [])}
-# TLS is terminated in front (Cloudflare Tunnel), so the gateway serves plain HTTP on 80 only
+# TLS is terminated in front (a reverse proxy or tunnel), so the gateway serves plain HTTP on 80 only
 if nginx_ports != {80}:
     errors.append(f"nginx should publish exactly container port 80, got {sorted(nginx_ports)}")
 

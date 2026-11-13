@@ -18,7 +18,7 @@
 - `bulk_insert` stays in `INTERNAL_OPS` (`gate/operations.py:42`); the normal `propose_change` path must still refuse it.
 - Max identifier length 63 (`MAX_IDENT`, `scripts/mapping.py:58`).
 - Tests: `pytest` from `/root/project-singularity/backend`. DB-backed tests need `TEST_PG_ADMIN_USER=postgres PGHOST=db`; pure-parser tests (`tests/test_script_sqlparse.py`) need no DB.
-- Commit per task. Real-browser verification against `https://singularity.lunariankids.com` after deploy.
+- Commit per task. Real-browser verification against `https://<your-host>` after deploy.
 
 ---
 
@@ -423,7 +423,7 @@ docker compose cp /root/.hermes/cache/documents/doc_fd2e65abc6dd_load_subdistric
 Expected: validate under 5s (it was 0.8s once the O(n²) scan was fixed — do not regress past 5s),
 `report["tables"]` shows 7,720 rows for `subdistrict`, orphan count 0 against the 928 districts.
 
-- [ ] **Step 3: Real browser** — `https://singularity.lunariankids.com`, Scripts tab, validate → HTTP 200,
+- [ ] **Step 3: Real browser** — `https://<your-host>`, Scripts tab, validate → HTTP 200,
 `{"ok": true}` or explicit orphan list. No 504.
 
 - [ ] **Step 4: Commit nothing** (no code changed); report numbers in the PR.
