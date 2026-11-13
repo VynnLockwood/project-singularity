@@ -258,6 +258,6 @@ git commit -m "feat(ui): download the schema as SQL"
 ### Task 5: Prod verification
 
 - [ ] **Step 1:** Deploy `web` + `api`.
-- [ ] **Step 2:** `curl -s https://singularity.lunariankids.com/api/schema/export?format=sql -o /tmp/x.sql` anonymously → must be **401**.
+- [ ] **Step 2:** `curl -s https://<your-host>/api/schema/export?format=sql -o /tmp/x.sql` anonymously → must be **401**.
 - [ ] **Step 3:** With a session → 200, `text/sql`, and the file must contain `CREATE TABLE` for `district`/`province`/`subdistrict`.
 - [ ] **Step 4:** Load `/tmp/x.sql` into a scratch Postgres and confirm those tables exist.

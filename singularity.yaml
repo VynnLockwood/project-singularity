@@ -2,9 +2,9 @@
 auth:
   provider: google
   allowedDomains:
-    - gmail.com
+    - example.com      # CHANGE: domains allowed to sign in (a Gmail-only team: gmail.com)
   seedAdmins:              # become "approver" on first sign-in
-    - nolanrobinson490@gmail.com
+    - admin@example.com   # CHANGE: your email
   defaultRole: viewer      # viewer | editor | approver
 
 limits:

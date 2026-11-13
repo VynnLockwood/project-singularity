@@ -156,10 +156,12 @@ Not verified in the build sandbox: the 3D rendering itself (there is no GPU or b
 
 ```sh
 cp .env.example .env            # fill in passwords and Google OAuth credentials
-$EDITOR singularity.yaml        # set allowedDomains and seedAdmins
+$EDITOR singularity.yaml        # set allowedDomains and seedAdmins (ships with example.com placeholders)
 sh nginx/gen-dev-cert.sh        # self-signed cert for local HTTPS
 docker compose up --build
 ```
+
+Set `DJANGO_SECRET_KEY` in `.env` (the app refuses to start without a real one); behind a real host, also set `DJANGO_ALLOWED_HOSTS` and `DJANGO_CSRF_TRUSTED_ORIGINS`.
 
 Open https://localhost. nginx is the only service that publishes ports; everything else is on an internal network.
 
@@ -208,3 +210,7 @@ npm test && npm run typecheck && npm run build
 ```
 
 Compose safety check (only nginx exposed): `python3 scripts/check-compose.py`
+
+## License
+
+[MIT](LICENSE)

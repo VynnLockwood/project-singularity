@@ -20,7 +20,7 @@
 - `create_table` never includes audit columns (the server adds them). Audit columns are hidden in Fields by default, shown read-only with the **Show audit columns** toggle; the toggle is stored per browser in `localStorage` inside try/catch.
 - Audit column names always come from the server (`hiddenColumns`), never from a list in the UI.
 - Reuse existing CSS classes (`grid-bar`, `button`, `link`, `muted`, `small`, `problems`, `change`, `schema-scroll`, `universe-wrap`); add only the few layout classes the rail needs to `frontend/app/globals.css`.
-- Commits authored as `VynnLockwood <nolanrobinson490@gmail.com>`; NO Claude co-author, "Generated with Claude Code" or Claude-Session lines.
+- Commits authored as `VynnLockwood <120536136+VynnLockwood@users.noreply.github.com>`; NO Claude co-author, "Generated with Claude Code" or Claude-Session lines.
 - Frontend checks: `cd frontend && npx vitest run && npx tsc --noEmit` (baseline: 157 tests pass). Backend check for Task 1: `pg_ctlcluster 16 main start; . /tmp/testenv.sh; cd backend && pytest -q` (baseline: exactly 21 failures: 18 in `tests/test_duplicates.py` plus `test_config_changes.py::test_stale_schema_proposals_are_marked_when_rules_change`, `test_mcp_http.py::test_full_flow_ai_proposes_user_confirms_then_applies`, `test_script_submit.py::test_editor_submit_data_only_then_self_approve_loads_rows`; compare by name).
 
 ## Review Focus

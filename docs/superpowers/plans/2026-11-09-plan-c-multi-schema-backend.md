@@ -27,7 +27,7 @@ If the user rejects this, tasks 3 to 6 need rework; say so before execution.
 - Managed schemas = schemas owned by `singularity_master_rw` (not `singularity`, not `public`). `master` is always managed and can never be renamed or dropped.
 - `drop_schema` only for empty schemas (no tables, views, sequences, types, functions). Needs `reason`. Editors propose, approvers approve (same as other destructive ops).
 - NEVER run the owner migration against the live database. Ship the SQL file and a check query only; the owner runs it after explicit confirmation.
-- Commits are authored as `VynnLockwood <nolanrobinson490@gmail.com>`; NO Claude co-author, "Generated with Claude Code" or Claude-Session lines.
+- Commits are authored as `VynnLockwood <120536136+VynnLockwood@users.noreply.github.com>`; NO Claude co-author, "Generated with Claude Code" or Claude-Session lines.
 - Test env: `pg_ctlcluster 16 main start; . /tmp/testenv.sh`; run pytest from the worktree `backend/`. The suite has 21 pre-existing failures (baseline); no new failure may appear. DB tests skip without the testenv, so implementers must run them with it sourced.
 - Identifiers go through `sql.Identifier`, values through `sql.Literal` / params; no schema name is ever formatted into SQL text.
 
