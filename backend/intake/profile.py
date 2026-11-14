@@ -12,6 +12,7 @@ _DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$", re.ASCII)
 _BOOL = {"true", "false", "yes", "no", "t", "f", "y", "n"}
 _CODE_LEN = 13  # digits-only values this long are identifiers (tax IDs), not numbers
 _NOUNS = {"integer": "integers", "numeric": "numbers", "date": "dates", "boolean": "booleans"}
+_ONE = {"integer": "an integer", "numeric": "a number", "date": "a date", "boolean": "a boolean"}
 _BE_OFFSET = 543
 _BE_MIN_YEAR = 2400
 _TYPES = ("integer", "numeric", "date", "boolean")
@@ -68,6 +69,8 @@ def _convert_kind(values, kind):
     """Return (convert, type, parsed) when a whole-column conversion makes it typed."""
     if values and all(_THAI_RE.search(v) for v in values):
         t = [v.translate(_THAI) for v in values]
+        if all(_from_be(v) for v in t):
+            return "thai_digits+buddhist_year", "date"
         for k in ("integer", "numeric", "date"):
             if all(_parses(v, k) for v in t):
                 return "thai_digits", k
@@ -103,8 +106,8 @@ def _profile_column(header, cells, samples):
         share = int(parsed * 100 / len(values)) / 100 if values else 0.0
         bad = len(values) - parsed
         if parsed:
-            note = (f"{int(share * 100)}% {_NOUNS[kind]}, kept as text: "
-                    f"{bad} rows are not {_NOUNS[kind]}")
+            rows = "1 row is not " + _ONE[kind] if bad == 1 else f"{bad} rows are not {_NOUNS[kind]}"
+            note = f"{parsed * 100 // len(values)}% {_NOUNS[kind]}, kept as text: {rows}"
     counts = Counter(values)
     return {
         "header": header,
@@ -135,8 +138,9 @@ def convert_value(value, column):
     if _blank(value):
         return None
     v = str(value).strip()
-    if column.get("convert") in ("thai_digits", "buddhist_year"):
+    convert = column.get("convert") or ""
+    if "thai_digits" in convert or convert == "buddhist_year":
         v = v.translate(_THAI)
-    if column.get("convert") == "buddhist_year":
+    if "buddhist_year" in convert:
         return _from_be(v) or v
     return v

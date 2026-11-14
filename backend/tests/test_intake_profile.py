@@ -79,3 +79,17 @@ def test_profile_shape():
     p = profile(src(["1", "2"], ["a", "b"], name="sheet"), 3)
     assert p["name"] == "sheet" and p["rows"] == 2 and len(p["columns"]) == 2
     assert p["columns"][0]["header"] == "c0"
+
+
+def test_thai_digit_buddhist_dates_combined():
+    c = col(["๒๕๖๗-๐๑-๓๑", "๒๕๖๗-๐๒-๐๑"])
+    assert c["type"] == "date" and c["convert"] == "thai_digits+buddhist_year"
+    assert convert_value("๒๕๖๗-๐๑-๓๑", c) == "2024-01-31"
+
+
+def test_note_percentage_matches_share_and_singular_grammar():
+    c = col([str(i) for i in range(29)] + ["x"] * 71)
+    assert c["share"] == 0.29
+    assert c["note"] == "29% integers, kept as text: 71 rows are not integers"
+    c = col([str(i) for i in range(99)] + ["x"])
+    assert c["note"] == "99% integers, kept as text: 1 row is not an integer"
