@@ -43,6 +43,7 @@ describe("buildPath", () => {
     { view: "chat" }, { view: "chat", conversation: 7 },
     { view: "database" }, { view: "database", schema: "master" }, { view: "database", schema: "master", table: "province" },
     { view: "data", schema: "sales", table: "my table" },
+    { view: "query" }, { view: "query", schema: "master" },
     { view: "settings" }, { view: "settings", section: "team" },
     { view: "duplicates" }, { view: "scripts" }, { view: "activity" }, { view: "activity", tab: "history" }, { view: "connect" },
   ];
@@ -68,5 +69,13 @@ describe("isAssetPath", () => {
     expect(isAssetPath(undefined)).toBe(false);
     expect(isAssetPath(["data", "master", "province"])).toBe(false);
     expect(isAssetPath(["nope"])).toBe(false);
+  });
+});
+
+describe("query route", () => {
+  it("reads the schema", () => {
+    expect(parseRoute("/query/master")).toEqual({ view: "query", schema: "master" });
+    expect(parseRoute("/query")).toEqual({ view: "query" });
+    expect(buildPath({ view: "query", schema: "a b" })).toBe("/query/a%20b");
   });
 });

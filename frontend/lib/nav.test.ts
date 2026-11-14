@@ -5,7 +5,7 @@ const views = (role: "viewer" | "editor" | "approver") => navFor(role).flatMap((
 
 describe("navFor", () => {
   it("gives an editor every view, in four groups", () => {
-    expect(views("editor")).toEqual(["chat", "database", "data", "duplicates", "scripts", "activity", "connect", "settings"]);
+    expect(views("editor")).toEqual(["chat", "database", "data", "query", "duplicates", "scripts", "activity", "connect", "settings"]);
     expect(navFor("editor").map((g) => g.group)).toEqual(["Work", "Quality", "Review", "System"]);
   });
   it("hides Scripts from a viewer and keeps Activity", () => {
