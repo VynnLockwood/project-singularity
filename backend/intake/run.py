@@ -60,6 +60,9 @@ RUNNING = (S.PROFILING, S.MATCHING, S.DESIGNING, S.CHECKING)
 CLOSED = (S.FAILED, S.SUBMITTED)
 
 
+BUSY = "You already have an import open for this database. Finish or cancel it first."
+
+
 class RunError(Exception):
     """code: forbidden | not_found | bad_state | busy | invalid (HTTP 403 / 404 / 409 / 409 / 400)."""
 
@@ -133,6 +136,16 @@ def _drop_script(script_id) -> None:
             pass
 
 
+def _script_name(run_id: int) -> str:
+    return f"import-{run_id}.sql"
+
+
+def _drop_run_scripts(run_id: int) -> None:
+    """Retire every Critic script of a run (all but a submitted one)."""
+    for pk in Script.objects.filter(kind="import", name=_script_name(run_id)).values_list("pk", flat=True):
+        _drop_script(pk)
+
+
 # ---------------------------------------------------------------- access
 
 def _require_edit(user) -> None:
@@ -163,9 +176,9 @@ def _locked(user, run_id: int) -> ImportRun:
     return _refresh(run)
 
 
-def _open_run(user, schema: str) -> ImportRun | None:
+def _open_run(user, schema: str, exclude: int | None = None) -> ImportRun | None:
     for r in (ImportRun.objects.filter(owner=user, schema=schema, expires_at__gt=timezone.now())
-              .exclude(state__in=CLOSED)):
+              .exclude(state__in=CLOSED).exclude(pk=exclude)):
         if _refresh(r).state not in CLOSED:
             return r
     return None
@@ -200,8 +213,7 @@ def start(user, upload_id: int, schema: str, prompt: str, api_key: str = "") -> 
         with transaction.atomic():
             User.objects.select_for_update().filter(pk=user.pk).first()   # one start at a time per person
             if _open_run(user, schema) is not None:
-                raise RunError("busy", "You already have an import open for this database. Finish or cancel it "
-                                       "first.")
+                raise RunError("busy", BUSY)
             session = UploadSession.objects.filter(pk=upload_id, owner=user).first()
             path = uploads.complete_raw(user, upload_id)
             now = timezone.now()
@@ -264,10 +276,13 @@ def recheck(user, run_id: int, mapping, filters, skip) -> ImportRun:
     if problems:
         raise RunError("invalid", "; ".join(problems))
     with transaction.atomic():
+        User.objects.select_for_update().filter(pk=user.pk).first()   # the same lock as start
         run = _locked(user, run_id)
         if run.state not in (S.READY, S.FAILED) or not run.profile:
             raise RunError("bad_state", f"import #{run.pk} is {run.state}; only ready or failed imports can be "
                                         "checked again")
+        if run.state == S.FAILED and _open_run(run.owner, run.schema, exclude=run.pk) is not None:
+            raise RunError("busy", BUSY)    # a failed run must not reopen beside another open one
         plan = {**(run.plan or {}), "mapping": mapping, "filters": filters, "picked": picked, "questions": []}
         _set(run, plan=plan, state=S.CHECKING)
     _spawn(run, "")
@@ -291,7 +306,7 @@ def submit(user, run_id: int, note: str = ""):
         _critic_says(run, report)
         raise RunError("invalid", "the plan no longer passes the check: " + "; ".join(report["problems"][:3]))
     try:
-        change = script_service.submit(user, report["scriptId"], note or "", schema=run.schema)
+        change = script_service.submit(user, report["scriptId"], note or "", schema=run.schema, _import_run=True)
     except (ScriptError, PermissionError) as exc:
         _set(run, report=report, state=S.READY)
         raise RunError("invalid", str(exc)) from None
@@ -304,9 +319,10 @@ def submit(user, run_id: int, note: str = ""):
 def cancel(user, run_id: int) -> None:
     with transaction.atomic():
         run = _locked(user, run_id)
-        if run.state == S.SUBMITTED:
-            raise RunError("bad_state", f"import #{run.pk} is submitted; it cannot be cancelled")
-        _drop_script((run.report or {}).get("scriptId"))
+        if run.state not in (S.WAITING_FOR_ANSWER, S.READY, S.FAILED):
+            raise RunError("bad_state", f"import #{run.pk} is {run.state}; it can be cancelled once it is waiting "
+                                        "for an answer, ready or failed")
+        _drop_run_scripts(run.pk)
         _remove_file(run.file_path)
         run.delete()
 
@@ -323,7 +339,7 @@ def purge_expired(now=None) -> int:
                 ImportRun.objects.filter(pk=run.pk).update(file_path="")
                 n += 1
             continue
-        _drop_script((run.report or {}).get("scriptId"))
+        _drop_run_scripts(run.pk)
         _remove_file(run.file_path)
         run.delete()
         n += 1
@@ -360,6 +376,9 @@ def execute(run_id: int, api_key: str = "", beat_seconds: float = BEAT_SECONDS) 
             _set(run, plan=run.plan, report=report, state=S.READY if report["ok"] else S.FAILED)
             _critic_says(run, report)
     except Exception as exc:  # noqa: BLE001 - whatever went wrong, the page must see failed, not a hang
+        if not ImportRun.objects.filter(pk=run_id).exists():
+            _drop_run_scripts(run_id)   # cancelled or purged meanwhile: leave nothing of it behind
+            return
         run.refresh_from_db()
         _fail(run, f"The import failed: {_clip(exc, 500)}")
     finally:
@@ -415,6 +434,53 @@ def _profile(run: ImportRun) -> tuple[list, list]:
     return sources, profiles
 
 
+def _entry_headers(entry) -> set:
+    """The sheet headers a mapping entry uses: mapped, dropped and ref source columns."""
+    if not isinstance(entry, dict):
+        return set()
+    hs = set((entry.get("columns") or {}).values()) if isinstance(entry.get("columns"), dict) else set()
+    hs |= set(entry.get("drop") or []) if isinstance(entry.get("drop"), list) else set()
+    for r in entry.get("refs") if isinstance(entry.get("refs"), list) else []:
+        if isinstance(r, dict):
+            hs.add(r.get("source_column"))
+    return {matcher._norm_header(h) for h in hs if isinstance(h, str)}
+
+
+def _rekey_recipe(recipe: dict, sources: list) -> dict:
+    """A recipe is found by headers only, but its mapping and filters are keyed by the sheet names of the file it
+    was approved for. Re-key them to this file's sheets: one sheet to one sheet, else by equal header sets.
+    Entries that match no sheet stay as they are (the Critic then reports them)."""
+    mapping = recipe.get("mapping") if isinstance(recipe.get("mapping"), dict) else {}
+    tables = mapping.get("tables") if isinstance(mapping.get("tables"), dict) else {}
+    names = [s["name"] for s in sources]
+    rename = {}
+    if len(tables) == 1 and len(names) == 1:
+        rename = {next(iter(tables)): names[0]}
+    else:
+        free = {s["name"]: {matcher._norm_header(h) for h in s["headers"]} for s in sources}
+        for old, entry in tables.items():
+            if old in free:
+                rename[old] = old
+                free.pop(old)
+        for old, entry in tables.items():
+            if old in rename:
+                continue
+            want = _entry_headers(entry)
+            hit = next((n for n, hs in free.items() if want and hs == want), None)
+            if hit:
+                rename[old] = hit
+                free.pop(hit)
+
+    def rekeyed(d):
+        return {rename.get(k, k): v for k, v in d.items()} if isinstance(d, dict) else d
+
+    out = {**recipe, "mapping": {**mapping, "tables": rekeyed(tables)} if tables else recipe.get("mapping")}
+    out["filters"] = rekeyed(recipe.get("filters"))
+    if isinstance(recipe.get("skip"), dict):
+        out["skip"] = rekeyed(recipe["skip"])
+    return out
+
+
 def _match(run: ImportRun, sources: list, profiles: list) -> None:
     _set(run, state=S.MATCHING)
     cfg = get_config()["import"]
@@ -435,6 +501,8 @@ def _match(run: ImportRun, sources: list, profiles: list) -> None:
         lines.append(line)
     if m["searchOffline"]:
         lines.append("Search is offline: columns were matched by name only.")
+    if m.get("recipe"):
+        m["recipe"] = _rekey_recipe(m["recipe"], sources)
     recipe_id = (m.get("recipe") or {}).get("id")
     if recipe_id:
         lines.append(f"Found an approved recipe (#{recipe_id}) for this file shape; it is the starting mapping.")
@@ -728,7 +796,7 @@ def _critic(run: ImportRun, sources: list, profiles: list, plan: dict) -> dict:
                                                     {"mapping": mapping, "filters": filters, "skip": skip},
                                                     run.schema)
         data = writer.write(s_sources, s_profiles, {**s_plan, "existing": existing}, run.schema)
-        script = storage.save(run.owner, f"import-{run.pk}.sql", data)
+        script = storage.save(run.owner, _script_name(run.pk), data, kind="import")
     except (ValueError, TypeError, AttributeError, KeyError, ScriptError) as exc:
         _add(report["problems"], f"the plan could not be written as a script: {exc}")
         return report

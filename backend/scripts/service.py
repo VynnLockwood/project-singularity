@@ -25,25 +25,33 @@ def upload(user, name: str, data: bytes) -> Script:
     return storage.save(user, name, data)
 
 
+IMPORT_ONLY = "script #{} belongs to an import; check and submit it from the Import tab"
+
+
 def validate(user, script_id: int, mapping: dict | None, schema: str | None = None) -> dict:
     _require_edit(user)
     script = Script.objects.filter(pk=script_id).first()
     if script is None:
         raise storage.ScriptError(f"script #{script_id} does not exist")
+    if script.kind == "import":
+        raise storage.ScriptError(IMPORT_ONLY.format(script.pk))
     if script.owner_id != user.pk and not user.can_approve:
         raise PermissionError("this script belongs to someone else")
     return validate_mod.validate(script, mapping, schema)
 
 
-def submit(user, script_id: int, note: str = "", schema: str | None = None):
+def submit(user, script_id: int, note: str = "", schema: str | None = None, *, _import_run: bool = False):
     """Turn a validated script into a pending Change (script row locked while deciding).
 
-    The change targets the schema the script was validated against; a different `schema` is refused."""
+    The change targets the schema the script was validated against; a different `schema` is refused.
+    Import scripts (kind "import") are refused unless the import run submits them (`_import_run=True`)."""
     _require_edit(user)
     with transaction.atomic():
         script = (Script.objects.select_for_update().filter(pk=script_id).first())
         if script is None:
             raise storage.ScriptError(f"script #{script_id} does not exist")
+        if script.kind == "import" and not _import_run:
+            raise storage.ScriptError(IMPORT_ONLY.format(script.pk))
         if script.expires_at and script.expires_at <= timezone.now():
             raise storage.ScriptError(f"script #{script_id} has expired")
         if script.status != Script.Status.VALIDATED:

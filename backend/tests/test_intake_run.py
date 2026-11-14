@@ -34,6 +34,7 @@ VENDORS_CSV = (
     "Old Closed Shop,0105500000124,Phuket,Inactive\n"       # row 4: removed by the filter
 )
 HEADERS = ["Vendor Name", "Tax ID", "Province", "Status"]
+HEADERS_LINE = "Vendor Name,Tax ID,Province,Status\n"
 
 MAPPING = {"tables": {"vendors": {
     "target": "partner",
@@ -455,3 +456,95 @@ def test_expired_runs_are_purged_with_their_files(shop, editor, never_starts):
     assert runs.purge_expired() == 1
     assert not ImportRun.objects.filter(pk=r.pk).exists() and not os.path.exists(r.file_path)
     assert runs.purge_expired() == 0
+
+
+# ---------------------------------------------------------------- fix round 1
+
+def test_recipe_fits_a_renamed_file(shop, editor, approver, model, inline):
+    r = begin(editor)
+    approvals.approve(approver, runs.submit(editor, r.pk, "").pk)
+    recipe = ImportRecipe.objects.get()
+    assert list(recipe.mapping["tables"]) == ["vendors"]
+
+    # next month's export: same headers, another file name -> another sheet name
+    renamed = {"mapping": {"tables": {"vendors-2026-12": MAPPING["tables"]["vendors"]}},
+               "filters": {"vendors-2026-12": FILTERS["vendors"]}, "reasons": {}, "questions": []}
+    model.calls.clear()
+    model.replies = [json.dumps(renamed)]
+    december = HEADERS_LINE + "December Shop,0105500000777,Bangkok,Active\n"
+    uid = upload(editor, december, name="vendors-2026-12.csv")
+    r2 = ImportRun.objects.get(pk=runs.start(editor, uid, "master", "monthly load").pk)
+    assert r2.recipe_id == recipe.pk
+    assert roles(r2) == ["profiler", "matcher", "designer", "critic"], texts(r2)
+    assert not any("drift" in t.lower() for t in texts(r2))
+    first = model.prompt(0)
+    assert '"recipe": {"mapping": {"tables": {"vendors-2026-12": {' in first   # re-keyed to this sheet
+    assert "Problems found" not in first
+    assert r2.state == ImportRun.State.READY
+
+
+def test_critic_scripts_stay_out_of_the_scripts_path(shop, editor, model, inline):
+    from django.test import Client
+
+    from scripts import service as script_service
+    r = begin(editor)
+    sid = r.report["scriptId"]
+    assert Script.objects.get(pk=sid).kind == "import"
+    plain = storage.save(editor, "plain.sql", b"COPY t (a) FROM stdin;\n1\n\\.\n")
+    c = Client()
+    c.force_login(editor)
+    listed = [s["id"] for s in c.get("/api/scripts").json()["scripts"]]
+    assert plain.pk in listed and sid not in listed
+    assert c.get(f"/api/scripts/{sid}").status_code == 404
+    with pytest.raises(storage.ScriptError):
+        script_service.submit(editor, sid)
+    with pytest.raises(storage.ScriptError):
+        script_service.validate(editor, sid, None, "master")
+    assert c.post(f"/api/scripts/{sid}/submit", {"note": ""}, content_type="application/json").status_code == 409
+    assert not Change.objects.exists()
+    change = runs.submit(editor, r.pk, "")
+    assert Change.objects.count() == 1 and Change.objects.get().pk == change.pk
+
+
+def test_cancel_refused_while_running(shop, editor, never_starts):
+    r = begin(editor)
+    for state in (ImportRun.State.PROFILING, ImportRun.State.MATCHING, ImportRun.State.DESIGNING,
+                  ImportRun.State.CHECKING):
+        ImportRun.objects.filter(pk=r.pk).update(state=state, heartbeat=timezone.now())
+        with pytest.raises(runs.RunError) as e:
+            runs.cancel(editor, r.pk)
+        assert e.value.code == "bad_state"
+    for state in (ImportRun.State.WAITING_FOR_ANSWER, ImportRun.State.READY, ImportRun.State.FAILED):
+        r2 = ImportRun.objects.create(owner=editor, schema="crm", file_path="", file_name="x.csv", state=state,
+                                      expires_at=timezone.now() + timedelta(hours=1))
+        runs.cancel(editor, r2.pk)
+        assert not ImportRun.objects.filter(pk=r2.pk).exists()
+
+
+def test_child_tolerates_a_vanished_run(shop, editor, model, inline, monkeypatch):
+    from scripts import validate as validate_mod
+    real = validate_mod.validate
+
+    def vanish(script, mapping, schema=None, progress=None):
+        rep = real(script, mapping, schema, progress)
+        ImportRun.objects.all().delete()     # cancelled (or purged) under the child's feet
+        return rep
+    monkeypatch.setattr(validate_mod, "validate", vanish)
+    upload_id = upload(editor)
+    runs.start(editor, upload_id, "master", "x")      # must not raise DoesNotExist
+    assert not ImportRun.objects.exists()
+    live = Script.objects.filter(kind="import").exclude(status=Script.Status.EXPIRED)
+    assert not live.exists()
+
+
+def test_recheck_from_failed_cannot_reopen_a_second_run(shop, editor, model, inline, monkeypatch):
+    model.replies = [bad_column()]
+    a = begin(editor)
+    assert a.state == ImportRun.State.FAILED
+    monkeypatch.setattr(runs.subprocess, "Popen", lambda *x, **k: None)
+    b = begin(editor)
+    assert b.state == ImportRun.State.PROFILING
+    with pytest.raises(runs.RunError) as e:
+        runs.recheck(editor, a.pk, MAPPING, FILTERS, {})
+    assert e.value.code == "busy"
+    assert ImportRun.objects.get(pk=a.pk).state == ImportRun.State.FAILED
