@@ -28,5 +28,14 @@ chat:
   allowedModels:
     - anthropic/claude-sonnet-4.5
 
+# Intelligent query tab (all optional; these are the defaults).
+# intelligentQuery:
+#   model: ""          # empty = the chat default model
+#   maxTables: 8
+#   examples: 3
+#   memoryHit: 0.95
+#   ratePerMinute: 20
+#   valueLookupMs: 800
+
 backups:
   retentionDays: 14
