@@ -151,8 +151,11 @@ def _json_body(request) -> dict:
 def upload_begin(request):
     def run(request):
         body = _json_body(request)
-        return JsonResponse(uploads.begin(request.user, str(body.get("name") or "script.sql"), body.get("size")),
-                            status=201)
+        kind = body.get("kind", "script")
+        if not isinstance(kind, str):
+            raise storage.ScriptError("kind must be text")
+        return JsonResponse(uploads.begin(request.user, str(body.get("name") or "script.sql"), body.get("size"),
+                                          kind=kind), status=201)
     return _upload_view({"POST"}, run)(request)
 
 
