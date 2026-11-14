@@ -19,6 +19,7 @@ export interface PlanTable {
   target: string;
   columns: Record<string, string>; // target column -> source header
   drop?: string[];
+  add_columns?: { name: string; type: string; nullable?: boolean; comment?: string }[];
   refs?: { column?: string; parent?: string; parent_key?: string; source_column?: string; external?: boolean }[];
 }
 export interface ImportPlan {
@@ -47,7 +48,7 @@ export interface ImportRun {
   fileName: string;
   round: number;
   profile: { sheets?: { name: string; rows?: number; columns?: { header: string; type?: string }[] }[] } | null;
-  matches: { sources?: Record<string, { rows?: { maybe?: MaybeRow[] } }> } | null;
+  matches: { sources?: Record<string, { rows?: { table?: string; maybe?: MaybeRow[] } }> } | null;
   plan: ImportPlan | null;
   report: ImportReport | null;
   messages: ImportMessage[];

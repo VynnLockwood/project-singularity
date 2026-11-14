@@ -17,8 +17,8 @@ const me: Me = { id: 1, email: "e@x.com", name: "E", role: "editor" };
 
 const run = (over: Partial<ImportRun> = {}): ImportRun => ({
   id: 7, schema: "master", state: "ready", prompt: "vendors", fileName: "vendors.csv", round: 1,
-  profile: { sheets: [{ name: "vendors", rows: 4, columns: [{ header: "Vendor Name" }, { header: "Tax ID" }, { header: "Status" }] }] },
-  matches: { sources: {} },
+  profile: { sheets: [{ name: "vendors", rows: 4, columns: [{ header: "Vendor Name", type: "text" }, { header: "Tax ID", type: "text" }, { header: "Status", type: "text" }, { header: "Credit Limit", type: "numeric" }] }] },
+  matches: { sources: { vendors: { rows: { table: "partner", maybe: [{ row: 1, id: 1, score: 0.93, existing: "Acme Company Limited" }] } } } },
   plan: {
     mapping: { tables: { vendors: { target: "partner", columns: { name: "Vendor Name", tax_id: "Tax ID" }, drop: ["Status"], refs: [] } } },
     filters: { vendors: [{ column: "Status", op: "equals", value: "Active" }] },
@@ -152,7 +152,7 @@ describe("ImportView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Re-check" }));
     await waitFor(() => expect(recheckImport).toHaveBeenCalled());
     expect(recheckImport).toHaveBeenCalledWith(7, {
-      mapping: { tables: { vendors: { target: "partner", columns: { name: "Vendor Name", notes: "Tax ID" }, drop: ["Status"], refs: [] } } },
+      mapping: { tables: { vendors: { target: "partner", columns: { name: "Vendor Name", notes: "Tax ID" }, drop: ["Status", "Credit Limit"], refs: [] } } },
       filters: { vendors: [{ column: "Status", op: "equals", value: "Active" }] },
       skip: { vendors: [1] },
     });
@@ -221,5 +221,72 @@ describe("ImportView", () => {
     fireEvent.change(container.querySelector('input[type="file"]') as HTMLInputElement, { target: { files: [new File(["x"], "a.csv")] } });
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("You already have an import open.");
+  });
+
+  it("adds a new column with a name and type as add_columns", async () => {
+    await setup(7);
+    fireEvent.change(await screen.findByLabelText("Target for Credit Limit"), { target: { value: "__new__" } });
+    expect(screen.getByLabelText("New column name for Credit Limit")).toHaveValue("credit_limit");
+    expect(screen.getByLabelText("Type of Credit Limit")).toHaveValue("numeric");
+    fireEvent.change(screen.getByLabelText("Type of Credit Limit"), { target: { value: "integer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Re-check" }));
+    await waitFor(() => expect(recheckImport).toHaveBeenCalled());
+    expect(vi.mocked(recheckImport).mock.calls[0][1].mapping).toEqual({
+      tables: { vendors: {
+        target: "partner", columns: { name: "Vendor Name", tax_id: "Tax ID", credit_limit: "Credit Limit" }, drop: ["Status"], refs: [],
+        add_columns: [{ name: "credit_limit", type: "integer", nullable: true }],
+      } },
+    });
+  });
+
+  it("refuses a bad or clashing new column name", async () => {
+    await setup(7);
+    fireEvent.change(await screen.findByLabelText("Target for Credit Limit"), { target: { value: "__new__" } });
+    const name = screen.getByLabelText("New column name for Credit Limit");
+    fireEvent.change(name, { target: { value: "Name" } });
+    expect(screen.getByText(/lowercase snake_case/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Re-check" })).toBeDisabled();
+    fireEvent.change(name, { target: { value: "notes" } });
+    expect(screen.getByText(/already exists/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Re-check" })).toBeDisabled();
+  });
+
+  it("offers no new column when the target table does not exist", async () => {
+    vi.mocked(getTable).mockRejectedValue(new ApiError(404, "no table"));
+    await setup(7);
+    await screen.findByLabelText("Target for Tax ID");
+    expect(within(screen.getByLabelText("Target for Tax ID")).queryByRole("option", { name: "new column" })).toBeNull();
+  });
+
+  it("keeps a ticked maybe row visible after re-check, and unticking sends it out of skip", async () => {
+    // the backend leaves a ticked row out of the report's maybe list
+    const after = run({
+      plan: { ...run().plan!, picked: { vendors: [1] }, skip: { vendors: [1] } },
+      report: { ...run().report!, tables: { vendors: { ...run().report!.tables!.vendors, maybe: [], skipped: 1 } } },
+    });
+    vi.mocked(recheckImport).mockResolvedValue(after);
+    await setup(7);
+    fireEvent.click(await screen.findByLabelText("Skip row 1"));
+    fireEvent.click(screen.getByRole("button", { name: "Re-check" }));
+    await waitFor(() => expect(recheckImport).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByLabelText("Skip row 1")).toBeChecked());
+    fireEvent.click(screen.getByLabelText("Skip row 1"));
+    expect(screen.getByLabelText("Skip row 1")).not.toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Re-check" }));
+    await waitFor(() => expect(recheckImport).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(recheckImport).mock.calls[1][1].skip).toEqual({ vendors: [] });
+  });
+
+  it("refetches the run after a rejected submit and shows the failure", async () => {
+    vi.mocked(getImport).mockResolvedValueOnce(run()).mockResolvedValue(run({
+      state: "failed", report: { ...run().report!, ok: false, problems: ["the plan no longer fits"] },
+    }));
+    vi.mocked(submitImport).mockRejectedValue(new ApiError(400, "the plan no longer passes the check", "invalid"));
+    await setup(7);
+    await screen.findByLabelText("Target for Tax ID");
+    fireEvent.click(screen.getByRole("button", { name: "Submit for approval" }));
+    await waitFor(() => expect(getImport).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getAllByRole("alert").map((a) => a.textContent).join(" ")).toMatch(/the plan no longer fits/));
+    expect(screen.getByRole("button", { name: "Submit for approval" })).toBeDisabled();
   });
 });

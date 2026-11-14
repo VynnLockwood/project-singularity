@@ -101,9 +101,25 @@ function StartForm({ schema, schemas, navigate }: { schema: string; schemas: Sch
   );
 }
 
-type Cell = { kind: "col" | "new"; name: string } | { kind: "drop" } | { kind: "ref"; label: string };
+type Cell = { kind: "col"; name: string } | { kind: "new"; name: string; type: string } | { kind: "drop" } | { kind: "ref"; label: string };
 type Cells = Record<string, Record<string, Cell>>;
 interface Edits { key: string; cells: Cells; skip: Record<string, number[]> }
+
+const TYPES = ["text", "integer", "numeric", "date", "boolean"] as const;
+const SNAKE = /^[a-z][a-z0-9_]{0,62}$/;
+/** A snake_case column name made from a header ("Credit Limit" -> "credit_limit"). */
+export function snakeName(header: string): string {
+  const s = header.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 63);
+  return !s ? "new_column" : /^[a-z]/.test(s) ? s : `c_${s}`.slice(0, 63);
+}
+const typeOf = (run: ImportRun, sheet: string, header: string) => {
+  const t = run.profile?.sheets?.find((s) => s.name === sheet)?.columns?.find((c) => c.header === header)?.type;
+  return (TYPES as readonly string[]).includes(t ?? "") ? (t as string) : "text";
+};
+/** Why a new column's name cannot be used, or "". */
+const nameProblem = (name: string, taken: string[]) =>
+  !SNAKE.test(name) ? "Use lowercase snake_case: letters, digits and _, starting with a letter."
+  : taken.includes(name) ? `A column called ${name} already exists.` : "";
 
 /** One cell per source header of every sheet in the plan. */
 function initialCells(run: ImportRun): Cells {
@@ -113,12 +129,14 @@ function initialCells(run: ImportRun): Cells {
     const headers = run.profile?.sheets?.find((s) => s.name === sheet)?.columns?.map((c) => c.header)
       ?? [...Object.values(t.columns ?? {}), ...(t.drop ?? []), ...(t.refs ?? []).map((r) => r.source_column ?? "")].filter(Boolean);
     const byHeader = new Map(Object.entries(t.columns ?? {}).map(([col, h]) => [h, col]));
+    const added = new Map((t.add_columns ?? []).map((a) => [a.name, a.type]));
     const refs = new Map((t.refs ?? []).filter((r) => r.source_column).map((r) => [r.source_column as string, r]));
     out[sheet] = {};
     for (const h of headers) {
       const col = byHeader.get(h);
       const ref = refs.get(h);
-      out[sheet][h] = col !== undefined ? { kind: "col", name: col }
+      out[sheet][h] = col !== undefined && added.has(col) ? { kind: "new", name: col, type: added.get(col) as string }
+        : col !== undefined ? { kind: "col", name: col }
         : ref ? { kind: "ref", label: `reference ${ref.column ?? ""} → ${ref.parent ?? ""}`.trim() }
         : { kind: "drop" };
     }
@@ -132,11 +150,15 @@ function editedMapping(plan: ImportPlan, cells: Cells) {
   for (const [sheet, t] of Object.entries(plan.mapping.tables)) {
     const columns: Record<string, string> = {};
     const drop: string[] = [];
+    const add_columns: { name: string; type: string; nullable: boolean }[] = [];
     for (const [header, c] of Object.entries(cells[sheet] ?? {})) {
-      if (c.kind === "col" || c.kind === "new") { if (c.name) columns[c.name] = header; else drop.push(header); }
+      if (c.kind === "col") columns[c.name] = header;
+      else if (c.kind === "new") { columns[c.name] = header; add_columns.push({ name: c.name, type: c.type, nullable: true }); }
       else if (c.kind === "drop") drop.push(header);
     }
-    tables[sheet] = { ...t, columns, drop };
+    const { add_columns: _old, ...rest } = t;
+    void _old;
+    tables[sheet] = { ...rest, columns, drop, ...(add_columns.length ? { add_columns } : {}) };
   }
   return { ...plan.mapping, tables };
 }
@@ -240,12 +262,32 @@ function RunView({ id, schema, navigate }: { id: number; schema: string; navigat
 
   const plan = run.plan;
   const state = run.state;
+  const badNew = Object.entries(cells).some(([sheet, hs]) => {
+    const taken = columns[plan?.mapping.tables[sheet]?.target ?? ""] ?? [];
+    const names = Object.values(hs).flatMap((x) => (x.kind === "col" || x.kind === "new" ? [x.name] : []));
+    return Object.values(hs).some((x) => x.kind === "new" && (nameProblem(x.name, taken) || names.filter((n) => n === x.name).length > 1));
+  });
   const recheck = () => act(
     () => recheckImport(run.id, { mapping: editedMapping(plan as ImportPlan, cells), filters: plan?.filters ?? {}, skip }),
     (r, s) => { accept(s, r); setEdits(null); }, "Could not re-check.");
-  const submit = () => act(
-    () => submitImport(run.id),
-    (r, s) => { if (accept(s, { ...run, state: "submitted", changeId: r.changeId })) setEdits(null); }, "Could not submit.");
+  const submit = async () => {
+    setBusy(true); setError("");
+    const s = ++seq.current;
+    try {
+      const r = await submitImport(run.id);
+      if (alive.current && accept(s, { ...run, state: "submitted", changeId: r.changeId })) setEdits(null);
+    } catch (e) {
+      if (!alive.current) return;
+      setError(message(e, "Could not submit."));
+      // the server may have failed the run or changed its state: show what it says now
+      if (e instanceof ApiError && (e.status === 400 || e.status === 409)) {
+        const s2 = ++seq.current;
+        await getImport(id).then((r) => { accept(s2, r); }, () => {});
+      }
+    } finally {
+      if (alive.current) setBusy(false);
+    }
+  };
   const cancel = () => act(() => cancelImport(run.id), () => navigate({ view: "import", schema: run.schema }), "Could not cancel.");
   const send = () => act(
     () => answerImport(run.id, answer.trim(), apiKey),
@@ -319,7 +361,7 @@ function RunView({ id, schema, navigate }: { id: number; schema: string; navigat
       )}
 
       <div className="imp-actions">
-        <Button onClick={() => void recheck()} disabled={busy || !canEdit || !dirty} icon="refresh">Re-check</Button>
+        <Button onClick={() => void recheck()} disabled={busy || !canEdit || !dirty || badNew} icon="refresh">Re-check</Button>
         <Button variant="primary" onClick={() => void submit()} disabled={busy || state !== "ready" || dirty || run.report?.ok === false}>Submit for approval</Button>
         <Button variant="danger" onClick={() => void cancel()} disabled={busy || running || state === "submitted"}>Cancel</Button>
       </div>
@@ -332,7 +374,17 @@ function SheetPanel({ sheet, run, target, existing, cells, editable, skipped, on
   skipped: number[]; onCell: (header: string, c: Cell) => void; onSkip: (row: number, on: boolean) => void;
 }) {
   const reasons = run.plan?.reasons ?? {};
-  const maybe: MaybeRow[] = run.report?.tables?.[sheet]?.maybe ?? run.matches?.sources?.[sheet]?.rows?.maybe ?? [];
+  const problemFor = (name: string, header: string) => {
+    const others = Object.entries(cells).filter(([h, x]) => h !== header && x.kind !== "drop" && x.kind !== "ref")
+      .map(([, x]) => (x as { name: string }).name);
+    return nameProblem(name, [...(existing ?? []), ...others]);
+  };
+  // The Matcher's full list, not the report's: the report leaves out rows already ticked, which could then never be unticked.
+  const found = run.matches?.sources?.[sheet]?.rows;
+  const listed: MaybeRow[] = found?.table === undefined || found.table === target ? found?.maybe ?? [] : [];
+  const known = new Set(listed.map((m) => m.row));
+  const maybe: MaybeRow[] = [...listed, ...skipped.filter((r) => !known.has(r)).map((row) => ({ row, id: 0, score: 0, existing: "" }))]
+    .sort((a, b) => a.row - b.row);
   return (
     <Panel title={<>{sheet} → <code>{target}</code></>}>
       {reasons[sheet] && <p className="imp-reason">{reasons[sheet]}</p>}
@@ -349,14 +401,23 @@ function SheetPanel({ sheet, run, target, existing, cells, editable, skipped, on
                   {c.kind === "ref" ? <span>{c.label}</span> : (
                     <>
                       <select aria-label={`Target for ${header}`} value={value} disabled={!editable}
-                        onChange={(e) => onCell(header, e.target.value === DROP ? { kind: "drop" } : e.target.value === NEW ? { kind: "new", name: "" } : { kind: "col", name: e.target.value })}>
+                        onChange={(e) => onCell(header, e.target.value === DROP ? { kind: "drop" }
+                          : e.target.value === NEW ? { kind: "new", name: snakeName(header), type: typeOf(run, sheet, header) }
+                          : { kind: "col", name: e.target.value })}>
                         {options.map((o) => <option key={o} value={o}>{o}</option>)}
-                        <option value={NEW}>new column</option>
+                        {(existing !== undefined || c.kind === "new") && <option value={NEW}>new column</option>}
                         <option value={DROP}>drop</option>
                       </select>
                       {c.kind === "new" && (
-                        <input aria-label={`New column name for ${header}`} value={c.name} disabled={!editable} placeholder="column name"
-                          onChange={(e) => onCell(header, { kind: "new", name: e.target.value })} />
+                        <>
+                          <input aria-label={`New column name for ${header}`} value={c.name} disabled={!editable} placeholder="column name"
+                            onChange={(e) => onCell(header, { ...c, name: e.target.value })} />
+                          <select aria-label={`Type of ${header}`} value={c.type} disabled={!editable}
+                            onChange={(e) => onCell(header, { ...c, type: e.target.value })}>
+                            {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                          </select>
+                          {problemFor(c.name, header) && <span className="problems" role="note">{problemFor(c.name, header)}</span>}
+                        </>
                       )}
                     </>
                   )}
@@ -374,7 +435,7 @@ function SheetPanel({ sheet, run, target, existing, cells, editable, skipped, on
             <label key={m.row}>
               <input type="checkbox" aria-label={`Skip row ${m.row}`} checked={skipped.includes(m.row)} disabled={!editable}
                 onChange={(e) => onSkip(m.row, e.target.checked)} />
-              <span>Row {m.row} looks like <em>{m.existing}</em> (match {Math.round(m.score * 100)}%)</span>
+              <span>{m.existing ? <>Row {m.row} looks like <em>{m.existing}</em> (match {Math.round(m.score * 100)}%)</> : <>Row {m.row}</>}</span>
             </label>
           ))}
         </fieldset>
