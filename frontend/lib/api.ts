@@ -502,12 +502,20 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Big files go up in parts (resumable): begin, put each part (3 retries, asking the server what it has), complete. */
 export async function uploadScriptChunked(
+  file: File, onProgress: (done: number, total: number) => void, signal?: AbortSignal,
+): Promise<{ script_id: number; sha256: string; size: number }>;
+/** `kind: "import"` stops after the last part: the import run completes the upload itself, so only the id comes back. */
+export async function uploadScriptChunked(
+  file: File, onProgress: (done: number, total: number) => void, signal: AbortSignal | undefined, kind: "import",
+): Promise<{ upload_id: number }>;
+export async function uploadScriptChunked(
   file: File,
   onProgress: (done: number, total: number) => void,
   signal?: AbortSignal,
-): Promise<{ script_id: number; sha256: string; size: number }> {
+  kind?: "import",
+): Promise<{ script_id: number; sha256: string; size: number } | { upload_id: number }> {
   const begin = await call<{ upload_id: number; chunk_bytes: number; chunks: number }>(
-    "POST", "/scripts/uploads", { name: file.name, size: file.size });
+    "POST", "/scripts/uploads", { name: file.name, size: file.size, ...(kind ? { kind } : {}) });
   const base = `/scripts/uploads/${begin.upload_id}`;
   onProgress(0, file.size);
   for (let n = 0; n < begin.chunks; n++) {
@@ -536,6 +544,7 @@ export async function uploadScriptChunked(
     }
     onProgress(Math.min(file.size, start + part.size), file.size);
   }
+  if (kind === "import") return { upload_id: begin.upload_id };
   return call("POST", `${base}/complete`, {});
 }
 

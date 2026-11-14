@@ -139,3 +139,27 @@ body:has(.shell) .cosmos { opacity: 0.35; }
 .iq-result th, .iq-result td { padding: 6px var(--space-3); text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .iq-result th { position: sticky; top: 0; background: var(--surface-2); color: var(--text-bright); font-weight: 600; }
 .iq-count { margin: 0; padding: var(--space-2) var(--space-3); color: var(--text-dim); font-size: var(--size-small); }
+
+/* ---- Import ---- */
+.imp { display: flex; flex-direction: column; gap: var(--space-3); max-width: 1100px; }
+.imp-head { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.imp-head h2 { margin: 0; font: 600 var(--size-title-2) var(--font-title); }
+.imp-file, .imp-state, .imp-step, .imp-hint, .imp-reason { color: var(--text-dim); font-size: var(--size-small); }
+.imp-hint { margin: 0; max-width: var(--prose); }
+.imp-form { display: flex; flex-direction: column; gap: var(--space-3); max-width: 560px; }
+.imp-field { display: flex; flex-direction: column; gap: var(--space-1); color: var(--text-dim); font-size: var(--size-small); }
+.imp-field select, .imp-field input[type="password"], .imp-field textarea, .imp-map select, .imp-map input { min-height: 32px; padding: var(--space-1) var(--space-2); background: var(--surface-2); color: var(--text); border: 1px solid var(--line-strong); border-radius: var(--radius-control); }
+.imp-actions { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
+.imp-thread { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.imp-msg strong { color: var(--text-bright); font-size: var(--size-small); }
+.imp-text { margin: 2px 0; white-space: pre-wrap; }
+.imp-msg pre { overflow: auto; font-family: var(--font-code); font-size: var(--size-code); }
+.imp-map { border-collapse: collapse; width: 100%; }
+.imp-map th, .imp-map td { padding: 6px var(--space-3); text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+.imp-why { color: var(--text-dim); font-size: var(--size-small); }
+.imp-maybe { border: 1px solid var(--line); border-radius: var(--radius-panel); display: flex; flex-direction: column; gap: var(--space-1); margin-top: var(--space-3); }
+.imp-maybe label { display: flex; gap: var(--space-2); align-items: center; }
+.imp-counts { display: flex; gap: var(--space-4); flex-wrap: wrap; margin: 0; }
+.imp-counts div { display: flex; flex-direction: column; }
+.imp-counts dt { color: var(--text-dim); font-size: var(--size-small); }
+.imp-counts dd { margin: 0; font-weight: 600; }

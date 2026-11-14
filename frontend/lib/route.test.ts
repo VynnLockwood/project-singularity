@@ -79,3 +79,15 @@ describe("query route", () => {
     expect(buildPath({ view: "query", schema: "a b" })).toBe("/query/a%20b");
   });
 });
+
+describe("import route", () => {
+  it("round-trips /import/master/12", () => {
+    expect(parseRoute("/import/master/12")).toEqual({ view: "import", schema: "master", run: 12 });
+    expect(buildPath({ view: "import", schema: "master", run: 12 })).toBe("/import/master/12");
+    expect(parseRoute("/import/master")).toEqual({ view: "import", schema: "master" });
+    expect(parseRoute("/import")).toEqual({ view: "import" });
+    expect(parseRoute("/import/master/x")).toEqual({ view: "import", schema: "master" });
+    expect(buildPath({ view: "import", schema: "a b" })).toBe("/import/a%20b");
+    expect(buildPath({ view: "import", run: 3 })).toBe("/import");
+  });
+});
