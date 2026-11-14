@@ -7,6 +7,7 @@ from chat import views as chat_views
 from config.views import health
 from duplicates import views as dup
 from schema import views as schema_views
+from iquery import views as iquery_views
 from search import views as search_views
 from scripts import api as scripts_api
 from settings_app import views as rules
@@ -44,6 +45,11 @@ urlpatterns = [
     path("api/duplicates/<int:group_id>/merge", dup.merge),
     path("api/search", search_views.search),
     path("api/search/reindex", search_views.reindex),
+    path("api/intelligent-query/recall", iquery_views.recall),
+    path("api/intelligent-query/suggest", iquery_views.suggest_view),
+    path("api/intelligent-query/learn", iquery_views.learn),
+    path("api/intelligent-query/examples", iquery_views.examples),
+    path("api/intelligent-query/examples/<int:example_id>", iquery_views.example_detail),
     path("api/audit", audit_log),
     path("api/chat/models", chat_views.models),
     path("api/chat/conversations", chat_views.conversations),

@@ -137,6 +137,19 @@ async def search_schema(query: str, limit: int | None = None, schema: str = "mas
 
 
 @mcp.tool(
+    name="suggest_query",
+    description=(
+        "Turn plain-language comments into one read-only SQL SELECT for one database (schema, default master). "
+        "'comments' go oldest first; the last is the main request, earlier ones are context. Optional sql_context is "
+        "the SQL already written. Returns {sql, tables, values, lowConfidence, reason}; sql is null when no safe "
+        "query could be made. It never runs the query: use the query tool for that."
+    ),
+)
+async def suggest_query(comments: list[str], sql_context: str = "", schema: str = "master") -> dict:
+    return await run("suggest_query", schema=schema, comments=comments, sql_context=sql_context)
+
+
+@mcp.tool(
     name="propose_change",
     description=(
         "Propose structural or data changes as a list of operations (never SQL). " + tools.OPERATIONS_HELP +

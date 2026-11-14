@@ -23,6 +23,7 @@ TOOL_ROLES = {
     "describe_table": "viewer",
     "query": "viewer",
     "search_schema": "viewer",
+    "suggest_query": "viewer",
     "propose_change": "editor",
     "propose_sql": "editor",
     "get_settings": "viewer",
@@ -617,6 +618,17 @@ def search_schema(user, query: str, limit: int | None = None, schema: str = "mas
         raise ToolFailure(str(exc)) from exc
 
 
+def suggest_query(user, schema: str, comments: list[str], sql_context: str = "") -> dict:
+    from iquery import suggest as iq
+
+    try:
+        introspect.require_managed(schema)
+        clean, ctx, _ = iq.clean_inputs(comments, sql_context)
+        return iq.suggest(user, schema, clean, ctx)
+    except (iq.SuggestError, introspect.UnknownSchema) as exc:
+        raise ToolFailure(getattr(exc, "message", None) or str(exc)) from exc
+
+
 def propose_change(user, operations: list, prompt: str = "", *, source: str = "mcp",
                    conversation_id: int | None = None, schema: str = "master") -> dict:
     try:
@@ -801,6 +813,7 @@ IMPL = {
     "describe_table": describe_table,
     "query": run_query,
     "search_schema": search_schema,
+    "suggest_query": suggest_query,
     "propose_change": propose_change,
     "propose_sql": propose_sql,
     "get_settings": get_settings,

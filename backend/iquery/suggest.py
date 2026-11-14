@@ -36,6 +36,23 @@ class SuggestError(Exception):
         self.code, self.message = code, message
 
 
+MAX_COMMENTS, MAX_COMMENT_CHARS, MAX_CONTEXT_CHARS, MAX_KEY_CHARS = 10, 500, 4000, 500
+
+
+def clean_inputs(comments, sql_context="", api_key="") -> tuple[list[str], str, str]:
+    """The limits every entry point applies: last 10 comments of at most 500 chars, the last 4000 chars of SQL."""
+    if not isinstance(comments, list) or not comments or not all(isinstance(c, str) for c in comments):
+        raise SuggestError("bad_request", "comments must be a non-empty list of strings")
+    comments = [c.strip()[:MAX_COMMENT_CHARS] for c in comments[-MAX_COMMENTS:]]
+    if not comments[-1]:
+        raise SuggestError("bad_request", "the newest comment is empty")
+    if not isinstance(sql_context, str) or not isinstance(api_key, str):
+        raise SuggestError("bad_request", "sqlContext and apiKey must be strings")
+    if len(api_key) > MAX_KEY_CHARS:
+        raise SuggestError("bad_request", "apiKey is too long")
+    return comments, sql_context[-MAX_CONTEXT_CHARS:], api_key
+
+
 def clean_reply(text: str) -> str:
     """The SQL in a model reply: the first fenced block if there is one, else from the first SELECT/WITH line on."""
     text = text or ""
@@ -96,9 +113,9 @@ def suggest(user, schema: str, comments: list[str], sql_context: str, api_key: s
     cfg = get_config()
     iq = cfg["intelligentQuery"]
     started = time.monotonic()
-    _check_rate_limit(user, iq["ratePerMinute"])
     if not _model_name(cfg):
         raise SuggestError("not_configured", "no chat model is configured")
+    _check_rate_limit(user, iq["ratePerMinute"])
     key = "iq:" + hashlib.sha256(json.dumps(
         [schema, comments, sql_context, _model_name(cfg)], ensure_ascii=False).encode()).hexdigest()
     hit = cache.get(key)
