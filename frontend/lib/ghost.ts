@@ -69,7 +69,8 @@ export const ghostAccept =
   (view) => {
     const g = view.state.field(ghostField);
     if (!g) return false;
-    const insert = g.text + "\n";
+    // end with `;` so the next suggestion below is a statement of its own
+    const insert = (g.text.trimEnd().endsWith(";") ? g.text.trimEnd() : g.text.trimEnd() + ";") + "\n";
     const to = g.pos + insert.length;
     view.dispatch({
       changes: { from: g.pos, insert },

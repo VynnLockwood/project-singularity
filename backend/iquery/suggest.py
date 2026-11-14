@@ -11,6 +11,7 @@ from django.utils import timezone
 from chat import providers
 from chat.errors import ChatError
 from config.siconfig import get_config
+from search.embedder import SearchError
 
 from . import memory
 from .context import describe_for_prompt, find_values, pick_tables
@@ -124,7 +125,10 @@ def suggest(user, schema: str, comments: list[str], sql_context: str, api_key: s
 
     picked = pick_tables(schema, comments, iq["maxTables"])
     values = find_values(schema, picked["tables"], comments, iq["valueLookupMs"])
-    examples = memory.examples(schema, comments, iq["examples"])
+    try:
+        examples = memory.examples(schema, comments, iq["examples"])
+    except SearchError:   # the embed service is down: no examples, the tables were already matched by name
+        examples = []
     messages = _messages(schema, comments, sql_context, picked["tables"], values, examples)
 
     text = _ask(cfg, messages, api_key)
@@ -149,5 +153,8 @@ def recall_for(schema: str, comments: list[str]) -> dict:
     iq = get_config()["intelligentQuery"]
     tables = pick_tables(schema, comments, iq["maxTables"])["tables"]
     values = find_values(schema, tables, comments, iq["valueLookupMs"])
-    ex = memory.recall(schema, comments, values, iq["memoryHit"])
+    try:
+        ex = memory.recall(schema, comments, values, iq["memoryHit"])
+    except SearchError:
+        ex = None
     return {"sql": ex.sql if ex else None, "source": "memory", "values": values}

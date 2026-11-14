@@ -2,6 +2,7 @@
 import difflib
 import logging
 import re
+import time
 
 import psycopg
 from psycopg import sql
@@ -86,31 +87,42 @@ def pick_tables(schema: str, comments: list[str], limit: int) -> dict:
 
 
 def find_values(schema: str, tables: list[str], comments: list[str], timeout_ms: int) -> list[dict]:
-    """Stored text values that contain a word of the comments (a company name, say). Bounded by `timeout_ms`; never raises.
+    """Stored text values that contain a word of the comments (a company name, say). Never raises.
 
-    Plain ILIKE on purpose: the read-only role cannot see the pg_trgm functions, and a bounded scan is enough here.
+    `timeout_ms` is one budget for the whole lookup; what was found before it ran out is kept. Plain ILIKE on purpose:
+    the read-only role cannot see the pg_trgm functions. A word that matches more than a few values in a column is a
+    filler word there ("company"), so it is skipped instead of listing arbitrary rows.
     """
-    words = _words(comments)
+    words = _words(comments)[:6]
     if not words:
         return []
-    patterns = ["%" + re.sub(r"([\\%_])", r"\\\1", w) + "%" for w in words]
+    deadline = time.monotonic() + timeout_ms / 1000
     found: list[dict] = []
     try:
         by_table = {t["name"]: t for t in introspect.graph(schema)["tables"]}
         with ro_connection() as conn:
             conn.execute("SET TRANSACTION READ ONLY")
-            conn.execute(f"SET LOCAL statement_timeout = {int(timeout_ms)}")
             for t in tables:
                 cols = [c["name"] for c in by_table.get(t, {}).get("columns", [])
                         if c["type"].split("(")[0] in TEXT_TYPES][:VALUE_COLUMNS]
                 for c in cols:
-                    q = sql.SQL("SELECT DISTINCT {c}::text AS v FROM {t} WHERE {c}::text ILIKE ANY (%s) "
-                                "ORDER BY 1 LIMIT %s").format(c=sql.Identifier(c), t=sql.Identifier(schema, t))
-                    for r in conn.execute(q, (patterns, VALUES_PER_COLUMN)):
-                        found.append({"table": t, "column": c, "value": r["v"][:80]})
+                    for w in words:
+                        left = int((deadline - time.monotonic()) * 1000)
+                        if left <= 0:
+                            return found
+                        conn.execute(f"SET LOCAL statement_timeout = {left}")
+                        q = sql.SQL("SELECT DISTINCT {c}::text AS v FROM {t} WHERE {c}::text ILIKE %s "
+                                    "ORDER BY 1 LIMIT %s").format(c=sql.Identifier(c), t=sql.Identifier(schema, t))
+                        pattern = "%" + re.sub(r"([\\%_])", r"\\\1", w) + "%"
+                        rows = conn.execute(q, (pattern, VALUES_PER_COLUMN + 1)).fetchall()
+                        if len(rows) > VALUES_PER_COLUMN:
+                            continue
+                        for r in rows:
+                            item = {"table": t, "column": c, "value": r["v"][:80]}
+                            if item not in found:
+                                found.append(item)
     except psycopg.Error:
         log.info("value lookup stopped early", exc_info=True)
-        return []
     return found
 
 

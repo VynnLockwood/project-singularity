@@ -27,10 +27,17 @@ describe("ghost", () => {
     const { view, handlers } = make("-- a\n");
     show(view);
     expect(ghostAccept(handlers)(view)).toBe(true);
-    expect(view.state.doc.toString()).toBe("-- a\nSELECT 1\n");
-    expect(handlers.onAccept).toHaveBeenCalledWith({ from: 5, to: 14, requestId: "r1" });
+    expect(view.state.doc.toString()).toBe("-- a\nSELECT 1;\n");
+    expect(handlers.onAccept).toHaveBeenCalledWith({ from: 5, to: 15, requestId: "r1" });
     expect(ghost(view)).toBeNull();
-    expect(view.state.selection.main.head).toBe(14);
+    expect(view.state.selection.main.head).toBe(15);
+  });
+
+  it("Tab does not double a semicolon the suggestion already has", () => {
+    const { view, handlers } = make("-- a\n");
+    show(view, "SELECT 1;");
+    ghostAccept(handlers)(view);
+    expect(view.state.doc.toString()).toBe("-- a\nSELECT 1;\n");
   });
 
   it("Tab and Esc do nothing without a ghost, so Tab can still indent", () => {

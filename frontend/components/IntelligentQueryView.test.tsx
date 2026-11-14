@@ -93,10 +93,27 @@ describe("IntelligentQueryView", () => {
     await act(async () => rec.resolve(answer("SELECT 'm'", { source: "memory" })));
     await waitFor(() => expect(ghostText()).toBe("SELECT 'm'"));
     tab(view);
-    expect(view.state.doc.toString()).toBe("-- c\nSELECT 'm'\n");
+    expect(view.state.doc.toString()).toBe("-- c\nSELECT 'm';\n");
     await act(async () => sug.resolve(answer("SELECT 'model'")));
     expect(ghostText()).toBeNull();
-    expect(view.state.doc.toString()).toBe("-- c\nSELECT 'm'\n");
+    expect(view.state.doc.toString()).toBe("-- c\nSELECT 'm';\n");
+  });
+
+  it("Esc drops the suggestion for good: a later model answer does not bring it back", async () => {
+    const rec = deferred<Suggestion>();
+    const sug = deferred<Suggestion>();
+    vi.mocked(recallQuery).mockReturnValue(rec.promise);
+    vi.mocked(suggestQuery).mockReturnValue(sug.promise);
+    const { view } = await setup();
+    type(view, "-- c");
+    enter(view);
+    await act(async () => rec.resolve(answer("SELECT 'm'", { source: "memory" })));
+    await waitFor(() => expect(ghostText()).toBe("SELECT 'm'"));
+    fireEvent.keyDown(view.contentDOM, { key: "Escape", keyCode: 27 });
+    expect(ghostText()).toBeNull();
+    await act(async () => sug.resolve(answer("SELECT 'model'")));
+    expect(ghostText()).toBeNull();
+    expect((vi.mocked(suggestQuery).mock.calls[0][1] as AbortSignal).aborted).toBe(true);
   });
 
   it("a new Enter aborts the old requests", async () => {

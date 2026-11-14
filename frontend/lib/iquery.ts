@@ -102,16 +102,22 @@ function ranges(text: string): { from: number; to: number }[] {
   return out;
 }
 
-/** The statement the cursor is in, with comment lines removed; null when it is blank. */
+const stripComments = (part: string) =>
+  part.split("\n").filter((l) => !isCommentLine(l)).join("\n").trim();
+
+/**
+ * The statement the cursor is in, with comment lines removed. On blank space after the last statement (right after
+ * accepting a suggestion) it is the statement before; null when there is no SQL at all.
+ */
 export function statementAt(text: string, pos: number): { from: number; to: number; sql: string } | null {
-  const r = ranges(text).find((x) => pos <= x.to) ?? ranges(text).at(-1)!;
-  const sql = text
-    .slice(r.from, r.to)
-    .split("\n")
-    .filter((l) => !isCommentLine(l))
-    .join("\n")
-    .trim();
-  return sql ? { from: r.from, to: r.to, sql } : null;
+  const all = ranges(text);
+  let i = all.findIndex((x) => pos <= x.to);
+  if (i === -1) i = all.length - 1;
+  for (; i >= 0; i--) {
+    const sql = stripComments(text.slice(all[i].from, all[i].to));
+    if (sql) return { from: all[i].from, to: all[i].to, sql };
+  }
+  return null;
 }
 
 const ROOT = "/intelligent-query";

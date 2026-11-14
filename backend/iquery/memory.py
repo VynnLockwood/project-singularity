@@ -42,9 +42,14 @@ def select_problem(text: str) -> str | None:
 
 def explains(schema: str, text: str) -> str | None:
     """None when the database can plan `text` read-only and the plan changes nothing; otherwise the reason."""
+    return _plan(schema, text)[0]
+
+
+def _plan(schema: str, text: str) -> tuple[str | None, bool]:
+    """(reason, definite). `definite` is False for a failure that says nothing about the SQL (connection lost, timeout)."""
     problem = select_problem(text)
     if problem:
-        return problem
+        return problem, True
     body = text.strip().rstrip(";")
     try:
         with ro_connection() as conn:
@@ -53,10 +58,10 @@ def explains(schema: str, text: str) -> str | None:
             conn.execute(psql.SQL("SET LOCAL search_path = {}").format(psql.Identifier(schema)))
             plan = conn.execute("EXPLAIN (FORMAT JSON) " + body).fetchone()
     except psycopg.Error as exc:
-        return exc.diag.message_primary or str(exc)
+        return (exc.diag.message_primary or str(exc)), (exc.sqlstate or "").startswith("42")  # 42xxx: syntax or unknown name
     if "ModifyTable" in json.dumps(next(iter(plan.values()))):
-        return "the query would change data"
-    return None
+        return "the query would change data", True
+    return None, True
 
 
 def _vector(comments: list[str], kind: str) -> list[float]:
@@ -64,11 +69,11 @@ def _vector(comments: list[str], kind: str) -> list[float]:
 
 
 def _value_set(values: list[dict]) -> set[tuple]:
-    return {(v["table"], v["column"], v["value"]) for v in values}
+    return {(v.get("table"), v.get("column"), v.get("value")) for v in values if isinstance(v, dict)}
 
 
 def learn(user, schema: str, comments: list[str], text: str, values: list[dict]) -> QueryExample:
-    problem = select_problem(text)
+    problem = explains(schema, text)
     if problem:
         raise ValueError(problem)
     norm = normalize_sql(text)
@@ -97,7 +102,8 @@ def _nearest(schema: str, comments: list[str], limit: int):
 
 def _still_valid(ex: QueryExample) -> bool:
     """False (and the example is deleted) when its SQL no longer runs, e.g. the schema changed."""
-    if explains(ex.schema, ex.sql) is None:
+    problem, definite = _plan(ex.schema, ex.sql)
+    if problem is None or not definite:   # a dropped connection must not wipe the team's memory
         return True
     ex.delete()
     return False

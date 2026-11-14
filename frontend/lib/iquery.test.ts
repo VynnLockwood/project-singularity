@@ -52,8 +52,16 @@ describe("statementAt", () => {
     const t = "-- note\nselect $$a;b$$;";
     expect(statementAt(t, 12)?.sql).toBe("select $$a;b$$");
   });
-  it("is null for a blank statement", () => {
-    expect(statementAt("select 1;\n  \n", 12)).toBeNull();
+  it("is null when there is no SQL at all", () => {
+    expect(statementAt("-- only a comment\n  \n", 20)).toBeNull();
+  });
+  it("after the last semicolon it falls back to the last statement, so Run works right after Tab", () => {
+    expect(statementAt("select 1;\n  \n", 12)?.sql).toBe("select 1");
+  });
+  it("keeps two accepted suggestions apart", () => {
+    const t = "-- a\nSELECT 1;\n-- b\nSELECT 2;\n";
+    expect(statementAt(t, t.length)?.sql).toBe("SELECT 2");
+    expect(statementAt(t, 8)?.sql).toBe("SELECT 1");
   });
 });
 

@@ -2,10 +2,18 @@ from django.http import HttpResponse, JsonResponse
 
 from accounts.api import endpoint, error
 from schema import introspect
+from search.embedder import SearchError
 from schema.http import schema_param, unknown_schema_is_400
 
 from . import memory, suggest
 from .models import QueryExample
+
+MAX_SQL, MAX_VALUES = 4000, 20
+
+
+def _is_value(v) -> bool:
+    return isinstance(v, dict) and all(isinstance(v.get(k), str) and len(v[k]) <= 200 for k in ("table", "column", "value"))
+
 
 STATUS = {"rate_limited": 429, "not_configured": 503, "provider_error": 502, "bad_request": 400}
 
@@ -48,12 +56,16 @@ def learn(request):
     except suggest.SuggestError as exc:
         return error(exc.message, 400)
     sql, values = request.json.get("sql"), request.json.get("values", [])
-    if not isinstance(values, list) or not all(isinstance(v, dict) for v in values):
-        return error("values must be a list of objects")
+    if not isinstance(sql, str) or len(sql) > MAX_SQL:
+        return error(f"sql must be text of at most {MAX_SQL} characters")
+    if not isinstance(values, list) or len(values) > MAX_VALUES or not all(_is_value(v) for v in values):
+        return error("values must be a short list of {table, column, value} text objects")
     try:
         ex = memory.learn(request.user, schema, comments, sql, values)
     except ValueError as exc:
         return error(str(exc))
+    except SearchError:
+        return error("search is offline", 503)
     return JsonResponse({"id": ex.pk, "status": ex.status})
 
 

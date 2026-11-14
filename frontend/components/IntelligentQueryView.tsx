@@ -161,7 +161,13 @@ function Workspace({ schema, schemas, navigate }: { schema: string; schemas: Sch
     ghostExtension({
       onCommentEnter: (p) => live.current.onCommentEnter(p),
       onAccept: (a) => live.current.onAccept(a),
-      onDismiss: () => { setStatus(""); setFromMemory(false); },
+      onDismiss: () => {
+        // Esc ends this request: its later answers must not bring the suggestion back
+        current.current = "";
+        abort.current?.abort();
+        setStatus("");
+        setFromMemory(false);
+      },
     }),
     // the accepted range follows later edits
     EditorView.updateListener.of((u) => {
