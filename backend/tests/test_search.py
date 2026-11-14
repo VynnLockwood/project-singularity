@@ -1,7 +1,4 @@
-import hashlib
 import json
-import math
-import re
 
 import pytest
 from django.test import Client
@@ -14,28 +11,6 @@ from search.embedder import SearchError
 from search.models import DIMENSIONS, SchemaEmbedding
 
 pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("master")]
-
-
-def fake_vector(text: str) -> list[float]:
-    """Deterministic stand-in for the model: hashed bag of words, unit length. Shared words = similar."""
-    v = [0.0] * DIMENSIONS
-    for tok in re.findall(r"[a-z0-9]+", text.lower()):
-        v[int(hashlib.md5(tok.encode()).hexdigest(), 16) % DIMENSIONS] += 1.0
-    n = math.sqrt(sum(x * x for x in v)) or 1.0
-    return [x / n for x in v]
-
-
-@pytest.fixture
-def embed(settings, monkeypatch):
-    settings.EMBED_URL = "http://embed.test"
-    calls = []
-
-    def fake(texts, kind):
-        calls.append((kind, list(texts)))
-        return [fake_vector(t) for t in texts]
-
-    monkeypatch.setattr(embedder, "embed", fake)
-    return calls
 
 
 @pytest.fixture
