@@ -40,6 +40,7 @@ DEFAULTS = {
     "search": {"topK": 5, "minConfidence": 0.8, "sampleValues": 5},
     "intelligentQuery": {"model": "", "maxTables": 8, "examples": 3, "memoryHit": 0.95, "ratePerMinute": 20,
                          "valueLookupMs": 800},
+    "import": {"model": "", "maxFileBytes": 52428800, "sampleValues": 5, "maxRounds": 3, "rowMatch": True},
     "duplicates": {"threshold": 0.9, "maxRows": 20000},
     "backups": {"retentionDays": 14},
 }

@@ -67,6 +67,16 @@ def uploads_dir() -> str:
     return d
 
 
+def imports_dir() -> str:
+    """Private directory for raw import files (SCRIPT_DIR/imports), created on first use."""
+    _ensure_dir()
+    d = os.path.join(settings.SCRIPT_DIR, "imports")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    if os.stat(d).st_uid == os.geteuid():
+        os.chmod(d, 0o700)
+    return d
+
+
 def _write_atomic(rel: str, data: bytes) -> None:
     """Write to a temp file in the same directory, fsync, then rename into place. Nothing is left behind on failure."""
     final = _full_path(rel)
