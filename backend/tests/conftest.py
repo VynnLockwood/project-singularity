@@ -1,3 +1,7 @@
+import hashlib
+import math
+import re
+
 import pytest
 
 from . import pgsetup
@@ -32,3 +36,27 @@ def master(master_db, settings, tmp_path):
 def _script_dir(settings, tmp_path):
     """Script uploads never touch the real /scripts (it does not exist, or is not writable, on CI)."""
     settings.SCRIPT_DIR = str(tmp_path / "scripts")
+
+
+def fake_vector(text: str) -> list[float]:
+    """Deterministic stand-in for the model: hashed bag of words, unit length. Shared words = similar."""
+    v = [0.0] * 384
+    for tok in re.findall(r"[a-z0-9]+", text.lower()):
+        v[int(hashlib.md5(tok.encode()).hexdigest(), 16) % 384] += 1.0
+    n = math.sqrt(sum(x * x for x in v)) or 1.0
+    return [x / n for x in v]
+
+
+@pytest.fixture
+def embed(settings, monkeypatch):
+    from search import embedder
+
+    settings.EMBED_URL = "http://embed.test"
+    calls = []
+
+    def fake(texts, kind):
+        calls.append((kind, list(texts)))
+        return [fake_vector(t) for t in texts]
+
+    monkeypatch.setattr(embedder, "embed", fake)
+    return calls

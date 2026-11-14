@@ -67,7 +67,7 @@ export class ApiError extends Error {
   }
 }
 
-async function call<T>(method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<T> {
+export async function call<T>(method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const headers: Record<string, string> = {};
   if (method !== "GET") {
     if (!csrfToken()) await fetch(`${BASE}/csrf`, { credentials: "same-origin" });
@@ -79,6 +79,7 @@ async function call<T>(method: "GET" | "POST" | "PATCH" | "DELETE", path: string
     credentials: "same-origin",
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new ApiError(res.status, Array.isArray(data.errors) && data.errors.length ? data.errors.join("; ") : (data.error ?? `request failed (${res.status})`), data.code);

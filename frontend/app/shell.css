@@ -121,3 +121,21 @@ body:has(.shell) .cosmos { opacity: 0.35; }
 .center-panel { width: min(30rem, 100%); text-align: left; }
 .center-panel .actions { margin-top: var(--space-4); }
 @media (max-width: 900px) { .signin-mark { display: none; } }
+
+/* ---- Intelligent query ---- */
+.iq { display: flex; flex-direction: column; gap: var(--space-3); max-width: 1100px; }
+.iq-head { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.iq-head h2 { margin: 0; font: 600 var(--size-title-2) var(--font-title); }
+.iq-pick { display: flex; align-items: center; gap: var(--space-2); color: var(--text-dim); font-size: var(--size-small); }
+.iq-pick select { min-height: 32px; padding: 0 var(--space-2); background: var(--surface-2); color: var(--text); border: 1px solid var(--line-strong); border-radius: var(--radius-control); }
+.iq-spacer { flex: 1; }
+.iq-hint { margin: 0; color: var(--text-dim); font-size: var(--size-small); max-width: var(--prose); }
+.iq-hint .ui-kbd { margin: 0 2px; }
+.iq-status { min-height: 20px; display: flex; gap: var(--space-2); align-items: center; color: var(--text-dim); font-size: var(--size-small); }
+.iq-source { padding: 1px 8px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--disk-hot); }
+.iq-result { border: 1px solid var(--line); border-radius: var(--radius-panel); background: var(--surface-1); }
+.iq-scroll { max-height: 46vh; overflow: auto; }
+.iq-result table { border-collapse: collapse; width: 100%; font-family: var(--font-code); font-size: var(--size-code); }
+.iq-result th, .iq-result td { padding: 6px var(--space-3); text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.iq-result th { position: sticky; top: 0; background: var(--surface-2); color: var(--text-bright); font-weight: 600; }
+.iq-count { margin: 0; padding: var(--space-2) var(--space-3); color: var(--text-dim); font-size: var(--size-small); }

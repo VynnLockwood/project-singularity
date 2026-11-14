@@ -1,10 +1,11 @@
 /** Where the person is in the app. The URL is the only source of truth; this file turns it into a typed value and back. */
-export type View = "chat" | "database" | "data" | "duplicates" | "scripts" | "activity" | "connect" | "settings";
+export type View = "chat" | "database" | "data" | "query" | "duplicates" | "scripts" | "activity" | "connect" | "settings";
 export type SettingsSection = "quality" | "rules" | "team";
 
 export type Route =
   | { view: "chat"; conversation?: number }
   | { view: "database" | "data"; schema?: string; table?: string }
+  | { view: "query"; schema?: string }
   | { view: "settings"; section?: SettingsSection }
   | { view: "activity"; tab?: "history" }
   | { view: "duplicates" | "scripts" | "connect" }
@@ -29,6 +30,7 @@ export function parseRoute(pathname: string): Route {
   if (head === "database" || head === "data") {
     return { view: head, ...(a ? { schema: a } : {}), ...(a && b ? { table: b } : {}) };
   }
+  if (head === "query") return a ? { view: "query", schema: a } : { view: "query" };
   if (head === "settings") {
     return a && SECTIONS.includes(a) ? { view: "settings", section: a as SettingsSection } : { view: "settings" };
   }
@@ -47,6 +49,7 @@ export function buildPath(route: Route): string {
     case "chat": return route.conversation === undefined ? "/" : join("chat", route.conversation);
     case "database":
     case "data": return join(route.view, route.schema, route.schema ? route.table : undefined);
+    case "query": return join("query", route.schema);
     case "settings": return join("settings", route.section);
     case "activity": return join("activity", route.tab);
     default: return join(route.view);

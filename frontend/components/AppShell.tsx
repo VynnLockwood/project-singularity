@@ -14,6 +14,7 @@ import { ChatView } from "./ChatView";
 import { CommandPalette } from "./CommandPalette";
 import { ConnectView } from "./ConnectView";
 import { DatabaseView } from "./DatabaseView";
+import { IntelligentQueryView } from "./IntelligentQueryView";
 import { DataView } from "./DataView";
 import { DuplicatesView } from "./DuplicatesView";
 import { NotFound } from "./NotFound";
@@ -107,6 +108,7 @@ function Shell({ me, onLogout }: Props) {
               onAskAssistant={(t) => { setDraft(t); navigate({ view: "chat" }); }} />
           )}
           {view === "data" && <DataView me={me} live={live} route={route} navigate={navigate} refreshKey={schemaKey} onProposed={onProposed} />}
+          {route.view === "query" && <IntelligentQueryView me={me} route={route} navigate={navigate} />}
           {view === "duplicates" && <DuplicatesView me={me} refreshKey={appliedCount} onProposed={onProposed} />}
           {view === "scripts" && me.role !== "viewer" && <ScriptsTab canEdit />}
           {view === "scripts" && me.role === "viewer" && <NotFound path="/scripts" onHome={() => navigate({ view: "chat" })} />}

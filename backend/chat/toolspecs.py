@@ -24,6 +24,10 @@ SPECS = {
                       "Use before proposing a new column. If 'confident' is false, nothing fits well.",
                       {"query": {"type": "string"}, "limit": {"type": "integer"},
                        "schema": {"type": "string", "description": "database to search; default master, '*' searches all"}}, ["query"]),
+    "suggest_query": ("Turn plain-language comments (oldest first; the last is the main request) into one read-only SELECT "
+                      "for one database. Returns sql (null when no safe query could be made). It does not run the query.",
+                      {"comments": {"type": "array", "items": {"type": "string"}}, "sql_context": {"type": "string"}, **SCHEMA},
+                      ["comments"]),
     "propose_change": (
         "Propose structural or data changes as a list of operations (never SQL). " + _OPS +
         " Returns the checked change with a diff. The user approves it in a popup; nothing is applied until then.",

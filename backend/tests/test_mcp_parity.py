@@ -33,6 +33,8 @@ COVERED = {
     "api/duplicates/<int:group_id>/reopen": ["reopen_duplicate"],
     "api/duplicates/<int:group_id>/merge": ["merge_duplicates"],
     "api/search": ["search_schema"],
+    "api/intelligent-query/suggest": ["suggest_query"],
+    "api/intelligent-query/recall": ["suggest_query"],           # the fast path; the tool always runs the full one
     "api/search/reindex": ["reindex_search"],
     "api/audit": ["get_audit_log"],
     "api/scripts": ["submit_script", "get_script"],
@@ -53,6 +55,9 @@ WEB_ONLY = {
     "api/auth/logout": "browser session",
     "api/mcp-tokens": "an AI client must not mint or revoke its own access tokens",
     "api/mcp-tokens/<int:token_id>": "an AI client must not mint or revoke its own access tokens",
+    "api/intelligent-query/learn": "what people accepted and ran is learned from the web editor, not from an AI's guess",
+    "api/intelligent-query/examples": "reviewing and removing the team's saved queries is an approver's job in the web app",
+    "api/intelligent-query/examples/<int:example_id>": "reviewing and removing the team's saved queries is an approver's job in the web app",
     "api/queue": "badge counts for the review tray; list_pending lists the items themselves",
     "api/chat/models": "web chat provider settings",
     "api/chat/conversations": "web chat conversations belong to the browser chat",

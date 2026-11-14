@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     "channels",
     "chat",
     "search",
+    "iquery",
     "duplicates",
     "scripts",
 ]

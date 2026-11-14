@@ -12,6 +12,7 @@ export const NAV: NavGroup[] = [
     { view: "chat", label: "Chat", icon: "chat", minRole: "viewer", primary: true },
     { view: "database", label: "Database", icon: "database", minRole: "viewer", primary: true },
     { view: "data", label: "Data", icon: "table", minRole: "viewer", primary: true },
+    { view: "query", label: "Intelligent query", icon: "code", minRole: "viewer" },
   ] },
   { group: "Quality", items: [
     { view: "duplicates", label: "Duplicates", icon: "copy", minRole: "viewer" },
@@ -41,6 +42,7 @@ const SECTION_LABEL = { quality: "Quality", rules: "Rules", team: "Team" } as co
 export function breadcrumb(route: Route): string[] {
   if (route.view === "notfound") return ["Page not found"];
   const head = viewLabel(route.view);
+  if (route.view === "query") return [head, ...(route.schema ? [route.schema] : [])];
   if (route.view === "database" || route.view === "data") return [head, ...(route.schema ? [route.schema] : []), ...(route.schema && route.table ? [route.table] : [])];
   if (route.view === "settings" && route.section) return [head, SECTION_LABEL[route.section]];
   return [head];
