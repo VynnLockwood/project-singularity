@@ -25,7 +25,6 @@ def test_header_detection_edge_cases(tmp_path):
     ws.append(["a", "b", "c", "d"])
     ws.append([None, None, None, None])  # empty row
     ws.append(["e", "f", "g", "h"])
-    ws["F4"] = None  # keep column F empty
     [src] = read(_save(wb, tmp_path), 100)
     assert src["name"] == "Data"
     assert src["headers"] == ["Name", "Name_2", "column_3", "Code"]
@@ -138,3 +137,70 @@ def test_not_a_spreadsheet(tmp_path):
     t.write_text("a,b")
     with pytest.raises(ReaderError):
         read(str(t), 10)
+
+
+def test_sparse_header_row_is_kept(tmp_path):
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["id", None, None, "nm", None, None, None, None])
+    ws.append([str(i) for i in range(1, 9)])
+    ws.append([str(i) for i in range(11, 19)])
+    [src] = read(_save(wb, tmp_path), 10)
+    assert src["headers"][0] == "id" and src["headers"][3] == "nm"
+    assert src["headers"][1] == "column_2"
+    assert len(src["rows"]) == 2
+    assert not any("title" in n for n in src["notes"])
+
+
+def test_csv_stray_delimiter_keeps_header(tmp_path):
+    p = tmp_path / "s.csv"
+    p.write_text("id,name,city,x\n1,a,b,c,d,e,f,g,h\n", encoding="utf-8")
+    [src] = read(str(p), 10)
+    assert src["headers"][:4] == ["id", "name", "city", "x"]
+    assert len(src["rows"]) == 1
+    assert src["rows"][0][:4] == ["1", "a", "b", "c"]
+
+
+def test_csv_semicolon_and_tab(tmp_path):
+    for delim, name in ((";", "a.csv"), ("\t", "b.csv")):
+        p = tmp_path / name
+        p.write_text(f"a{delim}b\n1{delim}2\n", encoding="utf-8")
+        [src] = read(str(p), 10)
+        assert src["headers"] == ["a", "b"] and src["rows"] == [["1", "2"]]
+
+
+def test_csv_leading_zero_text_kept(tmp_path):
+    p = tmp_path / "z.csv"
+    p.write_text("code,n\n00123,7\n", encoding="utf-8")
+    [src] = read(str(p), 10)
+    assert src["rows"] == [["00123", "7"]]
+
+
+def test_xlsx_leading_zero_text_and_large_floats(tmp_path):
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["code", "big", "huge"])
+    ws.append(["00123", 1234567890123.0, 1.23e22])
+    [src] = read(_save(wb, tmp_path), 10)
+    assert src["rows"] == [["00123", "1234567890123", "12300000000000000000000"]]
+
+
+def test_header_only_sheet(tmp_path):
+    wb = Workbook()
+    wb.active.append(["a", "b"])
+    [src] = read(_save(wb, tmp_path), 10)
+    assert src["headers"] == ["a", "b"] and src["rows"] == []
+
+
+def test_empty_file_and_empty_csv(tmp_path):
+    p = tmp_path / "e.csv"
+    p.write_text("", encoding="utf-8")
+    assert read(str(p), 10) == []
+    assert read(_save(Workbook(), tmp_path), 10) == []
+
+
+def test_ragged_rows_padded(tmp_path):
+    p = tmp_path / "r.csv"
+    p.write_text("a,b,c\n1\n2,3,4\n", encoding="utf-8")
+    [src] = read(str(p), 10)
+    assert src["rows"] == [["1", None, None], ["2", "3", "4"]]

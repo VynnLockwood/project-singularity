@@ -32,10 +32,11 @@ def _num_text(value, number_format=None):
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
             return str(value)
-        if value == int(value):
-            value = int(value)
+        dec = Decimal(repr(value))
+        if dec == dec.to_integral_value():
+            value = int(dec)
         else:
-            return format(Decimal(repr(value)), "f")
+            return format(dec, "f")
     text = str(value)
     if isinstance(value, int) and number_format and _ZERO_FORMAT.match(number_format):
         text = text.zfill(len(number_format)) if value >= 0 else text
@@ -66,13 +67,15 @@ def _blank(row):
 
 
 def _find_header(buffer):
-    """Index of the header row in buffer (non-empty rows): the first row filled in
-    at least half of the widest row's columns."""
-    width = max(len(r) for r in buffer)
-    need = max(1, -(-width // 2)) if width > 1 else 1
-    for i, r in enumerate(buffer):
-        if sum(v is not None for v in r) >= need:
+    """Index of the header row in buffer (non-empty rows): the first row, except
+    that leading rows with exactly one non-empty cell (titles) are skipped while a
+    later row has two or more."""
+    counts = [sum(v is not None for v in r) for r in buffer]
+    for i, n in enumerate(counts):
+        if n != 1:
             return i
+        if not any(m >= 2 for m in counts[i + 1:]):
+            return 0
     return 0
 
 
@@ -155,7 +158,7 @@ def _read_xlsx(path, max_rows):
         for ws in wb.worksheets:
             try:
                 ws.reset_dimensions()
-            except Exception:
+            except (AttributeError, TypeError, ValueError):
                 pass
 
             def rows(ws=ws):
