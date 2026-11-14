@@ -122,6 +122,29 @@ The team's memory: a query you accepted and ran successfully is saved as a candi
 
 It needs the `embed` service for table search (without it, tables are matched by name and the tab says so) and a chat model: `intelligentQuery.model` in `singularity.yaml`, else the chat default. Your own API key from the Chat settings is used if you set one. Other settings: `maxTables`, `examples`, `memoryHit`, `ratePerMinute` (suggestions per user per minute), `valueLookupMs`. Your comments and the table and column names (not row data beyond the matched values) are sent to the chat provider.
 
+## Import
+
+The **Import** tab (editors and approvers) loads an `.xlsx` or `.csv` file into the database with the help of four roles that hand work to each other. You upload the file, optionally write what you want ("skip inactive vendors"), and watch the thread as each role reports.
+
+- **Profiler** (local) reads every sheet and describes each column: type, empty share, distinct values, patterns, and a few sample values.
+- **Matcher** (local) uses the `embed` container (multilingual-e5-small) to find the tables and columns that fit each sheet and header, which columns are references to existing records, and which rows already exist or may exist (`import.rowMatch`). If the `embed` service is offline it says so and falls back to name matching.
+- **Designer** (the chat model) proposes the mapping: target table per sheet, which header fills which column, what to drop, references to existing parents, filters, and a one-line reason for each decision. It may ask up to 3 questions first; the run then waits in `waiting_for_answer` until you answer.
+- **Critic** (local) turns the plan into a script and runs the usual validation: a gate dry run, orphan references, bad rows with their line. It reports new rows, rows that already exist (skipped), rows removed by the filter, and problems.
+
+The relay: `profiling`, `matching`, `designing`, `checking`, then `ready`. If the Critic finds problems, they go back to the Designer as feedback, for at most `import.maxRounds` rounds (default 3); after that the run is `failed` and says why. You can edit the plan, skip rows, and recheck (the Critic only). `submitted` means the change waits for an approver. A run that stops reporting for 10 minutes is marked failed.
+
+What is sent to the chat model: the column profiles with at most 5 sample values per column (`import.sampleValues`, default 5, never above 5; each cut to 80 characters), the Matcher's candidates and counts (how many rows already exist or may exist), the team's enabled rules, the text of the candidate target tables (keys, columns, types, foreign keys, comment), your prompt, your answers, the Critic's feedback, and a recipe if one applies. Full rows are never sent, and neither are the matching rows from existing records; matching is done by the local embedding model. The model is `import.model`, else the chat default.
+
+Recipes: a file whose headers (over all sheets, trimmed and lower-cased, order ignored) match an earlier import in the same database starts from the mapping and filters approved then. The recipe is saved when the change is applied, not when it is submitted. If it no longer fits the database (a column was renamed), the Critic reports the drift and the Designer repairs it.
+
+API key: sent with the request that starts or resumes the run (your own key from the Chat settings, if set, else the configured provider key) and handed to the background process through the environment variable `SINGULARITY_IMPORT_KEY`. It is never stored in the database or returned by the API.
+
+Limits and settings (`import.*` in `singularity.yaml`, all optional): `model` (empty = chat default), `maxFileBytes` (default 50 MB), `sampleValues` (5), `maxRounds` (3), `rowMatch` (true). Rows read per sheet are capped by `limits.maxScriptRows`. A run, its file and its thread are deleted after 24 hours unless submitted. One open run per person per database.
+
+The load is one gated change: nothing is written until an approver approves it, and it goes through the same rules, diff and audit log as any change. Known gap: a file whose rows all exist already (or are all filtered out) has nothing to load and cannot reach `ready`.
+
+Import is web-only: AI clients have no tool for it because they load data themselves with `begin_load`, `append_rows` and `finish_load`.
+
 ## Duplicates and column stats
 
 The `engine/` crate (Rust) does the heavy lifting twice from one codebase: as a Python module (PyO3) inside the backend for duplicate detection, and as WebAssembly in the browser for column statistics. Names are normalized (Unicode NFKC, Thai digits and zero-width marks, company suffixes like Co., Ltd., จำกัด), grouped by blocking keys, then scored with Jaro-Winkler, token-sorted Jaro-Winkler and bigram overlap; a group's score is its weakest link.
