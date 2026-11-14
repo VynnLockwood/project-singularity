@@ -227,20 +227,23 @@ def _rows(schema: str, src: dict, col_profiles: dict, columns: dict, target: str
                 incoming[-(n + 1)] = vals
         best: dict[int, tuple] = {}
         if existing and incoming:
+            threshold = float(get_config()["duplicates"]["threshold"])
             try:
-                found = dup._engine().find_duplicates(
-                    [(k, v) for k, v in existing.items()] + [(k, v) for k, v in incoming.items()],
-                    float(get_config()["duplicates"]["threshold"]))
+                engine = dup._engine()
+                found = engine.find_duplicates(
+                    [(k, v) for k, v in existing.items()] + [(k, v) for k, v in incoming.items()], threshold)
             except dup.DuplicateError:
                 log.warning("duplicates engine unavailable; no name matches", exc_info=True)
                 found = []
-            for ids, score in found:
+            # The engine merges pairs into clusters with one (weakest-link) score, so a mixed cluster is
+            # re-checked pair by pair: only an incoming row that directly matches an existing one is a maybe.
+            for ids, _ in found:
                 ex = sorted(i for i in ids if i > 0)
-                if not ex:
-                    continue
-                for i in ids:
-                    if i < 0 and (-i not in best or score > best[-i][1]):
-                        best[-i] = (ex[0], float(score))
+                for i in (i for i in ids if i < 0):
+                    for e in ex:
+                        hit = engine.find_duplicates([(e, existing[e]), (i, incoming[i])], threshold)
+                        if hit and (-i not in best or hit[0][1] > best[-i][1]):
+                            best[-i] = (e, float(hit[0][1]))
         for row in sorted(best):
             eid, score = best[row]
             text = " / ".join(v for v in existing[eid] if v)

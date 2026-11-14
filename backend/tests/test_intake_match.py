@@ -184,3 +184,38 @@ def test_source_with_no_rows(shop):
     s = got["sources"]["Empty"]
     assert s["refs"] == {}
     assert s.get("rows", {"exists": [], "maybe": []})["exists"] == []
+
+
+# --- maybe keeps direct incoming/existing pairs only (the engine merges pairs into clusters) ---
+
+def _ids(*names):
+    from schema import conn
+    with conn.ro_connection() as c:
+        return [c.execute("SELECT partner_id FROM master.partner WHERE name = %s", (n,)).fetchone()["partner_id"]
+                for n in names]
+
+
+def test_incoming_chain_does_not_reach_existing(shop):
+    # existing X ~ incoming A (row 1), A ~ incoming B (row 2), but B is not like X
+    build("INSERT INTO master.partner (name, tax_id) VALUES ('Kanchana Rubber', '0105500000301')")
+    src = source("Vendors", ["Vendor Name", "Tax ID"], [
+        ["Kanchana Rubber Plantation", "0105500000401"],
+        ["Kanchana Plantation", "0105500000402"],
+    ])
+    maybe = run(src)["sources"]["Vendors"]["rows"]["maybe"]
+    (x,) = _ids("Kanchana Rubber")
+    assert [(m["row"], m["id"], m["existing"]) for m in maybe] == [(1, x, "Kanchana Rubber")]
+
+
+def test_incoming_pairs_with_the_existing_row_it_matches(shop):
+    # existing X ~ existing Y (X has the smaller id); incoming A matches only Y
+    build("INSERT INTO master.partner (name, tax_id) VALUES ('Kanchana Plantation', '0105500000301')",
+          "INSERT INTO master.partner (name, tax_id) VALUES ('Kanchana Rubber Plantation', '0105500000302')")
+    src = source("Vendors", ["Vendor Name", "Tax ID"], [["Kanchana Rubber", "0105500000401"]])
+    maybe = run(src)["sources"]["Vendors"]["rows"]["maybe"]
+    x, y = _ids("Kanchana Plantation", "Kanchana Rubber Plantation")
+    assert x < y
+    assert [(m["row"], m["id"], m["existing"]) for m in maybe] == [(1, y, "Kanchana Rubber Plantation")]
+    import singularity_engine
+    want = singularity_engine.find_duplicates([(y, ["Kanchana Rubber Plantation"]), (-1, ["Kanchana Rubber"])], 0.9)
+    assert maybe[0]["score"] == round(want[0][1], 4)
