@@ -40,6 +40,7 @@ Every tool states the role it needs; a client only sees the tools its user's rol
 | `get_rules` | viewer | The team's design rules. |
 | `list_schemas`, `list_tables`, `describe_table` | viewer | Databases, tables, columns. |
 | `search_schema` | viewer | Find where a kind of data belongs (Thai or English). |
+| `suggest_query` | viewer | Turn plain-language comments into one checked, read-only SELECT. It does not run it. |
 | `read_rows` | viewer | One table, a page at a time, with sort and filters. No SQL needed. |
 | `query` | viewer | One read-only `SELECT`. |
 | `export_schema` | viewer (data: editor) | A database as SQL, inline up to `limits.maxInlineExportBytes`. |
@@ -110,6 +111,16 @@ Limits: the grid does not detect that someone else changed the same cell after y
 Ask "where does this data belong?" in the Schema tab (Thai or English), or let the assistant call `search_schema`. Every table and column becomes a document (name, type, comment, relationships, a few sample values) embedded by the `embed` container (multilingual-e5-small, CPU, no internet at runtime: the model is baked into the image at build). Ranking blends meaning (pgvector, cosine) with name similarity (`pg_trgm`), and an exact name always ranks first. The index refreshes in the background after an applied schema change; approvers can rebuild it. If nothing scores above `search.minConfidence` (default 0.8), the UI offers to ask the assistant to propose a new column. That threshold was set without running the real model, so tune it against your own schema.
 
 Known gaps: OAuth access tokens do not expire (revoke them in the Connect tab) and have no refresh flow, and there is no scheduled nightly backup yet (a backup is taken before every schema change).
+
+## Intelligent query
+
+The **Intelligent query** tab (any signed-in user) is a SQL editor that suggests a query from a plain-language comment, like autocomplete. Write what you want on a `--` line, such as `-- contracts of partner Acme`, and press Enter. A gray suggestion appears at the cursor: **Tab** takes it, **Esc** drops it, **Ctrl+Enter** runs the statement under the cursor (or the selection). Add another comment later, such as `-- and status still open`, and the new suggestion builds on the earlier comments and the SQL already written. The text is kept per database in your browser.
+
+How it works: the `embed` container finds the tables that fit the comments (plus their foreign-key neighbours), the tool looks up real values in those tables that match words in your comment (so "Acme" becomes the exact stored name), then the chat model writes one SELECT. Every suggestion is checked before you see it: one statement, SELECT or WITH only, and the database must be able to plan it read-only; one retry if it is not. Suggestions never run by themselves.
+
+The team's memory: a query you accepted and ran successfully is saved as a candidate and becomes a team example after a second person (or a second day) confirms it. Active examples are shown to the model as guidance, and a close match for the same question and the same stored values is offered instantly "from memory". Examples whose SQL no longer plans (a column was renamed) are deleted. Approvers can list and delete examples at `GET`/`DELETE /api/intelligent-query/examples`. AI clients use the `suggest_query` tool.
+
+It needs the `embed` service for table search (without it, tables are matched by name and the tab says so) and a chat model: `intelligentQuery.model` in `singularity.yaml`, else the chat default. Your own API key from the Chat settings is used if you set one. Other settings: `maxTables`, `examples`, `memoryHit`, `ratePerMinute` (suggestions per user per minute), `valueLookupMs`. Your comments and the table and column names (not row data beyond the matched values) are sent to the chat provider.
 
 ## Duplicates and column stats
 
