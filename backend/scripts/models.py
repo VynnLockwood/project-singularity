@@ -23,6 +23,8 @@ class Script(models.Model):
     change = models.ForeignKey("approvals.Change", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
     created_at = models.DateTimeField(default=timezone.now)
     expires_at = models.DateTimeField(db_index=True)
+    # "import": written by an AI import run's Critic; only that run may validate or submit it, and it is not listed
+    kind = models.CharField(max_length=10, choices=[("script", "script"), ("import", "import")], default="script")
 
     class Meta:
         ordering = ["-id"]
@@ -73,6 +75,7 @@ class UploadSession(models.Model):
     path = models.CharField(max_length=255, blank=True)  # part file under SCRIPT_DIR/uploads; empty once removed
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.OPEN, db_index=True)
     script = models.ForeignKey(Script, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    kind = models.CharField(max_length=10, choices=[("script", "script"), ("import", "import")], default="script")
     created_at = models.DateTimeField(default=timezone.now)
     expires_at = models.DateTimeField(db_index=True)
 

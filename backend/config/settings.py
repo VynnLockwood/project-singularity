@@ -34,6 +34,7 @@ INSTALLED_APPS = [
     "chat",
     "search",
     "iquery",
+    "intake",
     "duplicates",
     "scripts",
 ]

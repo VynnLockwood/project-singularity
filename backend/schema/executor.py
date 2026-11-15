@@ -6,6 +6,7 @@ change through the gate.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Callable, Iterator
 
@@ -21,7 +22,24 @@ from .util import jsonable, pg_default_to_allowed, pg_type_to_allowed
 
 
 class ApplyError(Exception):
-    pass
+    """`safe` is the message without any cell value (no DETAIL, no failing row, no key or sample value): what may
+    be shown to a chat model. It defaults to the message itself, for errors that never quote data."""
+
+    def __init__(self, message: str = "", safe: str | None = None):
+        super().__init__(message)
+        self.safe = message if safe is None else safe
+
+
+_QUOTED = re.compile(r'"([^"]*)"')
+
+
+def safe_db_message(exc: psycopg.Error) -> str:
+    """A database error's primary message, keeping quoted names only when they are the error's own identifiers
+    (schema, table, column, constraint, type); any other quoted text (a cell value) becomes "...". No DETAIL."""
+    d = exc.diag
+    keep = {x for x in (d.schema_name, d.table_name, d.column_name, d.constraint_name, d.datatype_name) if x}
+    msg = d.message_primary or type(exc).__name__
+    return _QUOTED.sub(lambda m: m.group(0) if m.group(1) in keep else '"..."', msg)
 
 
 @dataclass
@@ -172,7 +190,8 @@ def _bulk_insert(conn, op: dict, before: dict, actor: str | None, row_source, sc
         ).fetchone()
         if orphans["n"]:
             raise ApplyError(
-                f"bulk_insert into {t}: {orphans['n']} row(s) refer to a missing {pt}.{pkey} (for example {orphans['example']!r})")
+                f"bulk_insert into {t}: {orphans['n']} row(s) refer to a missing {pt}.{pkey} (for example {orphans['example']!r})",
+                safe=f"bulk_insert into {t}: {orphans['n']} row(s) refer to a missing {pt}.{pkey}")
         targets.append(I(r["column"]))
         values.append(sql.SQL("{}.{}").format(alias, I(ppk)))
         joins.append(sql.SQL("LEFT JOIN {} {} ON {}").format(sqlgen.tbl(pt, schema), alias, on))
@@ -442,7 +461,7 @@ def execute(ops: list[dict], state: dict, actor: str | None, *, max_rows: int = 
     except psycopg.Error as exc:
         msg = exc.diag.message_primary or str(exc)
         detail = f" ({exc.diag.message_detail})" if exc.diag.message_detail else ""
-        raise ApplyError(f"{msg}{detail}") from exc
+        raise ApplyError(f"{msg}{detail}", safe=safe_db_message(exc)) from exc
 
     if any(r is None for r in reverse):
         return ExecResult(None, count)

@@ -67,6 +67,16 @@ def uploads_dir() -> str:
     return d
 
 
+def imports_dir() -> str:
+    """Private directory for raw import files (SCRIPT_DIR/imports), created on first use."""
+    _ensure_dir()
+    d = os.path.join(settings.SCRIPT_DIR, "imports")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    if os.stat(d).st_uid == os.geteuid():
+        os.chmod(d, 0o700)
+    return d
+
+
 def _write_atomic(rel: str, data: bytes) -> None:
     """Write to a temp file in the same directory, fsync, then rename into place. Nothing is left behind on failure."""
     final = _full_path(rel)
@@ -87,7 +97,7 @@ def _write_atomic(rel: str, data: bytes) -> None:
         raise
 
 
-def save(owner, name: str, data: bytes) -> Script:
+def save(owner, name: str, data: bytes, kind: str = "script") -> Script:
     """Store an upload. The size limit (limits.maxScriptBytes) applies to the RAW upload size, before normalizing."""
     if len(data) > get_config()["limits"]["maxScriptBytes"]:
         raise ScriptError("Script is larger than the allowed size.")
@@ -112,7 +122,7 @@ def save(owner, name: str, data: bytes) -> Script:
     try:
         return Script.objects.create(
             owner=owner, name=_clean_name(name), sha256=hashlib.sha256(stored).hexdigest(),
-            size=len(stored), path=rel, created_at=now, expires_at=now + SCRIPT_TTL,
+            size=len(stored), path=rel, created_at=now, expires_at=now + SCRIPT_TTL, kind=kind,
         )
     except BaseException:
         try:

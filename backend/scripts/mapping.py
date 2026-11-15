@@ -10,7 +10,9 @@ have a generated key `<table>_id` plus a unique business key. The mapping says h
         "refs": [{"column": "<new FK column>",              # integer column -> parent's <parent target>_id
                   "parent": "<source table of the parent>",  # must be in the mapping too
                   "parent_key": "<parent target col>",       # unique column of the parent the value matches
-                  "source_column": "<source col here>"}]}}}  # holds the parent's key; only feeds the join
+                  "source_column": "<source col here>"}],   # holds the parent's key; only feeds the join
+        "add_columns": [{"name": "<new col>", "type": "<type>",   # optional, only when the target already exists:
+                         "nullable": true, "comment": "..."}]}}}  # columns to add first; usable in `columns`
 
 Every source column must be mapped (to exactly one target column), dropped, or used as a ref's
 source_column. Every table that the script creates or loads rows into must be in the mapping.
@@ -26,6 +28,10 @@ apply_mapping() returns gate ops (never executes SQL):
   table has another name; unique / index / foreign key names are left to the gate's defaults;
   each ref adds add_foreign_key (on_delete from the script's FK on that column, else "restrict");
 * tables the script only loads rows into (no CREATE TABLE): only the bulk_insert, into an existing table;
+* tables that already exist may add columns with `add_columns`: each becomes
+  {"op": "add_column", "table": <target>, "column": {name, type, nullable?, comment?}} (the gate's
+  add_column), emitted before the bulk_insert, and the new names may be used in `columns`;
+  on a table the script creates it is an issue (add the column to the table's columns instead);
 * then one bulk_insert per table with rows, parents before children:
     {"op": "bulk_insert", "table": <target>, "columns": [<op col>, ...],
      "source": {"script_id": None, "stream": <source table>, "columns": [<stream col per op col>]},
@@ -51,7 +57,7 @@ from pglast import ast
 from pglast.stream import RawStream
 from pglast.visitors import Visitor
 
-from gate.operations import IDENT_RE, check_expression, view_references
+from gate.operations import IDENT_RE, check_expression, type_shape_ok, view_references
 from scripts.copyparse import RowStreamError, ScriptIssue
 from scripts.sqlparse import ParsedScript
 
@@ -59,7 +65,8 @@ MAX_IDENT = 63
 # same as the gate's snake_case naming style (gate.rules), anchored
 SNAKE_RE = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*")
 DEFAULT_ON_DELETE = "restrict"
-_TABLE_KEYS = {"target", "columns", "drop", "refs"}
+_TABLE_KEYS = {"target", "columns", "drop", "refs", "add_columns"}
+_ADD_COLUMN_KEYS = {"name", "type", "nullable", "comment"}
 _REF_KEYS = {"column", "parent", "parent_key", "source_column"}
 _REF_OPTIONAL = {"external"}   # external: the parent already exists outside the script
 
@@ -252,6 +259,23 @@ def _shape(mapping) -> list[ScriptIssue]:
         drop = m.get("drop", [])
         if not isinstance(drop, list) or not all(isinstance(d, str) for d in drop):
             bad(f"{p}.drop", "drop must be a list of source column names")
+        adds = m.get("add_columns", [])
+        if not isinstance(adds, list):
+            bad(f"{p}.add_columns", "add_columns must be a list of {name, type, nullable?, comment?}")
+        else:
+            for i, a in enumerate(adds):
+                ap = f"{p}.add_columns[{i}]"
+                if not isinstance(a, dict) or not {"name", "type"} <= set(a) <= _ADD_COLUMN_KEYS:
+                    bad(ap, "each added column must be {name, type, nullable?, comment?}")
+                    continue
+                if not isinstance(a["name"], str) or not isinstance(a["type"], str):
+                    bad(ap, "name and type must be text")
+                elif not type_shape_ok(a["type"]):
+                    bad(ap, f"unsupported type {a['type']!r}")
+                if "nullable" in a and not isinstance(a["nullable"], bool):
+                    bad(ap, "nullable must be true or false")
+                if "comment" in a and not isinstance(a["comment"], str):
+                    bad(ap, "comment must be text")
         refs = m.get("refs", [])
         if not isinstance(refs, list):
             bad(f"{p}.refs", "refs must be a list")
@@ -401,6 +425,30 @@ def apply_mapping(parsed: ParsedScript, mapping: dict, external_state: dict | No
         for c in s.columns:
             if c not in plain[n] and c not in ref_src[n] and c not in dropped:
                 bad(p, f"source column {n}.{c} is not mapped; map it in columns, use it in refs, or list it in drop")
+
+    # --- added columns (tables that already exist only)
+    add_ops: dict[str, list[dict]] = {}
+    for n in mapped:
+        adds = tables[n].get("add_columns") or []
+        if not adds:
+            continue
+        p, tgt = f"tables.{n}.add_columns", target_of[n]
+        if srcs[n].created:
+            bad(p, f"{tgt!r} is created by the script: add the column to the table's columns instead")
+            continue
+        ext = next((v for k, v in (external_state or {}).items() if k.rsplit(".", 1)[-1] == tgt), None)
+        have = set((ext or {}).get("columns") or ())
+        seen_add: set[str] = set()
+        for i, a in enumerate(adds):
+            nm = a["name"]
+            if not _name_ok(nm):
+                bad(f"{p}[{i}]", f"column name {nm!r} must be snake_case and at most {MAX_IDENT} characters")
+            elif nm in have:
+                bad(f"{p}[{i}]", f"column {nm!r} already exists in {tgt!r}")
+            elif nm in seen_add:
+                bad(f"{p}[{i}]", f"column {nm!r} is added more than once to {tgt!r}")
+            seen_add.add(nm)
+            add_ops.setdefault(n, []).append({"op": "add_column", "table": tgt, "column": copy.deepcopy(a)})
 
     # --- schema ops for created tables
     creates: dict[str, dict] = {}
@@ -600,7 +648,8 @@ def apply_mapping(parsed: ParsedScript, mapping: dict, external_state: dict | No
     column_ops = [copy.deepcopy(o) for o in parsed.ops if o["op"] in _COLUMN_OPS]
     view_ops = [copy.deepcopy(o) for o in parsed.ops if o["op"] in _VIEW_OPS]
     ops = (enum_ops + [creates[n] for n in order if n in creates] + deduped + unique_idx + checks + fks + plain_idx
-           + column_ops + view_ops + bulks)
+           + column_ops + view_ops
+           + [o for n in order for o in add_ops.get(n, [])] + bulks)
     return MappingResult(ops, [])
 
 

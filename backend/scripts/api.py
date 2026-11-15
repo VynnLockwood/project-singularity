@@ -63,7 +63,7 @@ def scripts(request):
         except storage.ScriptError as exc:
             return error(str(exc), 413 if "larger than" in str(exc) else 400)
         return JsonResponse({"script_id": script.pk, "sha256": script.sha256, "size": script.size}, status=201)
-    qs = Script.objects.all()
+    qs = Script.objects.exclude(kind="import")    # an import run's Critic scripts belong to that run
     if not request.user.can_approve:
         qs = qs.filter(owner=request.user)
     return JsonResponse({"scripts": [_summary(s) for s in qs[:50]]})
@@ -109,7 +109,7 @@ def submit_view(request, script_id):
 
 @endpoint("GET")
 def script_detail(request, script_id):
-    s = Script.objects.filter(pk=script_id).first()
+    s = Script.objects.filter(pk=script_id).exclude(kind="import").first()
     if s is None:
         return error("not found", 404)
     if s.owner_id != request.user.pk and not request.user.can_approve:
@@ -151,8 +151,11 @@ def _json_body(request) -> dict:
 def upload_begin(request):
     def run(request):
         body = _json_body(request)
-        return JsonResponse(uploads.begin(request.user, str(body.get("name") or "script.sql"), body.get("size")),
-                            status=201)
+        kind = body.get("kind", "script")
+        if not isinstance(kind, str):
+            raise storage.ScriptError("kind must be text")
+        return JsonResponse(uploads.begin(request.user, str(body.get("name") or "script.sql"), body.get("size"),
+                                          kind=kind), status=201)
     return _upload_view({"POST"}, run)(request)
 
 

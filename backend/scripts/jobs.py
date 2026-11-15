@@ -59,6 +59,8 @@ def start(user, script_id: int, mapping: dict | None, schema: str | None = None)
             raise ScriptError(f"script #{script_id} does not exist")
         if script.owner_id != user.pk and not user.can_approve:
             raise Forbidden("this script belongs to someone else")
+        if script.kind == "import":
+            raise ScriptError(f"script #{script.pk} belongs to an import; check and submit it from the Import tab")
         if script.status in (Script.Status.SUBMITTED, Script.Status.EXPIRED):
             raise ScriptError(f"script #{script.pk} is {script.status}; only uploaded or validated scripts can be "
                               "validated")

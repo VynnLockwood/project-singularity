@@ -37,5 +37,13 @@ chat:
 #   ratePerMinute: 20
 #   valueLookupMs: 800
 
+# AI import of xlsx/csv files (all optional; these are the defaults).
+# import:
+#   model: ""          # empty = the chat default model
+#   maxFileBytes: 52428800
+#   sampleValues: 5
+#   maxRounds: 3
+#   rowMatch: true
+
 backups:
   retentionDays: 14

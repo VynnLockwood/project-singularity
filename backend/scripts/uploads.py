@@ -25,12 +25,23 @@ class NotFound(ScriptError):
     """No such session for this user (HTTP 404)."""
 
 
-def begin(user, name: str, size: int) -> dict:
-    cap = get_config()["limits"]["maxScriptBytes"]
+IMPORT_EXTS = (".xlsx", ".csv")
+
+
+def begin(user, name: str, size: int, kind: str = "script") -> dict:
+    if kind not in ("script", "import"):
+        raise ScriptError(f"Unknown upload kind {kind!r}.")
+    if kind == "import":
+        cap = get_config()["import"]["maxFileBytes"]
+        if not str(name or "").lower().endswith(IMPORT_EXTS):
+            raise ScriptError("Only .xlsx and .csv files can be imported.")
+    else:
+        cap = get_config()["limits"]["maxScriptBytes"]
     if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
         raise ScriptError(f"Upload size must be above 0 bytes (got {size!r}).")
     if size > cap:
-        raise ScriptError(f"Script is larger than the allowed size: {size} bytes is over the limit of {cap} bytes.")
+        what = "File" if kind == "import" else "Script"
+        raise ScriptError(f"{what} is larger than the allowed size: {size} bytes is over the limit of {cap} bytes.")
     purge_expired()
     if UploadSession.objects.filter(owner=user, status=UploadSession.Status.OPEN).count() >= MAX_OPEN:
         raise ScriptError(f"You already have {MAX_OPEN} open uploads. Finish them or wait for them to expire "
@@ -41,7 +52,7 @@ def begin(user, name: str, size: int) -> dict:
     os.close(fd)
     now = timezone.now()
     s = UploadSession.objects.create(owner=user, name=storage._clean_name(name), size=size, chunk_bytes=CHUNK_BYTES,
-                                     path=rel, created_at=now, expires_at=now + SESSION_TTL)
+                                     path=rel, kind=kind, created_at=now, expires_at=now + SESSION_TTL)
     return {"upload_id": s.pk, "chunk_bytes": s.chunk_bytes, "chunks": _chunks(s), "max_bytes": cap}
 
 
@@ -88,14 +99,35 @@ def status(user, upload_id: int) -> dict:
     return {"received": sorted(s.received), "size": s.size, "chunks": _chunks(s)}
 
 
+def _check_complete(s: UploadSession) -> None:
+    missing = sorted(set(range(_chunks(s))) - set(s.received))
+    if missing:
+        shown = ", ".join(map(str, missing[:20])) + (" ..." if len(missing) > 20 else "")
+        raise ScriptError(f"Chunks missing: {shown}. Send them, then complete again.")
+
+
+def complete_raw(user, upload_id: int) -> str:
+    """Finish an import upload: move the part file, byte for byte, to imports_dir()/<uuid><ext>; return that path."""
+    with transaction.atomic():
+        s = _get(user, upload_id, lock=True)
+        if s.kind != "import":
+            raise ScriptError("This upload is a script, not an import file.")
+        _check_complete(s)
+        ext = os.path.splitext(s.name)[1].lower()
+        dest = os.path.join(storage.imports_dir(), f"{uuid.uuid4().hex}{ext}")
+        os.replace(_part(s), dest)
+        s.status, s.path = UploadSession.Status.COMPLETE, ""
+        s.save(update_fields=["status", "path"])
+    return dest
+
+
 def complete(user, upload_id: int):
     refused = None
     with transaction.atomic():
         s = _get(user, upload_id, lock=True)
-        missing = sorted(set(range(_chunks(s))) - set(s.received))
-        if missing:
-            shown = ", ".join(map(str, missing[:20])) + (" ..." if len(missing) > 20 else "")
-            raise ScriptError(f"Chunks missing: {shown}. Send them, then complete again.")
+        if s.kind == "import":
+            raise ScriptError("This upload is an import file; it is finished by the import, not as a script.")
+        _check_complete(s)
         part = _part(s)
         try:
             script = storage.save_stream(user, s.name, part)

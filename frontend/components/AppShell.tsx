@@ -14,6 +14,7 @@ import { ChatView } from "./ChatView";
 import { CommandPalette } from "./CommandPalette";
 import { ConnectView } from "./ConnectView";
 import { DatabaseView } from "./DatabaseView";
+import { ImportView } from "./ImportView";
 import { IntelligentQueryView } from "./IntelligentQueryView";
 import { DataView } from "./DataView";
 import { DuplicatesView } from "./DuplicatesView";
@@ -109,6 +110,8 @@ function Shell({ me, onLogout }: Props) {
           )}
           {view === "data" && <DataView me={me} live={live} route={route} navigate={navigate} refreshKey={schemaKey} onProposed={onProposed} />}
           {route.view === "query" && <IntelligentQueryView me={me} route={route} navigate={navigate} />}
+          {route.view === "import" && me.role !== "viewer" && <ImportView me={me} route={route} navigate={navigate} />}
+          {view === "import" && me.role === "viewer" && <NotFound path="/import" onHome={() => navigate({ view: "chat" })} />}
           {view === "duplicates" && <DuplicatesView me={me} refreshKey={appliedCount} onProposed={onProposed} />}
           {view === "scripts" && me.role !== "viewer" && <ScriptsTab canEdit />}
           {view === "scripts" && me.role === "viewer" && <NotFound path="/scripts" onHome={() => navigate({ view: "chat" })} />}
