@@ -1,3 +1,4 @@
+import hashlib
 import logging
 
 from django.core.exceptions import ValidationError
@@ -5,6 +6,7 @@ from django.core.validators import validate_email
 from django.db import IntegrityError, transaction
 
 from audit.models import record
+from config.siconfig import get_config
 
 from .models import ROLE_RANK, Role, User
 
@@ -15,8 +17,26 @@ class SignInDenied(Exception):
     """Raised when a Google identity is not allowed to use Singularity."""
 
 
-class RoleChangeDenied(Exception):
-    pass
+class UserManagementDenied(Exception):
+    """Raised when an admin action on users is refused; the message is safe to show to the admin."""
+
+
+RoleChangeDenied = UserManagementDenied  # older name, kept so existing imports and except clauses keep working
+
+MAX_EMAIL = 254
+MAX_NAME = 150  # Django's first_name / last_name / username length
+
+
+def normalize_email(raw) -> str:
+    """The one canonical form of an email: trimmed and lower-cased. Refuses anything that is not an email."""
+    email = raw.strip().lower() if isinstance(raw, str) else ""
+    if not email or len(email) > MAX_EMAIL:
+        raise UserManagementDenied("enter a valid email address")
+    try:
+        validate_email(email)
+    except ValidationError:
+        raise UserManagementDenied("enter a valid email address") from None
+    return email
 
 
 # One message for every refusal, so nothing reveals which accounts exist.
@@ -25,9 +45,12 @@ DENIED = "not allowed"
 
 def sign_in_from_claims(claims: dict, auth_cfg: dict) -> User:
     """Map verified Google claims to an existing, active User. Sign-in is invite-only: no user is created here."""
-    email = (claims.get("email") or "").strip().lower()
-    if not email or claims.get("email_verified") is not True:
+    if claims.get("email_verified") is not True:
         raise SignInDenied(DENIED)
+    try:
+        email = normalize_email(claims.get("email"))
+    except UserManagementDenied:
+        raise SignInDenied(DENIED) from None
     user = User.objects.filter(email__iexact=email).first()
     if user is None or not user.is_active:
         raise SignInDenied(DENIED)
@@ -52,10 +75,9 @@ def _seed_emails(auth_cfg: dict) -> list[str]:
         return []
     emails = []
     for item in raw:
-        email = item.strip().lower() if isinstance(item, str) else ""
         try:
-            validate_email(email)
-        except ValidationError:
+            email = normalize_email(item)
+        except UserManagementDenied:
             logger.warning("auth.seedAdmins: skipping invalid entry %r", item)
             continue
         if email not in emails:
@@ -78,7 +100,7 @@ def ensure_seed_admins(auth_cfg: dict) -> list[User]:
         if user is None:
             try:
                 with transaction.atomic():
-                    user = User.objects.create(username=email, email=email, role=Role.ADMIN)
+                    user = User.objects.create(username=_username_for(email), email=email, role=Role.ADMIN)
                     user.set_unusable_password()
                     user.save(update_fields=["password"])
             except IntegrityError:
@@ -98,18 +120,85 @@ def ensure_seed_admins(auth_cfg: dict) -> list[User]:
     return users
 
 
+def _require_admin(actor: User) -> None:
+    if not (actor.is_active and actor.can_admin):
+        raise UserManagementDenied("only admins can manage users")
+
+
+def _username_for(email: str) -> str:
+    """username mirrors the email; an email longer than the username column gets a stable hashed name instead."""
+    if len(email) <= MAX_NAME:
+        return email
+    return "u-" + hashlib.sha256(email.encode()).hexdigest()
+
+
+def _guard_last_admin(target: User) -> None:
+    """Refuse to take admin away from the last active admin. Locks the active admins so two requests cannot race."""
+    admins = list(User.objects.select_for_update().filter(role=Role.ADMIN, is_active=True).order_by("pk"))
+    if not any(a.pk != target.pk for a in admins):
+        raise UserManagementDenied("cannot remove the last active admin")
+
+
+def create_user(actor: User, email, role, first_name: str = "", last_name: str = "") -> User:
+    """Invite a person: an active user with the given role who can sign in with Google. Admins only."""
+    _require_admin(actor)
+    email = normalize_email(email)
+    if role not in ROLE_RANK:
+        raise UserManagementDenied("unknown role")
+    domains = get_config()["auth"].get("allowedDomains") or []
+    if domains and email.rsplit("@", 1)[1] not in domains:
+        raise UserManagementDenied("this email domain is not allowed: " + ", ".join(domains))
+    first = (first_name or "").strip()[:MAX_NAME] if isinstance(first_name, str) else ""
+    last = (last_name or "").strip()[:MAX_NAME] if isinstance(last_name, str) else ""
+    duplicate = UserManagementDenied("a user with this email already exists")
+    if User.objects.filter(email__iexact=email).exists():
+        raise duplicate
+    try:
+        with transaction.atomic():
+            user = User(username=_username_for(email), email=email, role=Role(role), first_name=first, last_name=last)
+            user.set_unusable_password()
+            user.save()
+    except IntegrityError:
+        raise duplicate from None
+    record(actor, "user.created", target=email, details={"role": user.role})
+    return user
+
+
+def set_user_active(actor: User, target: User, active: bool) -> User:
+    """Turn a user off (they can no longer sign in or use MCP tokens) or back on. Admins only, never yourself."""
+    _require_admin(actor)
+    if actor.pk == target.pk:
+        raise UserManagementDenied("you cannot turn yourself off or on")
+    active = bool(active)
+    with transaction.atomic():
+        User.objects.select_for_update().filter(pk=target.pk).first()
+        target.refresh_from_db(fields=["role", "is_active"])
+        if target.is_active == active:
+            return target
+        if not active and target.role == Role.ADMIN:
+            _guard_last_admin(target)
+        target.is_active = active
+        target.save(update_fields=["is_active"])
+        record(actor, "user.reactivated" if active else "user.deactivated", target=target.email)
+    return target
+
+
 def change_role(actor: User, target: User, new_role: str) -> User:
-    if not actor.can_approve:
-        raise RoleChangeDenied("only approvers can change roles")
+    """Change someone's role. Admins only (so only an admin grants or removes admin), never your own role."""
+    _require_admin(actor)
     if new_role not in ROLE_RANK:
-        raise RoleChangeDenied("unknown role")
-    old_role = target.role
-    if old_role == new_role:
-        return target
-    if old_role == Role.APPROVER and new_role != Role.APPROVER:
-        if User.objects.filter(role=Role.APPROVER, is_active=True).exclude(pk=target.pk).count() == 0:
-            raise RoleChangeDenied("cannot remove the last approver")
-    target.role = new_role
-    target.save(update_fields=["role"])
-    record(actor, "user.role_changed", target=target.email, details={"from": old_role, "to": new_role})
+        raise UserManagementDenied("unknown role")
+    if actor.pk == target.pk:
+        raise UserManagementDenied("you cannot change your own role")
+    with transaction.atomic():
+        User.objects.select_for_update().filter(pk=target.pk).first()
+        target.refresh_from_db(fields=["role", "is_active"])
+        old_role = target.role
+        if old_role == new_role:
+            return target
+        if old_role == Role.ADMIN and target.is_active:
+            _guard_last_admin(target)
+        target.role = Role(new_role)
+        target.save(update_fields=["role"])
+        record(actor, "user.role_changed", target=target.email, details={"from": old_role, "to": target.role.value})
     return target

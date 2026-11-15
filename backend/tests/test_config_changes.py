@@ -14,7 +14,8 @@ pytestmark = pytest.mark.django_db
 
 @pytest.fixture
 def people():
-    return {r: User.objects.create(username=f"{r}@x.com", email=f"{r}@x.com", role=r) for r in (Role.VIEWER, Role.EDITOR, Role.APPROVER)}
+    return {r: User.objects.create(username=f"{r}@x.com", email=f"{r}@x.com", role=r)
+            for r in (Role.VIEWER, Role.EDITOR, Role.APPROVER, Role.ADMIN)}
 
 
 def rule(name="noFloat"):
@@ -75,7 +76,9 @@ def test_rule_update_and_role_change_apply_together_or_not_at_all(people):
     ops = [{"op": "update_rule", "name": "noFloat", "severity": "warn"}, {"op": "set_user_role", "email": "viewer@x.com", "role": "editor"}]
     ch = service.propose(people["editor"], ops, source="mcp")
     assert ch.diff == ["~ rule noFloat: severity block → warn", "~ role viewer@x.com: viewer → editor"]
-    service.approve(people["approver"], ch.pk)
+    with pytest.raises(service.ChangeError):  # a role op inside: only an admin decides (test_accounts_manage.py)
+        service.approve(people["approver"], ch.pk)
+    service.approve(people["admin"], ch.pk)
     assert Rule.objects.get(name="noFloat").severity == "warn"
     assert User.objects.get(email="viewer@x.com").role == Role.EDITOR
 
@@ -93,7 +96,7 @@ def test_create_rule_is_validated_by_the_same_rules_as_the_ui(people):
 def test_values_that_moved_since_the_proposal_fail_safely(people):
     ch = service.propose(people["editor"], [{"op": "set_user_role", "email": "editor@x.com", "role": "viewer"}], source="mcp")
     User.objects.filter(pk=people["editor"].pk).update(role=Role.VIEWER)  # changed by someone else meanwhile
-    done = service.approve(people["approver"], ch.pk)
+    done = service.approve(people["admin"], ch.pk)
     assert done.status == "failed" and "nothing would change" in done.error
 
 

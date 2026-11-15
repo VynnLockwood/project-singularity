@@ -97,8 +97,8 @@ def test_role_permissions(role, read, edit, approve):
 # ---- role changes ----------------------------------------------------------
 
 @pytest.mark.django_db
-def test_approver_can_change_role_and_it_is_audited():
-    admin = make_user("admin@example.com", Role.APPROVER)
+def test_admin_can_change_role_and_it_is_audited():
+    admin = make_user("admin@example.com", Role.ADMIN)
     target = make_user("t@example.com")
     change_role(admin, target, "editor")
     target.refresh_from_db()
@@ -110,8 +110,8 @@ def test_approver_can_change_role_and_it_is_audited():
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("role", [Role.VIEWER, Role.EDITOR])
-def test_non_approver_cannot_change_role(role):
+@pytest.mark.parametrize("role", [Role.VIEWER, Role.EDITOR, Role.APPROVER])
+def test_non_admin_cannot_change_role(role):
     actor = make_user("a@example.com", role)
     target = make_user("t@example.com")
     with pytest.raises(RoleChangeDenied):
@@ -122,23 +122,24 @@ def test_non_approver_cannot_change_role(role):
 
 @pytest.mark.django_db
 def test_unknown_role_rejected():
-    admin = make_user("admin@example.com", Role.APPROVER)
+    admin = make_user("admin@example.com", Role.ADMIN)
     with pytest.raises(RoleChangeDenied):
         change_role(admin, make_user("t@example.com"), "superuser")
 
 
 @pytest.mark.django_db
-def test_cannot_remove_last_approver():
-    admin = make_user("admin@example.com", Role.APPROVER)
+def test_cannot_remove_last_admin():
+    # the "last approver" rule is now "last active admin" (more in test_accounts_manage.py)
+    admin = make_user("admin@example.com", Role.ADMIN)
     with pytest.raises(RoleChangeDenied):
         change_role(admin, admin, "viewer")
     admin.refresh_from_db()
-    assert admin.role == Role.APPROVER
+    assert admin.role == Role.ADMIN
 
 
 @pytest.mark.django_db
-def test_can_demote_an_approver_when_another_remains():
-    a = make_user("a@example.com", Role.APPROVER)
+def test_admin_can_demote_the_last_approver():
+    a = make_user("a@example.com", Role.ADMIN)
     b = make_user("b@example.com", Role.APPROVER)
     change_role(a, b, "editor")
     b.refresh_from_db()
@@ -271,7 +272,12 @@ def test_role_change_endpoint(client):
     client.force_login(make_user("e@example.com", Role.EDITOR))
     assert patch_role(client, target.pk, "editor").status_code == 403
 
-    client.force_login(make_user("admin@example.com", Role.APPROVER))
+    client.force_login(make_user("ap@example.com", Role.APPROVER))
+    assert patch_role(client, target.pk, "editor").status_code in (400, 403)  # only an admin changes roles
+    target.refresh_from_db()
+    assert target.role == Role.VIEWER
+
+    client.force_login(make_user("admin@example.com", Role.ADMIN))
     assert patch_role(client, target.pk, "editor").status_code == 200
     target.refresh_from_db()
     assert target.role == Role.EDITOR
@@ -281,7 +287,7 @@ def test_role_change_endpoint(client):
 
 @pytest.mark.django_db
 def test_csrf_enforced_on_role_change():
-    admin = make_user("admin@example.com", Role.APPROVER)
+    admin = make_user("admin@example.com", Role.ADMIN)
     target = make_user("t@example.com")
     strict = Client(enforce_csrf_checks=True)
     strict.force_login(admin)
