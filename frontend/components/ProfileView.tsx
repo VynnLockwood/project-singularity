@@ -35,7 +35,7 @@ export function ProfileView({ me, navigate }: { me: Me; navigate: Navigate }) {
           {me.name && <p className="muted">{me.email}</p>}
           {me.lastLoginAt && <p className="muted small">Last signed in {new Date(me.lastLoginAt).toLocaleString()}</p>}
         </div>
-        <span className="profile-role" aria-label="Your role"><Badge status={me.role} /></span>
+        <p className="profile-role"><span className="muted small">Your role</span> <Badge status={me.role} /></p>
       </header>
 
       <Panel title="Roles">
@@ -45,7 +45,7 @@ export function ProfileView({ me, navigate }: { me: Me; navigate: Navigate }) {
             <li key={r} aria-current={r === me.role ? "true" : undefined} data-included={i <= rank}>
               <strong>{r}</strong>
               {summary[i] && <span>{summary[i]}</span>}
-              {r === me.role && <span className="profile-you">Your role</span>}
+              {r === me.role && <span className="profile-you">Yours</span>}
             </li>
           ))}
         </ol>

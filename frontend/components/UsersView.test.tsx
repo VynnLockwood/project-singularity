@@ -48,11 +48,61 @@ describe("UsersView", () => {
     expect(screen.getByLabelText("Email")).toHaveValue("");
 
     fireEvent.change(screen.getByLabelText("Role of ed@x.com"), { target: { value: "approver" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save role of ed@x.com" }));
     await waitFor(() => expect(updateUser).toHaveBeenCalledWith(2, { role: "approver" }));
 
     fireEvent.click(screen.getByRole("switch", { name: "off@x.com can sign in" }));
     await waitFor(() => expect(updateUser).toHaveBeenCalledWith(3, { active: true }));
     expect(listUsers.mock.calls.length).toBeGreaterThan(1); // reloads after each change
+  });
+
+  it("only stages a role picked with the keyboard: nothing is sent until Save", async () => {
+    const { updateUser } = await setup();
+    const select = screen.getByLabelText("Role of ed@x.com");
+    const save = screen.getByRole("button", { name: "Save role of ed@x.com" });
+    expect(save).toBeDisabled(); // nothing staged yet
+    select.focus();
+    fireEvent.keyDown(select, { key: "ArrowDown" });
+    fireEvent.change(select, { target: { value: "approver" } });
+    expect(select).toHaveValue("approver");
+    expect(save).toBeEnabled();
+    expect(updateUser).not.toHaveBeenCalled();
+    fireEvent.change(select, { target: { value: "editor" } }); // back to the saved role
+    expect(save).toBeDisabled();
+  });
+
+  it("asks before granting admin, and sends nothing if cancelled", async () => {
+    const { updateUser } = await setup();
+    fireEvent.change(screen.getByLabelText("Role of ed@x.com"), { target: { value: "admin" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save role of ed@x.com" }));
+    expect(screen.getByText("Make ed@x.com an admin? Admins can manage people and approve role changes.")).toBeInTheDocument();
+    expect(updateUser).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(updateUser).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Role of ed@x.com")).toHaveValue("admin"); // still staged
+    expect(screen.getByLabelText("Role of ed@x.com")).toHaveFocus();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save role of ed@x.com" }));
+    fireEvent.click(screen.getByRole("button", { name: "Make admin" }));
+    await waitFor(() => expect(updateUser).toHaveBeenCalledWith(2, { role: "admin" }));
+  });
+
+  it("keeps focus on the role control while saving", async () => {
+    let finish: (u: User) => void = () => {};
+    const { updateUser } = await setup(people, { updateUser: vi.fn(() => new Promise<User>((r) => { finish = r; })) });
+    const select = screen.getByLabelText("Role of ed@x.com");
+    fireEvent.change(select, { target: { value: "viewer" } });
+    select.focus();
+    fireEvent.keyDown(select, { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "Save role of ed@x.com" }));
+    select.focus();
+    await waitFor(() => expect(updateUser).toHaveBeenCalled());
+    expect(select).not.toBeDisabled();
+    expect(select).toHaveAttribute("aria-disabled", "true");
+    expect(select).toHaveFocus();
+    fireEvent.change(select, { target: { value: "approver" } }); // ignored while busy
+    expect(select).toHaveValue("viewer");
+    finish({ ...people[1], role: "viewer" });
   });
 
   it("offers every role, admin included", async () => {
@@ -75,6 +125,12 @@ describe("UsersView", () => {
     fireEvent.change(screen.getByLabelText(/Name/), { target: { value: " Nia Ng " } });
     fireEvent.click(screen.getByRole("button", { name: "Add user" }));
     await waitFor(() => expect(createUser).toHaveBeenCalledWith({ email: "n@x.com", role: "viewer", name: "Nia Ng" }));
+  });
+
+  it("titles the form Add user", async () => {
+    await setup();
+    expect(screen.getByRole("heading", { name: "Add user" })).toBeInTheDocument();
+    expect(screen.queryByText("Add someone")).toBeNull();
   });
 
   it("test_users_view_disables_self_and_last_admin", async () => {
@@ -107,9 +163,11 @@ describe("UsersView", () => {
       createUser: refuse(400, "a user with this email already exists"),
     });
     fireEvent.change(screen.getByLabelText("Role of ed@x.com"), { target: { value: "viewer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save role of ed@x.com" }));
     await waitFor(() => expect(updateUser).toHaveBeenCalled());
     const row = screen.getByText("ed@x.com").closest("tr")!;
-    expect(await within(row).findByRole("alert")).toHaveTextContent(/cannot remove the last active admin/i);
+    expect(await within(row).findByRole("alert")).toHaveTextContent("Cannot remove the last active admin. Make someone else an admin first.");
+    expect(screen.getByLabelText("Role of ed@x.com")).toHaveValue("viewer"); // the staged value is kept
 
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "ed@x.com" } });
     fireEvent.click(screen.getByRole("button", { name: "Add user" }));
@@ -123,6 +181,6 @@ describe("UsersView", () => {
       listUsers: refuse(500, "request failed (500)") }));
     const { UsersView } = await import("./UsersView");
     render(<UsersView me={me} />);
-    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load people. Request failed (500) Reload the page to try again.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load people. Request failed (500). Reload the page to try again.");
   });
 });

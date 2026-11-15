@@ -168,6 +168,10 @@ textarea.code { width: 100%; color: var(--text); }
 .profile { max-width: 56rem; display: flex; flex-direction: column; gap: var(--space-4); }
 .profile-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); }
 .profile-head h2, .profile-head p { margin: 0 0 var(--space-1); }
+.profile-role { display: flex; align-items: center; gap: var(--space-2); margin: 0; white-space: nowrap; }
+.users-role { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.users-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-top: var(--space-2); font-family: var(--font-text); font-size: var(--size-small); color: var(--text); }
+.users-table [aria-disabled="true"] { opacity: 0.6; cursor: progress; }
 .profile-roles { list-style: none; margin: var(--space-3) 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .profile-roles li { display: grid; grid-template-columns: 7rem minmax(0, 1fr) auto; gap: var(--space-3); align-items: baseline; padding: var(--space-2) var(--space-3); border-radius: var(--radius-control); color: var(--text-faint); }
 .profile-roles li[data-included="true"] { color: var(--text); }

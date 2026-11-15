@@ -9,8 +9,16 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** Server messages come in lower case ("cannot remove the last active admin"); show them as sentences. */
 function sentence(e: unknown, fallback: string): string {
-  const m = e instanceof ApiError ? e.message : fallback;
-  return m.charAt(0).toUpperCase() + m.slice(1);
+  const m = (e instanceof ApiError ? e.message : fallback).trim();
+  if (!m) return "";
+  const s = m.charAt(0).toUpperCase() + m.slice(1);
+  return /[.!?]$/.test(s) ? s : `${s}.`;
+}
+
+/** A refusal plus what to do about it, where the server's message alone leaves you stuck. */
+function refusal(e: unknown): string {
+  const m = sentence(e, "Could not save this change. Try again.");
+  return /last active admin/i.test(m) ? `${m} Make someone else an admin first.` : m;
 }
 
 const lastSignIn = (at: string | null) => (at ? new Date(at).toLocaleString() : "Never");
@@ -41,7 +49,7 @@ function AddUser({ onAdded }: { onAdded: () => void }) {
   };
 
   return (
-    <Panel title="Add someone">
+    <Panel title="Add user">
       <form className="users-add" aria-label="Add user" onSubmit={submit} noValidate>
         <div className="users-add-fields">
           <label>Email
@@ -72,17 +80,33 @@ export function UsersView({ me }: { me: Me }) {
   const [loadError, setLoadError] = useState("");
   const [rowError, setRowError] = useState<{ id: number; message: string } | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
+  /** Roles picked but not saved yet, by user id: a stray arrow key in a select must not change anyone's access. */
+  const [staged, setStaged] = useState<Record<number, Role>>({});
+  const [confirming, setConfirming] = useState<number | null>(null);
 
   const load = useCallback(() => listUsers().then((u) => { setUsers(u); setLoadError(""); })
-    .catch((e) => setLoadError(`Could not load people. ${sentence(e, "")} Reload the page to try again.`.replace(/\s+/g, " "))), []);
+    .catch((e) => setLoadError(["Could not load people.", sentence(e, ""), "Reload the page to try again."].filter(Boolean).join(" "))), []);
   useEffect(() => { load(); }, [load]);
 
+  const focusRole = (id: number) => document.getElementById(`user-${id}-role`)?.focus();
+
   const change = async (u: User, fields: { role?: Role; active?: boolean }) => {
-    setRowError(null); setBusy(u.id);
-    try { await updateUser(u.id, fields); } catch (e) {
-      setRowError({ id: u.id, message: sentence(e, "Could not save this change. Try again.") });
-    } finally { setBusy(null); }
+    setRowError(null); setConfirming(null); setBusy(u.id);
+    try {
+      await updateUser(u.id, fields);
+      if (fields.role) setStaged((s) => { const n = { ...s }; delete n[u.id]; return n; });
+    } catch (e) {
+      setRowError({ id: u.id, message: refusal(e) });
+    }
     await load();
+    setBusy(null);
+  };
+
+  const save = (u: User) => {
+    const role = staged[u.id];
+    if (!role || role === u.role) return;
+    if (role === "admin") { setConfirming(u.id); return; } // granting admin is asked about first
+    change(u, { role });
   };
 
   const activeAdmins = (users ?? []).filter((u) => u.role === "admin" && u.active).length;
@@ -114,7 +138,10 @@ export function UsersView({ me }: { me: Me }) {
               {users.map((u) => {
                 const why = reason(u);
                 const whyId = why ? `user-${u.id}-why` : undefined;
-                const locked = Boolean(why) || busy === u.id;
+                const locked = Boolean(why);
+                // while saving, the controls stay focusable (aria-disabled) and ignore input, so focus is not lost
+                const working = busy === u.id;
+                const shown = staged[u.id] ?? u.role;
                 return (
                   <tr key={u.id} data-active={u.active}>
                     <td>
@@ -124,15 +151,37 @@ export function UsersView({ me }: { me: Me }) {
                     </td>
                     <td>{u.name || <span className="muted">–</span>}</td>
                     <td>
-                      <select aria-label={`Role of ${u.email}`} aria-describedby={whyId} value={u.role} disabled={locked}
-                        onChange={(e) => change(u, { role: e.target.value as Role })}>
-                        {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
-                      </select>
+                      <div className="users-role">
+                        <select id={`user-${u.id}-role`} aria-label={`Role of ${u.email}`} aria-describedby={whyId} value={shown}
+                          disabled={locked} aria-disabled={working ? "true" : undefined}
+                          onChange={(e) => {
+                            if (working) return;
+                            const role = e.target.value as Role;
+                            setConfirming(null);
+                            setStaged((s) => { const n = { ...s }; if (role === u.role) delete n[u.id]; else n[u.id] = role; return n; });
+                          }}>
+                          {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+                        </select>
+                        {!locked && (
+                          <Button size="sm" aria-label={`Save role of ${u.email}`} disabled={shown === u.role}
+                            aria-disabled={working ? "true" : undefined} onClick={() => { if (!working) save(u); }}>
+                            {working && staged[u.id] ? "Saving…" : "Save"}
+                          </Button>
+                        )}
+                      </div>
+                      {confirming === u.id && (
+                        <div className="users-confirm" role="group" aria-label={`Confirm admin for ${u.email}`}>
+                          <span>Make {u.email} an admin? Admins can manage people and approve role changes.</span>
+                          <Button size="sm" variant="primary" autoFocus onClick={() => change(u, { role: "admin" })}>Make admin</Button>
+                          <Button size="sm" variant="ghost" onClick={() => { setConfirming(null); focusRole(u.id); }}>Cancel</Button>
+                        </div>
+                      )}
                     </td>
                     <td>
                       <label className="users-switch">
                         <input type="checkbox" role="switch" aria-label={`${u.email} can sign in`} aria-describedby={whyId}
-                          checked={u.active} disabled={locked} onChange={(e) => change(u, { active: e.target.checked })} />
+                          checked={u.active} disabled={locked} aria-disabled={working ? "true" : undefined}
+                          onChange={(e) => { if (!working) change(u, { active: e.target.checked }); }} />
                         <span aria-hidden="true">{u.active ? "On" : "Off"}</span>
                       </label>
                     </td>

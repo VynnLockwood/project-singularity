@@ -162,8 +162,8 @@ describe("HistoryView revert", () => {
     fireEvent.click((await screen.findByText(`prompt ${rows[0].id}`)).closest("button")!);
   };
 
-  it("is shown to an approver for an applied, reversible change", async () => {
-    await open("approver", [applied(3)]);
+  it.each(["approver", "admin"] as const)("is shown to an %s for an applied, reversible change", async (role) => {
+    await open(role, [applied(3)]);
     expect(screen.getByRole("button", { name: /Revert/ })).toBeInTheDocument();
   });
 

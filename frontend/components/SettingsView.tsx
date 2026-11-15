@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  ApiError, getSettings, listRules, listUsers, rollbackRule, ruleVersions, saveSettings, updateRule,
-  type Me, type Rule, type RuleVersion, type SettingsPayload, type Tunable, type User,
+  ApiError, getSettings, listRules, rollbackRule, ruleVersions, saveSettings, updateRule,
+  type Me, type Rule, type RuleVersion, type SettingsPayload, type Tunable,
 } from "@/lib/api";
 import { atLeast } from "@/lib/nav";
 import { Button } from "@/components/ui";
@@ -206,41 +206,20 @@ export function RulesPanel({ canEdit }: { canEdit: boolean }) {
   );
 }
 
-/** Admins manage people on the Users page; approvers see who is on the team and what role they have. */
+/** Admins manage people on the Users page. The list of people is admin-only on the server, so others get the who-to-ask. */
 export function TeamPanel({ me, onOpenUsers }: { me: Me; onOpenUsers?: () => void }) {
-  const admin = me.role === "admin";
-  const [users, setUsers] = useState<User[]>([]);
-  const [error, setError] = useState("");
-  const [adminsOnly, setAdminsOnly] = useState(false);
-  const load = useCallback(() => listUsers().then(setUsers).catch((e) => {
-    if (e instanceof ApiError && e.status === 403) setAdminsOnly(true);
-    else setError(`${fail(e)} Reload the page to try again.`);
-  }), []);
-  useEffect(() => { if (!admin) load(); }, [admin, load]);
-
-  if (admin) {
+  if (me.role === "admin") {
     return (
       <div>
         <p className="muted small">Add people, change their role or turn their access off on the Users page. Only the people listed there can sign in.</p>
-        <Button icon="key" onClick={onOpenUsers} aria-label="Open Users">Open Users</Button>
+        <Button icon="key" onClick={onOpenUsers}>Open Users</Button>
       </div>
     );
   }
   return (
     <div>
-      <p className="muted small">Only an admin can add people or change roles. Editors propose changes; approvers also approve them and change settings.</p>
-      {error && <p className="problems" role="alert">{error}</p>}
-      {adminsOnly && <p className="muted small">Only an admin can see the list of people. Ask an admin if someone needs access or a different role.</p>}
-      {users.length > 0 && (
-        <ul className="settings-list" aria-label="Team">
-          {users.map((u) => (
-            <li key={u.id} data-enabled={u.active}>
-              <div><strong>{u.email}</strong> <span className="muted small">{u.name}</span></div>
-              <span className="muted small">{u.role}{u.active ? "" : " · access off"}</span>
-            </li>
-          ))}
-        </ul>
-      )}
+      <p className="muted small">Editors propose changes; approvers also approve them and change settings. Admins manage people and roles.</p>
+      <p className="muted small">Only an admin can see the list of people. Ask an admin to add you or change your role.</p>
     </div>
   );
 }

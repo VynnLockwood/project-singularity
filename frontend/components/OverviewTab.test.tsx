@@ -62,8 +62,8 @@ describe("OverviewTab", () => {
     expect(onAsk).toHaveBeenCalledWith(expect.stringContaining("crm"));
   });
 
-  it("only approvers get the rebuild button", async () => {
-    await setup("approver");
+  it.each(["approver", "admin"] as const)("an %s gets the rebuild button", async (role) => {
+    await setup(role);
     expect(screen.getByRole("button", { name: "Rebuild search index" })).toBeInTheDocument();
   });
   it("editors do not get the rebuild button", async () => {

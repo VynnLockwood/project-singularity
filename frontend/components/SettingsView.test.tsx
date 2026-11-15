@@ -121,20 +121,12 @@ describe("SettingsView", () => {
     expect(listUsers).not.toHaveBeenCalled();
   });
 
-  it("shows an approver the team read-only", async () => {
-    await setup("approver");
+  it("explains to an approver who manages people, without asking the server for the admin-only list", async () => {
+    const { listUsers } = await setup("approver");
     fireEvent.click(screen.getByText("Team"));
-    const list = await screen.findByRole("list", { name: "Team" });
-    expect(within(list).getByText("ed@x.com").closest("li")).toHaveTextContent("viewer");
-    expect(within(list).queryByRole("combobox")).toBeNull();
-    expect(screen.getByText(/Only an admin can add people or change roles/)).toBeInTheDocument();
-  });
-
-  it("tells an approver who to ask when the server keeps the list to admins", async () => {
-    await setup("approver", { listUsers: vi.fn(async () => { const { ApiError } = await import("@/lib/api"); throw new ApiError(403, "forbidden"); }) });
-    fireEvent.click(screen.getByText("Team"));
-    expect(await screen.findByText(/Only an admin can see the list of people/)).toBeInTheDocument();
-    expect(screen.queryByRole("alert")).toBeNull();
+    expect(await screen.findByText("Only an admin can see the list of people. Ask an admin to add you or change your role.")).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Team" })).toBeNull();
+    expect(listUsers).not.toHaveBeenCalled();
   });
 });
 

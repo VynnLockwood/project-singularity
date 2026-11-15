@@ -14,6 +14,12 @@ const caps = (role: Role): Capabilities => ({
 const me = (role: Role, extra: Partial<Me> = {}): Me => ({
   id: 1, email: "pat@x.com", name: "Pat Lee", role, active: true, lastLoginAt: "2026-11-14T09:30:00Z", capabilities: caps(role), ...extra,
 });
+const PAGES: Record<Role, string[]> = {
+  viewer: ["Chat", "Database", "Data", "Intelligent query", "Duplicates", "Activity", "Connect", "Settings"],
+  editor: ["Chat", "Database", "Data", "Intelligent query", "Import", "Duplicates", "Scripts", "Activity", "Connect", "Settings"],
+  approver: ["Chat", "Database", "Data", "Intelligent query", "Import", "Duplicates", "Scripts", "Activity", "Connect", "Settings"],
+  admin: ["Chat", "Database", "Data", "Intelligent query", "Import", "Duplicates", "Scripts", "Activity", "Connect", "Settings", "Users"],
+};
 const texts = (list: HTMLElement) => within(list).getAllByRole("listitem").map((li) => li.querySelector("[data-name]")?.textContent);
 
 describe("ProfileView", () => {
@@ -21,13 +27,14 @@ describe("ProfileView", () => {
     render(<ProfileView me={me("editor")} navigate={vi.fn()} />);
     expect(screen.getByRole("heading", { name: "Pat Lee" })).toBeInTheDocument();
     expect(screen.getByText("pat@x.com")).toBeInTheDocument();
-    expect(screen.getByLabelText("Your role")).toHaveTextContent("editor");
+    expect(screen.getByText("Your role").closest("p")).toHaveTextContent("Your role editor");
   });
 
   it.each(ROLES)("test_profile_lists_nav_items_for_role: %s", (role) => {
     render(<ProfileView me={me(role)} navigate={vi.fn()} />);
     const pages = screen.getByRole("list", { name: "Pages you can open" });
-    expect(texts(pages)).toEqual(navFor(role).flatMap((g) => g.items.map((i) => i.label)));
+    expect(texts(pages)).toEqual(PAGES[role]);
+    expect(PAGES[role]).toEqual(navFor(role).flatMap((g) => g.items.map((i) => i.label))); // the page reads nav.ts
     const tools = screen.getByRole("list", { name: "AI tools you can use" });
     expect(texts(tools)).toEqual(caps(role).mcpTools.filter((t) => t.allowed).map((t) => t.name));
 
