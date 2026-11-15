@@ -757,7 +757,7 @@ def validate_script(user, script_id: int, mapping: dict | None = None, schema: s
 
 def get_script(user, script_id: int) -> dict:
     from scripts.models import Script
-    s = Script.objects.filter(pk=script_id).first()
+    s = Script.objects.filter(pk=script_id).exclude(kind="import").first()   # import runs' scripts: web only
     if s is None:
         raise ToolFailure(f"script #{script_id} does not exist")
     return {"id": s.pk, "name": s.name, "size": s.size, "status": s.status,

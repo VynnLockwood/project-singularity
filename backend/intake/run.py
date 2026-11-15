@@ -32,6 +32,8 @@ from django.db import connection, transaction
 from django.utils import timezone
 
 from accounts.models import User
+from approvals import service as approvals
+from approvals.models import Change
 from config.siconfig import get_config
 from gate.operations import IDENT_RE
 from schema import introspect, roles
@@ -314,14 +316,48 @@ def submit(user, run_id: int, note: str = ""):
         _critic_says(run, report)
         raise RunError("invalid", "the plan no longer passes the check: " + "; ".join(report["problems"][:3]))
     try:
-        change = script_service.submit(user, report["scriptId"], note or "", schema=run.schema, _import_run=True)
-    except (ScriptError, PermissionError) as exc:
-        _set(run, report=report, state=S.READY)
-        raise RunError("invalid", str(exc)) from None
-    _set(run, report=report, state=S.SUBMITTED, change=change)
-    _say(run, ImportMessage.Role.SYSTEM, f"Submitted as change #{change.pk}; it waits for an approver.",
-         {"changeId": change.pk})
+        # one transaction: the Change, the script marked submitted and the run's link to it, or none of them
+        with transaction.atomic():
+            locked = ImportRun.objects.select_for_update().filter(pk=run.pk).first()
+            if locked is None or locked.state != S.CHECKING:
+                raise RunError("bad_state", f"import #{run.pk} changed while it was being submitted")
+            change = script_service.submit(user, report["scriptId"], note or "", schema=run.schema,
+                                           _import_run=True)
+            if change.status == Change.Status.REJECTED:
+                problems = _rejection(change)
+                _set(locked, report={**report, "ok": False, "problems": problems, "feedback": problems},
+                     state=S.FAILED)
+                _say(locked, ImportMessage.Role.SYSTEM, f"The rules gate rejected change #{change.pk}:\n"
+                     + "\n".join(f"- {p}" for p in problems), {"changeId": change.pk, "problems": problems})
+            else:
+                _set(locked, report=report, state=S.SUBMITTED, change=change)
+                _say(locked, ImportMessage.Role.SYSTEM, f"Submitted as change #{change.pk}; it waits for an approver.",
+                     {"changeId": change.pk})
+    except Exception as exc:  # noqa: BLE001 - whatever failed, the run goes back to ready, never stuck in checking
+        ImportRun.objects.filter(pk=run.pk, state=S.CHECKING).update(state=S.READY, report=report,
+                                                                     heartbeat=timezone.now())
+        if isinstance(exc, RunError):
+            raise
+        if isinstance(exc, (ScriptError, PermissionError)):
+            raise RunError("invalid", str(exc)) from None
+        if isinstance(exc, approvals.ChangeError):
+            raise RunError("invalid" if exc.code == "invalid" else "bad_state", exc.message) from None
+        raise RunError("bad_state", f"the submit failed: {_clip(exc, 500)}") from None
+    if change.status == Change.Status.REJECTED:
+        raise RunError("invalid", "the rules gate rejected the change: " + "; ".join(_rejection(change)[:3]))
     return change
+
+
+def _rejection(change) -> list[str]:
+    """Why the gate rejected a change, as problems."""
+    res = change.check_result or {}
+    out = []
+    for e in res.get("errors") or []:
+        _add(out, f"gate: {e}")
+    for v in res.get("violations") or []:
+        if not isinstance(v, dict) or v.get("severity") == "block":
+            _add(out, f"rule {v.get('rule', '?')}: {v.get('message', v)}" if isinstance(v, dict) else f"rule: {v}")
+    return out or [change.decision_note or "the rules gate rejected the change"]
 
 
 def cancel(user, run_id: int) -> None:
