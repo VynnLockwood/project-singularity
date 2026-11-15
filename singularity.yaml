@@ -2,8 +2,8 @@
 auth:
   provider: google
   allowedDomains:
-    - example.com      # CHANGE: domains admins may invite (does not gate sign-in; a Gmail-only team: gmail.com)
-  seedAdmins:              # created as active admins at startup/migrate; if no admin exists yet, existing users with these emails become admin
+    - example.com      # CHANGE: email domains admins may invite; empty = any. Limits invitations only, not sign-in (a Gmail-only team: gmail.com)
+  seedAdmins:              # on migrate: missing ones are created as active admins; if no active admin exists, existing ACTIVE users listed here are promoted; turned-off users are never reactivated
     - admin@example.com   # CHANGE: your email
   defaultRole: viewer      # unused by sign-in (sign-in is invite-only); kept so older configs still load
 

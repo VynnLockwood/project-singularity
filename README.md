@@ -49,7 +49,7 @@ Every tool states the role it needs; a client only sees the tools its user's rol
 | `list_duplicates`, `get_duplicate` | viewer | Duplicate groups and their records side by side. |
 | `get_settings` | viewer | Quality settings and every gate rule. |
 | `propose_change` | editor | Structure and data changes as gated operations. |
-| `propose_config_change` | editor | Settings, rules and roles. Always waits for an approver. |
+| `propose_config_change` | editor | Settings, rules and roles. Always waits for an approver; a role change waits for an admin. |
 | `recheck_change` | editor | Run the gate again on a stale change. |
 | `find_duplicates`, `merge_duplicates`, `dismiss_duplicate` | editor | Scan a table, merge a group (a data change), or mark it as not duplicates. |
 | `submit_script`, `validate_script`, `get_script` | editor | Load a pg_dump-style SQL script as gated operations. |
@@ -160,9 +160,9 @@ Not verified in the build sandbox: the Docker image (Rust stage), the WASM build
 
 ## Settings
 
-The **Settings** tab has three sections. **Quality**: search confidence, duplicate similarity, scan caps, query and proposal limits, chat model and rate limits, backup retention. Approvers change them and they apply within seconds (stored in the database over the values in `singularity.yaml`; Reset returns to the file's value; every change is audited). **Rules**: turn each gate rule on or off, switch it between block and warn, edit its parameters, see its history and restore an older version. **Team** (approvers): set people's roles. Deploy-time things (sign-in domains, the list of allowed models, the embedding model) stay in `singularity.yaml`.
+The **Settings** tab has three sections. **Quality**: search confidence, duplicate similarity, scan caps, query and proposal limits, chat model and rate limits, backup retention. Approvers change them and they apply within seconds (stored in the database over the values in `singularity.yaml`; Reset returns to the file's value; every change is audited). **Rules**: turn each gate rule on or off, switch it between block and warn, edit its parameters, see its history and restore an older version. **Team** (approvers): who to ask about roles; admins manage people on the Users page (see Access). Deploy-time things (the people allowed to be invited by domain, the list of allowed models, the embedding model) stay in `singularity.yaml`.
 
-**Changing settings from an AI client.** Settings, rules and roles can also be changed over MCP and in the web chat, but never directly: `get_settings` (viewer) reads them, `list_users` (approver) lists people, and `propose_config_change` (editor) proposes operations (`set_setting`, `reset_setting`, `update_rule`, `create_rule`, `set_user_role`; up to 20, not mixed with schema or data operations). The proposal is dry-run in a rolled-back transaction, then waits in the approval queue as a **Settings change**. Approvers (not the proposer) see it live in the review tray and Activity, the Settings tab shows a banner while changes are waiting, and approving applies all operations atomically. Applied settings changes can be reverted from Activity, History. Approvers editing directly in the Settings tab still apply immediately (audited).
+**Changing settings from an AI client.** Settings, rules and roles can also be changed over MCP and in the web chat, but never directly: `get_settings` (viewer) reads them, `list_users` (approver) lists people with their roles, and `propose_config_change` (editor) proposes operations (`set_setting`, `reset_setting`, `update_rule`, `create_rule`, `set_user_role`; up to 20, not mixed with schema or data operations). The proposal is dry-run in a rolled-back transaction, then waits in the approval queue as a **Settings change**. Approvers (not the proposer) see it live in the review tray and Activity (a change that includes `set_user_role` can only be approved or rejected by an admin), the Settings tab shows a banner while changes are waiting, and approving applies all operations atomically. Applied settings changes can be reverted from Activity, History. Approvers editing directly in the Settings tab still apply immediately (audited).
 
 ## Look and feel
 
@@ -193,7 +193,7 @@ Not verified in the build sandbox: the 3D rendering itself (there is no GPU or b
 
 ```sh
 cp .env.example .env            # fill in passwords and Google OAuth credentials
-$EDITOR singularity.yaml        # set allowedDomains and seedAdmins (ships with example.com placeholders)
+$EDITOR singularity.yaml        # set seedAdmins and allowedDomains (ships with example.com placeholders)
 sh nginx/gen-dev-cert.sh        # self-signed cert for local HTTPS
 docker compose up --build
 ```
@@ -204,15 +204,24 @@ Open https://localhost. nginx is the only service that publishes ports; everythi
 
 Google OAuth: create an OAuth client and add `https://localhost/api/auth/google/callback` as an authorized redirect URI.
 
-## Roles
+## Access
+
+Sign-in is invite-only. An admin adds a person, and only then can that person sign in with Google. An unknown, turned-off or unverified Google account is refused on the web, and also when an AI client signs in over MCP OAuth or uses a token.
 
 | Role | Can |
 |---|---|
 | viewer | read |
-| editor | read, edit data |
-| approver | read, edit, approve schema changes, manage users |
+| editor | read, propose data and schema changes (editors approve their own data changes) |
+| approver | read, edit, approve, reject and revert normal changes, change settings, see `list_users` over MCP |
+| admin | everything an approver can, plus manage users and approve role changes |
 
-Domains allowed to sign in and the first admins come from `singularity.yaml`; roles are managed afterwards through the API (a Settings page comes in a later milestone).
+**Adding people and changing roles.** Admins open the **Users** page (`/users`; other roles get a not-found page). There they add a person by email with a role, change a role, or turn access off and on again. You cannot turn yourself off, and the last active admin cannot lose the role or be turned off. Roles can also be proposed with `set_user_role` from an AI client or the chat, but the change waits until an admin approves it.
+
+**First admins.** `auth.seedAdmins` in `singularity.yaml` lists emails. On every migrate any missing seed is created as an active admin. If no active admin exists, existing seed users who are active are promoted to admin. A turned-off user is never turned back on by this, and a warning is logged when no active admin exists afterwards. `auth.allowedDomains` only limits which email domains an admin may invite; empty means any domain. It does not decide who can sign in.
+
+**AI clients.** A token acts as its user's real role on every call, so a role change or turning a user off takes effect at once. Approving over MCP checks the approver's role, and role changes need an admin. Raw SQL can only be approved in the web app.
+
+**Profile.** Everyone has a **Profile** page (`/profile`) that shows what they can do on the web and in an AI client.
 
 ## Develop
 
