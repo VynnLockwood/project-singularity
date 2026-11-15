@@ -24,8 +24,8 @@ TOOL_ROLES = {
     "query": "viewer",
     "search_schema": "viewer",
     "suggest_query": "viewer",
-    "match_data": "viewer",          # like read_rows: reads existing rows, stores nothing
-    "get_import_recipe": "viewer",   # mappings name tables and columns any viewer can list
+    "match_data": "editor",          # for loading data (an editor's job); also bounds who drives the matcher
+    "get_import_recipe": "editor",
     "propose_change": "editor",
     "propose_sql": "editor",
     "get_settings": "viewer",
@@ -210,18 +210,23 @@ DESCRIPTIONS = {
     "cancel_load": "Throw away an open load and its staged rows. Nothing was written to the database.",
     "recheck_change": "Run the gate again on a stale change, after the schema or the rules moved.",
     "match_data": (
-        "Before you design how a spreadsheet you already have loads into a database: send its headers and rows "
-        "(a sample of at most 5,000; cells as text, numbers or null) and get the local services' view. Returns per "
-        "column the profile (type, share, pattern, up to 5 samples, notes, convert hint, empty and distinct counts), "
-        "the Matcher's best 3 tables and best 3 columns per header (scores), parent-table refs, and with row_match "
-        "(default true) which rows already exist (exact business key) or may exist (name match), with row numbers "
-        "counted from 1. Also the saved recipe for this file shape, if one was approved, and searchOffline when "
-        "columns were matched by name only. Read-only: nothing is stored. Then design the mapping yourself and "
-        "load with submit_script or begin_load."
+        "Before you design how a spreadsheet you already have loads into a database: send one sheet's headers and "
+        "rows (a sample: at most 5,000 rows and 100,000 cells, no row wider than the headers; cells as text, numbers "
+        "or null, each cut to 500 characters) and get the local services' view. 'sheet' names the sheet (default "
+        "data); 'max_rows' only lowers the row cap. Returns per column the profile (type, share, pattern, up to 5 "
+        "samples, notes, convert hint, empty and distinct counts), the Matcher's best 3 tables and best 3 columns per "
+        "header (scores), parent-table refs, and with row_match (default true, and only when the operator allows it) "
+        "which rows already exist (exact business key) or may exist (name match). Row numbers: the first data row you "
+        "sent is 1 (the header is not counted). Also the saved recipe for this one-sheet file shape, re-keyed to "
+        "'sheet' (for a workbook call get_import_recipe with sheets), and searchOffline when columns were matched by "
+        "name only. Read-only: nothing is stored. Then design the mapping yourself and load with submit_script or "
+        "begin_load (editor role, like this tool)."
     ),
     "get_import_recipe": (
         "The approved mapping and filters saved for a file with these headers (order and case do not matter) in "
-        "one database, or null, plus the headers' fingerprint. For a workbook pass sheets: one header list per sheet."
+        "one database, or null, plus the headers' fingerprint. Send each sheet's header row as the file's first "
+        "non-empty row, without empty trailing columns; for a workbook pass sheets: one header list per sheet. The "
+        "recipe is keyed by the sheet names of the file it was approved for (match_data re-keys it to the sheet you send)."
     ),
 }
 
@@ -659,32 +664,39 @@ def suggest_query(user, schema: str, comments: list[str], sql_context: str = "")
 
 MATCH_MAX_ROWS = 5_000      # rows match_data takes in one call: one sample, about one append_rows chunk
 MATCH_MAX_COLUMNS = 500
+MATCH_MAX_CELLS = 100_000   # rows x columns in one call
+MATCH_MAX_CELL = 500        # characters kept per cell (and header): bounds the profiler and the name matcher
+UNREADABLE = "(unreadable value)"
 
 
 def _cell(value):
-    """One spreadsheet cell as the file reader would give it: text, or None when empty."""
+    """One spreadsheet cell as the file reader would give it: text cut to MATCH_MAX_CELL, or None when empty.
+    Total: a value that cannot even be turned into text becomes UNREADABLE."""
     import json
 
     from intake.reader import _cell_text
 
-    if isinstance(value, (dict, list, tuple)):
-        value = json.dumps(value, ensure_ascii=False, default=str)
     try:
-        return _cell_text(value)
+        if isinstance(value, (dict, list, tuple)):
+            value = json.dumps(value, ensure_ascii=False, default=str)
+        text = _cell_text(value)
     except Exception:  # noqa: BLE001 - anything odd still becomes text
-        return str(value)
+        try:
+            text = str(value)
+        except Exception:  # noqa: BLE001 - e.g. an int too long to print
+            text = UNREADABLE
+    return text[:MATCH_MAX_CELL] if text is not None else None
 
 
 def _sheet_source(sheet, headers: list, rows: list) -> dict:
     """A reader-style Source from what the caller sent: headers named like the reader names them (blank ->
-    column_N, repeats -> name_2), short rows padded, an extra column without header or values dropped."""
+    column_N, repeats -> name_2), short rows padded, a column without header or values dropped. The caller has
+    checked that no row is wider than the headers."""
     from intake.reader import Source, name_headers
 
+    width = len(headers)
     labels = [_cell(h) for h in headers]
-    cells = [[_cell(v) for v in r] for r in rows]
-    width = max([len(labels)] + [len(r) for r in cells])
-    labels += [None] * (width - len(labels))
-    cells = [r + [None] * (width - len(r)) for r in cells]
+    cells = [[_cell(v) for v in r] + [None] * (width - len(r)) for r in rows]
     keep = [i for i in range(width) if labels[i] is not None or any(r[i] is not None for r in cells)]
     names, notes = name_headers([(i, labels[i]) for i in keep])
     name = (sheet.strip()[:100] if isinstance(sheet, str) else "") or "data"
@@ -705,7 +717,6 @@ def match_data(user, schema: str = "master", headers: list | None = None, rows: 
     from intake import design
     from intake import match as matcher
     from intake.profile import profile as profile_source
-    from intake.run import _rekey_recipe
 
     _managed(schema)
     if not isinstance(headers, list) or not headers:
@@ -715,20 +726,26 @@ def match_data(user, schema: str = "master", headers: list | None = None, rows: 
     if not isinstance(rows, list) or not all(isinstance(r, list) for r in rows):
         raise ToolFailure("rows must be a list of rows, each a list of cell values in the order of headers.")
     cap = clamp(max_rows, MATCH_MAX_ROWS, MATCH_MAX_ROWS)
+    sample = ("Send a smaller sample (the first rows, or a spread of them) to learn the mapping; then load the whole "
+              "sheet with begin_load and append_rows, or submit_script.")
     if len(rows) > cap:
+        raise ToolFailure(f"{len(rows)} rows is more than match_data takes ({cap}). {sample}")
+    wide = next((n for n, r in enumerate(rows, 1) if len(r) > len(headers)), None)
+    if wide is not None:
         raise ToolFailure(
-            f"{len(rows)} rows is more than match_data takes ({cap}). Send a sample of at most {cap} rows (the first "
-            "rows, or a spread of them) to learn the mapping; then load the whole sheet with begin_load and "
-            "append_rows, or submit_script.")
+            f"row {wide} has {len(rows[wide - 1])} cells but there are {len(headers)} header"
+            f"{'s' if len(headers) != 1 else ''}: every row must have at most one cell per header, in header order "
+            "(name a column without a header \"\" or null).")
+    if len(rows) * len(headers) > MATCH_MAX_CELLS:
+        raise ToolFailure(f"{len(rows)} rows x {len(headers)} columns is more than the {MATCH_MAX_CELLS} cells "
+                          f"match_data takes. {sample}")
     src = _sheet_source(sheet, headers, rows)
-    samples = min(int(get_config()["import"]["sampleValues"]), design.MAX_SAMPLES)
+    cfg = get_config()["import"]
+    samples = min(int(cfg["sampleValues"]), design.MAX_SAMPLES)
     prof = profile_source(src, samples)
-    m = matcher.match(schema, [src], [prof], bool(row_match))
+    m = matcher.match(schema, [src], [prof], bool(row_match) and bool(cfg["rowMatch"]))
     entry = m["sources"][src["name"]]
-    if "rows" in entry and not allowed(user, "read_rows"):
-        for item in entry["rows"]["maybe"] + entry["rows"]["examples"]:
-            item.pop("existing", None)   # existing rows' text is for those who could read the table
-    recipe = _rekey_recipe(m["recipe"], [src]) if m.get("recipe") else None
+    recipe = matcher.rekey_recipe(m["recipe"], [src]) if m.get("recipe") else None
     return {
         "sheet": src["name"], "headers": src["headers"], "notes": src["notes"],
         "profile": {"rows": prof["rows"], "columns": prof["columns"]},
