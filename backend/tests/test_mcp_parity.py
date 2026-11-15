@@ -46,6 +46,12 @@ COVERED = {
     "api/users/<int:user_id>/role": ["propose_config_change"],
 }
 
+# The web import runs the Profiler, Matcher and Designer on a person's uploaded file. An AI client already has the
+# data: it gets the Profiler and Matcher's view with match_data and get_import_recipe (MCP-only, no route of their
+# own), designs the mapping itself, and loads through the gate.
+IMPORTS = ("importing a file from a person's computer; AI clients call match_data and get_import_recipe, then load "
+           "with begin_load and append_rows")
+
 WEB_ONLY = {
     "api/health": "liveness probe for the gateway, not a database task",
     "api/csrf": "browser session: CSRF token",
@@ -63,11 +69,11 @@ WEB_ONLY = {
     "api/chat/conversations": "web chat conversations belong to the browser chat",
     "api/chat/conversations/<int:conv_id>": "web chat conversations belong to the browser chat",
     "api/chat/conversations/<int:conv_id>/messages": "web chat conversations belong to the browser chat",
-    "api/imports": "importing a file from a person's computer; AI clients load data with begin_load and append_rows",
-    "api/imports/<int:run_id>": "importing a file from a person's computer; AI clients load data with begin_load and append_rows",
-    "api/imports/<int:run_id>/answer": "importing a file from a person's computer; AI clients load data with begin_load and append_rows",
-    "api/imports/<int:run_id>/recheck": "importing a file from a person's computer; AI clients load data with begin_load and append_rows",
-    "api/imports/<int:run_id>/submit": "importing a file from a person's computer; AI clients load data with begin_load and append_rows",
+    "api/imports": IMPORTS,
+    "api/imports/<int:run_id>": IMPORTS,
+    "api/imports/<int:run_id>/answer": IMPORTS,
+    "api/imports/<int:run_id>/recheck": IMPORTS,
+    "api/imports/<int:run_id>/submit": IMPORTS,
     "api/scripts/uploads": "chunked upload of a file on a person's computer; an AI sends data with begin_load and append_rows",
     "api/scripts/uploads/<int:upload_id>": "chunked upload of a file on a person's computer",
     "api/scripts/uploads/<int:upload_id>/complete": "chunked upload of a file on a person's computer",
@@ -132,3 +138,8 @@ def test_a_missing_tool_and_a_double_entry_fail():
     found = problems(api_routes(), bad, WEB_ONLY, set(tools.TOOL_ROLES))
     assert any("no_such_tool is not an MCP tool" in f for f in found)
     assert any("both COVERED and WEB_ONLY" in f for f in found)
+
+
+def test_import_routes_name_the_tools_an_ai_client_uses_instead():
+    for name in ("match_data", "get_import_recipe", "begin_load", "append_rows"):
+        assert name in IMPORTS and name in tools.TOOL_ROLES

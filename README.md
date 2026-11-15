@@ -41,6 +41,7 @@ Every tool states the role it needs; a client only sees the tools its user's rol
 | `list_schemas`, `list_tables`, `describe_table` | viewer | Databases, tables, columns. |
 | `search_schema` | viewer | Find where a kind of data belongs (Thai or English). |
 | `suggest_query` | viewer | Turn plain-language comments into one checked, read-only SELECT. It does not run it. |
+| `match_data`, `get_import_recipe` | viewer | For a spreadsheet the client already read: the local Profiler and Matcher's view of its headers and a sample of up to 5,000 rows (column types, best tables and columns, refs, rows that already exist), and the approved recipe for that file shape. Nothing is stored. |
 | `read_rows` | viewer | One table, a page at a time, with sort and filters. No SQL needed. |
 | `query` | viewer | One read-only `SELECT`. |
 | `export_schema` | viewer (data: editor) | A database as SQL, inline up to `limits.maxInlineExportBytes`. |
@@ -66,6 +67,8 @@ Every tool states the role it needs; a client only sees the tools its user's rol
 **What an AI client can do.** A chat-only client can do every database task the web app can: read and search, propose schema, data and configuration changes (including `rollback_rule` to undo a rule change, seen with `get_rule_history`), find, merge, dismiss and `reopen_duplicate` groups, look at a column with `profile_column`, find ids to reference with `lookup_options`, and (approvers) `create_backup` and `list_backups`. What stays with a person: approving in the web chat (it has no approve tool), restoring a backup, signing in, and creating or revoking access tokens. `backend/tests/test_mcp_parity.py` fails when a new web `api/` route has neither an MCP tool nor a stated reason it is web-only.
 
 **Loading big data over MCP.** `insert_rows` is for a few hundred rows. For more, an AI client calls `begin_load(table, columns)`, then `append_rows(load_id, seq, csv)` once per chunk of about 2,000 rows (header-less CSV; an unquoted empty field is NULL, `""` is the empty string; a failed call is retried with the same `seq`), then `finish_load(load_id)`. Nothing touches the database until `finish_load`, which runs the same checks as a script upload (rules gate, foreign keys, a rolled-back dry run) and submits one approvable change; undoing it deactivates the loaded rows. Optional `refs` fill a foreign key from a parent business key (districts by province code). Open loads expire 24 hours after their last chunk; limits are tunable in Settings (`limits.maxLoadChunkBytes`, `limits.maxLoadChunkRows`, `limits.maxLoadBytes`, `loads.ttlHours`, `loads.maxOpenPerUser`).
+
+**Importing a spreadsheet over MCP.** The AI client is the designer: it reads the file itself, calls `match_data(schema, headers, rows)` with a sample (and `get_import_recipe`) to learn which tables, columns and rows already exist, designs the mapping, then loads through the gate with `begin_load`/`append_rows`/`finish_load` or `submit_script`. `match_data` uses the same local services as the Import tab (profiler, multilingual-e5 column matching with a by-name fallback when search is offline, duplicates engine) and never stores the rows.
 
 When no operation fits (functions, triggers, grants, bulk updates), an editor or approver can call `propose_sql` (MCP or the chat assistant) with the SQL and a reason of at least 10 characters.
 

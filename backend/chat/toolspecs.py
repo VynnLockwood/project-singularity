@@ -28,6 +28,15 @@ SPECS = {
                       "for one database. Returns sql (null when no safe query could be made). It does not run the query.",
                       {"comments": {"type": "array", "items": {"type": "string"}}, "sql_context": {"type": "string"}, **SCHEMA},
                       ["comments"]),
+    "match_data": (D["match_data"],
+                   {"headers": {"type": "array", "items": {"type": ["string", "null"]}},
+                    "rows": {"type": "array", "items": {"type": "array"}, "description": "at most 5,000 rows, cells in header order"},
+                    "sheet": {"type": "string"}, "row_match": {"type": "boolean"}, "max_rows": {"type": "integer"}, **SCHEMA},
+                   ["headers", "rows"]),
+    "get_import_recipe": (D["get_import_recipe"],
+                          {"headers": {"type": "array", "items": {"type": ["string", "null"]}},
+                           "sheets": {"type": "array", "items": {"type": "array", "items": {"type": ["string", "null"]}}},
+                           **SCHEMA}, []),
     "propose_change": (
         "Propose structural or data changes as a list of operations (never SQL). " + _OPS +
         " Returns the checked change with a diff. The user approves it in a popup; nothing is applied until then.",

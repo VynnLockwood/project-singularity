@@ -128,10 +128,17 @@ def _build(name, raw_rows, max_rows, skipped_empty_rows=0):
     dropped = width - len(keep)
     if dropped:
         notes.append(f"Dropped {dropped} empty column{'s' if dropped != 1 else ''}.")
-    # column_N uses the position among the original columns (1-based)
-    headers, seen = [], set()
-    for i in keep:
-        label = header_raw[i]
+    headers, header_notes = name_headers([(i, header_raw[i]) for i in keep])
+    notes += header_notes
+    rows = [[r[i] for i in keep] for r in data]
+    return Source(name=name, headers=headers, rows=rows, notes=notes, truncated=truncated)
+
+
+def name_headers(labels) -> tuple[list, list]:
+    """Final header names for (0-based position, label or None) pairs, and notes on what was renamed.
+    A missing label becomes column_N (N = the 1-based position), a repeated one gets _2, _3, ..."""
+    headers, notes, seen = [], [], set()
+    for i, label in labels:
         if label is None:
             label = f"column_{i + 1}"
             notes.append(f"Column {i + 1} had no header; named it {label}.")
@@ -144,8 +151,7 @@ def _build(name, raw_rows, max_rows, skipped_empty_rows=0):
             notes.append(f"Duplicate header {label!r} renamed to {final!r}.")
         seen.add(final)
         headers.append(final)
-    rows = [[r[i] for i in keep] for r in data]
-    return Source(name=name, headers=headers, rows=rows, notes=notes, truncated=truncated)
+    return headers, notes
 
 
 def _read_xlsx(path, max_rows):
