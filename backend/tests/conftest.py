@@ -9,6 +9,14 @@ from . import pgsetup
 MASTER_DB_NAME = "master_test"
 
 
+# The post_migrate seed would put the example admin from singularity.yaml into every test database.
+# Tests call ensure_seed_admins themselves.
+from django.apps import apps  # noqa: E402
+from django.db.models.signals import post_migrate  # noqa: E402
+
+post_migrate.disconnect(dispatch_uid="ensure_seed_admins", sender=apps.get_app_config("accounts"))
+
+
 @pytest.fixture(scope="session")
 def master_db():
     if not pgsetup.ADMIN:

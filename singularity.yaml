@@ -2,10 +2,10 @@
 auth:
   provider: google
   allowedDomains:
-    - example.com      # CHANGE: domains allowed to sign in (a Gmail-only team: gmail.com)
-  seedAdmins:              # become "approver" on first sign-in
+    - example.com      # CHANGE: domains admins may invite (does not gate sign-in; a Gmail-only team: gmail.com)
+  seedAdmins:              # created as active admins at startup/migrate; if no admin exists yet, existing users with these emails become admin
     - admin@example.com   # CHANGE: your email
-  defaultRole: viewer      # viewer | editor | approver
+  defaultRole: viewer      # unused by sign-in (sign-in is invite-only); kept so older configs still load
 
 limits:
   maxQueryRows: 500

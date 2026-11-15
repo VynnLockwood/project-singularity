@@ -10,9 +10,9 @@ import yaml
 DEFAULTS = {
     "auth": {
         "provider": "google",
-        "allowedDomains": [],
-        "seedAdmins": [],
-        "defaultRole": "viewer",
+        "allowedDomains": [],  # limits which email domains admins may invite; no longer gates sign-in
+        "seedAdmins": [],  # created as active admins on migrate; bootstrap-promoted when no admin exists
+        "defaultRole": "viewer",  # parsed but unused: sign-in is invite-only and never creates users
     },
     "limits": {
         "maxQueryRows": 500,

@@ -27,51 +27,32 @@ def make_user(email, role=Role.VIEWER):
 # ---- sign-in service -------------------------------------------------------
 
 @pytest.mark.django_db
-def test_new_user_gets_default_role():
+def test_first_sign_in_fills_name_from_claims():
+    make_user("new@example.com")
     user = sign_in_from_claims(claims("new@example.com", given_name="Ann"), CFG)
     assert user.role == Role.VIEWER
     assert user.first_name == "Ann"
-    assert not user.has_usable_password()
 
 
 @pytest.mark.django_db
-def test_seed_admin_becomes_approver_on_first_sign_in():
-    user = sign_in_from_claims(claims("Boss@Example.com"), CFG)
-    assert user.email == "boss@example.com"
-    assert user.role == Role.APPROVER
-
-
-@pytest.mark.django_db
-def test_default_role_comes_from_config():
-    user = sign_in_from_claims(claims("e@example.com"), {**CFG, "defaultRole": "editor"})
-    assert user.role == Role.EDITOR
-
-
-@pytest.mark.django_db
-def test_wrong_domain_rejected():
-    with pytest.raises(SignInDenied):
-        sign_in_from_claims(claims("x@other.com"), CFG)
-    assert not User.objects.filter(email="x@other.com").exists()
-
-
-@pytest.mark.django_db
-def test_lookalike_domain_rejected():
-    with pytest.raises(SignInDenied):
-        sign_in_from_claims(claims("x@evil-example.com"), CFG)
-    with pytest.raises(SignInDenied):
-        sign_in_from_claims(claims("x@example.com.evil.io"), CFG)
+def test_unknown_email_rejected_and_not_created():
+    for email in ("x@other.com", "x@example.com", "x@evil-example.com"):
+        with pytest.raises(SignInDenied):
+            sign_in_from_claims(claims(email), CFG)
+        assert not User.objects.filter(email=email).exists()
 
 
 @pytest.mark.django_db
 def test_unverified_email_rejected():
+    make_user("a@example.com")
     with pytest.raises(SignInDenied):
         sign_in_from_claims(claims("a@example.com", verified=False), CFG)
 
 
 @pytest.mark.django_db
-def test_no_allowed_domains_means_nobody_can_sign_in():
-    with pytest.raises(SignInDenied):
-        sign_in_from_claims(claims("a@example.com"), {**CFG, "allowedDomains": []})
+def test_allowed_domains_no_longer_gate_sign_in():
+    make_user("a@other.com")
+    assert sign_in_from_claims(claims("a@other.com"), {**CFG, "allowedDomains": []}).email == "a@other.com"
 
 
 @pytest.mark.django_db
@@ -92,9 +73,10 @@ def test_disabled_account_rejected():
 
 @pytest.mark.django_db
 def test_sign_in_is_audited():
+    make_user("a@example.com")
     sign_in_from_claims(claims("a@example.com"), CFG)
     actions = list(AuditLog.objects.values_list("action", flat=True))
-    assert "user.created" in actions and "user.signed_in" in actions
+    assert "user.signed_in" in actions and "user.created" not in actions
 
 
 # ---- role helpers ----------------------------------------------------------
@@ -200,6 +182,7 @@ def test_login_redirects_to_google_with_state(client, settings):
 
 @pytest.mark.django_db
 def test_callback_signs_in_and_sets_session(client, monkeypatch):
+    make_user("boss@example.com", Role.APPROVER)
     client.get("/api/auth/google/login")
     state = client.session["google_oauth_state"]
     monkeypatch.setattr(google, "fetch_claims", lambda code, uri: claims("boss@example.com"))
@@ -224,7 +207,7 @@ def test_callback_without_prior_login_rejected(client):
 
 
 @pytest.mark.django_db
-def test_callback_wrong_domain_forbidden(client, monkeypatch):
+def test_callback_unknown_email_forbidden(client, monkeypatch):
     client.get("/api/auth/google/login")
     state = client.session["google_oauth_state"]
     monkeypatch.setattr(google, "fetch_claims", lambda c, u: claims("x@other.com"))
@@ -247,6 +230,7 @@ def test_callback_google_failure_is_400(client, monkeypatch):
 
 @pytest.mark.django_db
 def test_state_cannot_be_replayed(client, monkeypatch):
+    make_user("a@example.com")
     client.get("/api/auth/google/login")
     state = client.session["google_oauth_state"]
     monkeypatch.setattr(google, "fetch_claims", lambda c, u: claims("a@example.com"))
