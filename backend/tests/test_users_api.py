@@ -129,19 +129,19 @@ def test_self_deactivate_and_self_demote_are_400(client):
     assert admin.role == Role.ADMIN and admin.is_active
 
 
-def test_last_active_admin_is_protected_through_the_api_path(client):
-    """The acting admin is always a second active admin, so the guard is reached only by a stale actor; the
-    service still refuses, and the view maps it to 400."""
+def test_last_active_admin_guard_is_reached_and_maps_to_400():
+    """A stale in-memory admin actor (its DB row already demoted) gets past the admin check, so the service
+    reaches the last-admin guard; the view helper maps that refusal to exactly 400."""
+    from accounts import views
     actor, last = make("a@example.com", Role.ADMIN), make("l@example.com", Role.ADMIN)
-    client.force_login(actor)
-    User.objects.filter(pk=actor.pk).update(role=Role.ADMIN)
-    from unittest import mock
-    with mock.patch.object(services, "_require_admin"):  # actor is not an admin any more by the time the lock is taken
-        User.objects.filter(pk=actor.pk).update(role=Role.VIEWER)
-        res = send(client, "patch", f"/api/users/{last.pk}", {"active": False})
-    assert res.status_code in (400, 403)
+    User.objects.filter(pk=actor.pk).update(role=Role.VIEWER)  # actor object in memory still says admin
+    for act in (lambda: services.set_user_active(actor, last, False), lambda: services.change_role(actor, last, "viewer")):
+        with pytest.raises(services.UserManagementDenied, match="last active admin") as exc:
+            act()
+        assert not isinstance(exc.value, services.NotAdmin)
+        assert views._refused(exc.value).status_code == 400
     last.refresh_from_db()
-    assert last.is_active
+    assert last.role == Role.ADMIN and last.is_active
 
 
 def test_patch_is_atomic(client):
