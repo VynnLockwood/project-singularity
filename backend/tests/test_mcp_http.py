@@ -257,3 +257,15 @@ def test_new_tools_work_over_http(server):
     assert bad.is_error and "list_tables" in bad.content[0].text
     undone = payload(with_client(url, tk[Role.APPROVER], lambda c: c.call_tool("revert_change", {"change_id": made["id"]})))
     assert undone["status"] == "applied" and undone["source"] == "revert"
+
+
+@pytest.mark.parametrize("role", [Role.VIEWER, Role.EDITOR, Role.APPROVER, Role.ADMIN])
+def test_profile_tools_match_tools_list(server, client, role):
+    """What /api/me says a role may use is exactly what that role's MCP client is offered."""
+    user = server["users"].get(role) or User.objects.create(username="adm@example.com", email="adm@example.com", role=role)
+    token = server["tokens"].get(role) or tokens.create_token(user, "e2e")[1]
+    client.force_login(user)
+    mine = client.get("/api/me").json()["capabilities"]["mcpTools"]
+    allowed = sorted(t["name"] for t in mine if t["allowed"])
+    listed = sorted(t.name for t in with_client(server["url"], token, lambda c: c.list_tools()).tools)
+    assert allowed == listed

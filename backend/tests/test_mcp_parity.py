@@ -42,8 +42,6 @@ COVERED = {
     "api/scripts/<int:script_id>": ["get_script"],
     "api/scripts/<int:script_id>/validate": ["validate_script"],
     "api/scripts/<int:script_id>/submit": ["submit_script"],
-    "api/users": ["list_users"],
-    "api/users/<int:user_id>/role": ["propose_config_change"],
 }
 
 # The web import runs the Profiler, Matcher and Designer on a person's uploaded file. An AI client already has the
@@ -51,6 +49,8 @@ COVERED = {
 # own), designs the mapping itself, and loads through the gate.
 IMPORTS = ("importing a file from a person's computer; AI clients call match_data and get_import_recipe, then load "
            "with begin_load and append_rows")
+
+USERS = "granting access is a person's decision; an AI client lists users with list_users"
 
 WEB_ONLY = {
     "api/health": "liveness probe for the gateway, not a database task",
@@ -61,6 +61,9 @@ WEB_ONLY = {
     "api/auth/logout": "browser session",
     "api/mcp-tokens": "an AI client must not mint or revoke its own access tokens",
     "api/mcp-tokens/<int:token_id>": "an AI client must not mint or revoke its own access tokens",
+    "api/users": USERS,
+    "api/users/<int:user_id>": USERS,
+    "api/users/<int:user_id>/role": USERS,
     "api/intelligent-query/learn": "what people accepted and ran is learned from the web editor, not from an AI's guess",
     "api/intelligent-query/examples": "reviewing and removing the team's saved queries is an approver's job in the web app",
     "api/intelligent-query/examples/<int:example_id>": "reviewing and removing the team's saved queries is an approver's job in the web app",

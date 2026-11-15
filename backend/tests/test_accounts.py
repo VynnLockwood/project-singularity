@@ -256,10 +256,12 @@ def test_users_list_permissions(client):
     assert client.get("/api/users").status_code == 401
     client.force_login(User.objects.get(email="v@example.com"))
     assert client.get("/api/users").status_code == 403
-    admin = make_user("admin@example.com", Role.APPROVER)
+    client.force_login(make_user("ap@example.com", Role.APPROVER))
+    assert client.get("/api/users").status_code == 403  # approvers no longer see the user list
+    admin = make_user("admin@example.com", Role.ADMIN)
     client.force_login(admin)
     emails = [u["email"] for u in client.get("/api/users").json()["users"]]
-    assert emails == ["admin@example.com", "v@example.com"]
+    assert emails == ["admin@example.com", "ap@example.com", "v@example.com"]
 
 
 def patch_role(client, user_id, role):
@@ -277,7 +279,7 @@ def test_role_change_endpoint(client):
     assert patch_role(client, target.pk, "editor").status_code == 403
 
     client.force_login(make_user("ap@example.com", Role.APPROVER))
-    assert patch_role(client, target.pk, "editor").status_code in (400, 403)  # only an admin changes roles
+    assert patch_role(client, target.pk, "editor").status_code == 403  # only an admin changes roles
     target.refresh_from_db()
     assert target.role == Role.VIEWER
 
