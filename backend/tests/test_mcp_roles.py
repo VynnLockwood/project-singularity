@@ -1,4 +1,7 @@
 """MCP tokens act with the user's real role, checked on every call: deciding changes, turning users off, role changes."""
+import urllib.error
+import urllib.request
+
 import pytest
 
 from accounts import tokens
@@ -62,7 +65,7 @@ def test_approver_token_approves_data_change(srv):
 def test_approver_token_cannot_approve_role_change(srv):
     pk, target = role_change(srv)
     res = call(srv, Role.APPROVER, "approve_change", {"change_id": pk})
-    assert res.is_error
+    assert res.is_error and "cannot approve" in res.content[0].text
     assert status(pk) == "pending"
     target.refresh_from_db()
     assert target.role == Role.VIEWER
@@ -77,18 +80,14 @@ def test_admin_token_approves_role_change(srv):
 
 
 def test_turned_off_user_token_refused_next_call(srv):
-    import urllib.error
     assert not call(srv, Role.EDITOR, "get_rules", {}).is_error
     admin = srv["users"][Role.ADMIN]
     set_user_active(admin, srv["users"][Role.EDITOR], False)
-    import urllib.request
     req = urllib.request.Request(srv["url"], data=b"{}", headers={"Content-Type": "application/json",
                                  "Authorization": f"Bearer {srv['tokens'][Role.EDITOR]}"})
     with pytest.raises(urllib.error.HTTPError) as e:
         urllib.request.urlopen(req)
     assert e.value.code == 401
-    with pytest.raises(Exception):
-        call(srv, Role.EDITOR, "get_rules", {})
 
 
 def test_role_change_applies_next_call(srv):

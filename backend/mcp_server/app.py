@@ -52,7 +52,7 @@ to run the insert. If a call fails, resend the same seq.
 A person's spreadsheet: read it yourself, call match_data with its headers and a sample of rows (and get_import_recipe)
 to learn which tables, columns and rows already exist, design the mapping yourself, then load it through the gate with
 begin_load/append_rows/finish_load or submit_script.
-If a tool the user needs is not available to them, say that a higher role (editor or approver) has it.
+If a tool the user needs is not available to them, say that a higher role (editor, approver or admin) has it.
 """
 
 
@@ -200,7 +200,7 @@ async def get_settings() -> dict:
     description=(
         "Propose a change to settings, gate rules or people's roles. These are important, so the change NEVER applies on its own: "
         "it is checked, shown with a diff, and waits in the approval queue for an approver (live in their web app). "
-        "%s Returns the checked change; tell the user it is waiting as change #id. Only an approver can approve it."
+        "%s Returns the checked change; tell the user it is waiting as change #id. Only an approver can approve it (a role change needs an admin)."
     ) % """Configuration operations (settings, rules, roles). Each is an object with an 'op': set_setting{key,value}, reset_setting{key}, update_rule{name,severity?('block'|'warn'),enabled?,params?,description?}, create_rule{name,type,params,severity?,enabled?,description?}, rollback_rule{name,version} (restore an earlier version of a rule; see get_rule_history), set_user_role{email,role('viewer'|'editor'|'approver'|'admin')} (a role change needs an admin to approve). Call get_settings first for the keys, allowed ranges and current rules. Never mix these with table or data operations.""",
 )
 async def propose_config_change(operations: list[dict], prompt: str = "") -> dict:
