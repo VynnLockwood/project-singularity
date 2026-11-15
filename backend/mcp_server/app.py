@@ -49,6 +49,9 @@ big ones are uploaded in the web app, then validate_script with the script_id). 
 Big data: when a table needs more rows than propose_change takes, load them yourself with begin_load, append_rows
 (about 2,000 rows per call, header-less CSV) and finish_load, which submits one approvable change. Never ask the person
 to run the insert. If a call fails, resend the same seq.
+A person's spreadsheet: read it yourself, call match_data with its headers and a sample of rows (and get_import_recipe)
+to learn which tables, columns and rows already exist, design the mapping yourself, then load it through the gate with
+begin_load/append_rows/finish_load or submit_script.
 If a tool the user needs is not available to them, say that a higher role (editor or approver) has it.
 """
 
@@ -147,6 +150,19 @@ async def search_schema(query: str, limit: int | None = None, schema: str = "mas
 )
 async def suggest_query(comments: list[str], sql_context: str = "", schema: str = "master") -> dict:
     return await run("suggest_query", schema=schema, comments=comments, sql_context=sql_context)
+
+
+@mcp.tool(name="match_data", description=tools.DESCRIPTIONS["match_data"] + " " + DB_NOTE)
+async def match_data(headers: list[str | None], rows: list[list], schema: str = "master", sheet: str = "data",
+                     row_match: bool = True, max_rows: int | None = None) -> dict:
+    return await run("match_data", schema=schema, headers=headers, rows=rows, sheet=sheet, row_match=row_match,
+                     max_rows=max_rows)
+
+
+@mcp.tool(name="get_import_recipe", description=tools.DESCRIPTIONS["get_import_recipe"] + " " + DB_NOTE)
+async def get_import_recipe(headers: list[str | None] | None = None, sheets: list[list[str | None]] | None = None,
+                            schema: str = "master") -> dict:
+    return await run("get_import_recipe", schema=schema, headers=headers, sheets=sheets)
 
 
 @mcp.tool(
