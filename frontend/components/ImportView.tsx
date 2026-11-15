@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ApiError, getSchemas, getTable, uploadScriptChunked, type Me, type SchemaInfo } from "@/lib/api";
+import { ApiError, getChatApiKey, getSchemas, getTable, uploadScriptChunked, type Me, type SchemaInfo } from "@/lib/api";
 import {
   answerImport, cancelImport, getImport, isRunning, recheckImport, startImport, submitImport,
   type ImportMessage, type ImportPlan, type ImportRun, type MaybeRow,
@@ -21,6 +21,9 @@ const ROLE: Record<ImportMessage["role"], string> = {
 const POLL_MS = 1500;
 const DROP = "__drop__";
 const NEW = "__new__";
+
+/** The key to send: the one typed here, else the person's own key from the Chat settings; "" = the server's. */
+const keyToSend = (typed: string) => typed.trim() || getChatApiKey();
 
 const message = (e: unknown, fallback: string) => (e instanceof ApiError && e.message ? e.message : e instanceof Error && e.message ? e.message : fallback);
 
@@ -48,20 +51,28 @@ function StartForm({ schema, schemas, navigate }: { schema: string; schemas: Sch
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState("");
   const [error, setError] = useState("");
+  const [open, setOpen] = useState<Route | null>(null); // the open run a busy refusal names
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
   const start = async () => {
     if (!file) { setError("Choose a .xlsx or .csv file first."); return; }
-    setBusy(true); setError(""); setStep("Uploading 0%");
+    setBusy(true); setError(""); setOpen(null); setStep("Uploading 0%");
     try {
       const up = await uploadScriptChunked(file, (done, total) => {
         if (alive.current) setStep(`Uploading ${Math.floor((done * 100) / Math.max(total, 1))}%`);
       }, undefined, "import");
-      const r = await startImport({ uploadId: up.upload_id, schema, prompt, apiKey });
+      if (!alive.current) return; // the form is gone: starting now would make a run nobody sees
+      const key = keyToSend(apiKey);
+      const r = await startImport({ uploadId: up.upload_id, schema, prompt, ...(key ? { apiKey: key } : {}) });
       if (alive.current) navigate({ view: "import", schema, run: r.id });
     } catch (e) {
-      if (alive.current) setError(message(e, "Could not start the import."));
+      if (!alive.current) return;
+      setError(message(e, "Could not start the import."));
+      const d = e instanceof ApiError && e.code === "busy" ? e.data : {};
+      if (typeof d.runId === "number") {
+        setOpen({ view: "import", schema: typeof d.schema === "string" ? d.schema : schema, run: d.runId });
+      }
     } finally {
       if (alive.current) { setBusy(false); setStep(""); }
     }
@@ -96,7 +107,12 @@ function StartForm({ schema, schemas, navigate }: { schema: string; schemas: Sch
           {step && <span role="status" className="imp-step">{step}</span>}
         </div>
       </div>
-      {error && <p className="problems" role="alert">{error}</p>}
+      {error && (
+        <p className="problems" role="alert">
+          {error}
+          {open && <> <a href={buildPath(open)} onClick={(e) => { e.preventDefault(); navigate(open); }}>Open your import in progress</a></>}
+        </p>
+      )}
     </section>
   );
 }
@@ -290,7 +306,7 @@ function RunView({ id, schema, navigate }: { id: number; schema: string; navigat
   };
   const cancel = () => act(() => cancelImport(run.id), () => navigate({ view: "import", schema: run.schema }), "Could not cancel.");
   const send = () => act(
-    () => answerImport(run.id, answer.trim(), apiKey),
+    () => answerImport(run.id, answer.trim(), keyToSend(apiKey) || undefined),
     (r, s) => { accept(s, r); setAnswer(""); }, "Could not send the answer.");
 
   const problems = state === "failed" ? lastProblems(run) : [];
@@ -309,7 +325,7 @@ function RunView({ id, schema, navigate }: { id: number; schema: string; navigat
       {error && <p className="problems" role="alert">{error}</p>}
       {state === "failed" && (
         <div className="problems" role="alert">
-          <strong>The import could not be made to pass.</strong>
+          <strong>{run.report?.nothing ? "There is nothing new to load." : "The import could not be made to pass."}</strong>
           {problems.length > 0 && <ul>{problems.map((p, i) => <li key={i}>{p}</li>)}</ul>}
         </div>
       )}

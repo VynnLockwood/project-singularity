@@ -14,7 +14,7 @@ STATUS = {"forbidden": 404, "not_found": 404, "bad_state": 409, "busy": 409, "in
 def _fail(exc: runs.RunError, run_id: int | None = None):
     if exc.code in ("forbidden", "not_found") and run_id is not None:
         return error(f"import #{run_id} does not exist", 404, code="not_found")    # the same reply for both
-    return error(exc.message, STATUS.get(exc.code, 400), code=exc.code)
+    return error(exc.message, STATUS.get(exc.code, 400), code=exc.code, **exc.extra)   # busy: runId, schema
 
 
 def _text(body: dict, key: str, limit: int, required: bool = False):

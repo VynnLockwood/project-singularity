@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, getSchemas, getTable, uploadScriptChunked, type Me } from "@/lib/api";
+import { ApiError, getSchemas, getTable, setChatApiKey, uploadScriptChunked, type Me } from "@/lib/api";
 import { answerImport, cancelImport, getImport, recheckImport, startImport, submitImport, type ImportRun } from "@/lib/imports";
 import { ImportView } from "./ImportView";
 
@@ -177,7 +177,7 @@ describe("ImportView", () => {
     expect(screen.getByText("Which table holds vendors?")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Your answer"), { target: { value: "partner" } });
     fireEvent.click(screen.getByRole("button", { name: "Send answer" }));
-    await waitFor(() => expect(answerImport).toHaveBeenCalledWith(7, "partner", ""));
+    await waitFor(() => expect(answerImport).toHaveBeenCalledWith(7, "partner", undefined));
   });
 
   it("submits and links to the change", async () => {
@@ -221,6 +221,72 @@ describe("ImportView", () => {
     fireEvent.change(container.querySelector('input[type="file"]') as HTMLInputElement, { target: { files: [new File(["x"], "a.csv")] } });
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("You already have an import open.");
+  });
+
+  it("offers the open import when busy", async () => {
+    vi.mocked(startImport).mockRejectedValue(new ApiError(409, "You already have an import open.", "busy", { runId: 12, schema: "crm" }));
+    const { container, navigate } = await setup();
+    fireEvent.change(container.querySelector('input[type="file"]') as HTMLInputElement, { target: { files: [new File(["x"], "a.csv")] } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    const link = await screen.findByRole("link", { name: "Open your import in progress" });
+    expect(link).toHaveAttribute("href", expect.stringContaining("/import/crm/12"));
+    fireEvent.click(link);
+    expect(navigate).toHaveBeenCalledWith({ view: "import", schema: "crm", run: 12 });
+  });
+
+  it("does not start an import when the form is gone before the upload ends", async () => {
+    let finish: (v: unknown) => void = () => {};
+    vi.mocked(uploadScriptChunked).mockReturnValue(new Promise((res) => { finish = res; }) as never);
+    const { container, unmount } = await setup();
+    fireEvent.change(container.querySelector('input[type="file"]') as HTMLInputElement, { target: { files: [new File(["x"], "a.csv")] } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(uploadScriptChunked).toHaveBeenCalled());
+    unmount();
+    await act(async () => { finish({ upload_id: 5 }); await Promise.resolve(); });
+    expect(startImport).not.toHaveBeenCalled();
+  });
+
+  it("uses the Chat settings key when none is typed, and the typed one first", async () => {
+    setChatApiKey("sk-chat");
+    try {
+      const typed = await setup();
+      fireEvent.change(typed.container.querySelector('input[type="file"]') as HTMLInputElement, { target: { files: [new File(["x"], "a.csv")] } });
+      fireEvent.change(screen.getByLabelText("API key (only if not configured)"), { target: { value: "sk-typed" } });
+      fireEvent.click(screen.getByRole("button", { name: "Start" }));
+      await waitFor(() => expect(startImport).toHaveBeenCalledWith({ uploadId: 5, schema: "master", prompt: "", apiKey: "sk-typed" }));
+      cleanup();
+      vi.mocked(startImport).mockClear();
+      const { container } = await setup();
+      fireEvent.change(container.querySelector('input[type="file"]') as HTMLInputElement, { target: { files: [new File(["x"], "a.csv")] } });
+      fireEvent.click(screen.getByRole("button", { name: "Start" }));
+      await waitFor(() => expect(startImport).toHaveBeenCalledWith({ uploadId: 5, schema: "master", prompt: "", apiKey: "sk-chat" }));
+      cleanup();
+      vi.mocked(getImport).mockResolvedValue(run({ state: "waiting_for_answer", plan: { ...run().plan!, questions: ["Which?"] } }));
+      await setup(7);
+      fireEvent.change(screen.getByLabelText("Your answer"), { target: { value: "this one" } });
+      fireEvent.click(screen.getByRole("button", { name: "Send answer" }));
+      await waitFor(() => expect(answerImport).toHaveBeenCalledWith(7, "this one", "sk-chat"));
+      expect(window.localStorage.getItem("singularity.chatApiKey")).toBe("sk-chat"); // read, never rewritten here
+    } finally {
+      setChatApiKey("");
+    }
+    vi.mocked(startImport).mockClear();
+    cleanup();
+    const { container } = await setup();
+    fireEvent.change(container.querySelector('input[type="file"]') as HTMLInputElement, { target: { files: [new File(["x"], "a.csv")] } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(startImport).toHaveBeenCalled());
+    expect(vi.mocked(startImport).mock.calls[0][0]).not.toHaveProperty("apiKey");   // neither key: none sent
+  });
+
+  it("says there is nothing new to load", async () => {
+    vi.mocked(getImport).mockResolvedValue(run({
+      state: "failed", report: { ...run().report!, ok: false, nothing: true, problems: ["Nothing new to load: 3 rows already exist."] },
+    }));
+    await setup(7);
+    const box = screen.getAllByRole("alert").map((a) => a.textContent).join(" ");
+    expect(box).toMatch(/There is nothing new to load/);
+    expect(box).toMatch(/3 rows already exist/);
   });
 
   it("adds a new column with a name and type as add_columns", async () => {

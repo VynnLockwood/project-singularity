@@ -66,10 +66,16 @@ BUSY = "You already have an import open for this database. Finish or cancel it f
 class RunError(Exception):
     """code: forbidden | not_found | bad_state | busy | invalid (HTTP 403 / 404 / 409 / 409 / 400)."""
 
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, extra: dict | None = None):
         super().__init__(message)
         self.code = code
         self.message = message
+        self.extra = extra or {}
+
+
+def _busy(other: ImportRun) -> RunError:
+    """The busy refusal names the open run, so the page can lead the person back to it."""
+    return RunError("busy", BUSY, {"runId": other.pk, "schema": other.schema})
 
 
 # ---------------------------------------------------------------- small helpers
@@ -212,8 +218,9 @@ def start(user, upload_id: int, schema: str, prompt: str, api_key: str = "") -> 
     try:
         with transaction.atomic():
             User.objects.select_for_update().filter(pk=user.pk).first()   # one start at a time per person
-            if _open_run(user, schema) is not None:
-                raise RunError("busy", BUSY)
+            other = _open_run(user, schema)
+            if other is not None:
+                raise _busy(other)
             session = UploadSession.objects.filter(pk=upload_id, owner=user).first()
             path = uploads.complete_raw(user, upload_id)
             now = timezone.now()
@@ -281,8 +288,9 @@ def recheck(user, run_id: int, mapping, filters, skip) -> ImportRun:
         if run.state not in (S.READY, S.FAILED) or not run.profile:
             raise RunError("bad_state", f"import #{run.pk} is {run.state}; only ready or failed imports can be "
                                         "checked again")
-        if run.state == S.FAILED and _open_run(run.owner, run.schema, exclude=run.pk) is not None:
-            raise RunError("busy", BUSY)    # a failed run must not reopen beside another open one
+        other = _open_run(run.owner, run.schema, exclude=run.pk) if run.state == S.FAILED else None
+        if other is not None:
+            raise _busy(other)              # a failed run must not reopen beside another open one
         plan = {**(run.plan or {}), "mapping": mapping, "filters": filters, "picked": picked, "questions": []}
         _set(run, plan=plan, state=S.CHECKING)
     _spawn(run, "")

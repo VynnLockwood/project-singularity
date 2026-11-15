@@ -39,6 +39,8 @@ export interface ImportReport {
   badRows?: { line: number; message: string }[];
   dropped?: { sheet: string; column: string; reason: string }[];
   warnings?: string[];
+  /** The plan is fine but loads nothing: every row exists, is filtered or skipped, and no table changes. */
+  nothing?: boolean;
 }
 export interface ImportRun {
   id: number;

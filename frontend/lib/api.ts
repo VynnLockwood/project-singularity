@@ -62,7 +62,8 @@ export async function logout(): Promise<void> {
 // ---- generic requests ---------------------------------------------------------
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string, public code?: string) {
+  /** `data` is the whole error body, for refusals that carry more than a message (e.g. busy: runId, schema). */
+  constructor(public status: number, message: string, public code?: string, public data: Record<string, unknown> = {}) {
     super(message);
   }
 }
@@ -82,7 +83,7 @@ export async function call<T>(method: "GET" | "POST" | "PATCH" | "DELETE", path:
     signal,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(res.status, Array.isArray(data.errors) && data.errors.length ? data.errors.join("; ") : (data.error ?? `request failed (${res.status})`), data.code);
+  if (!res.ok) throw new ApiError(res.status, Array.isArray(data.errors) && data.errors.length ? data.errors.join("; ") : (data.error ?? `request failed (${res.status})`), data.code, data && typeof data === "object" ? data : {});
   return data as T;
 }
 

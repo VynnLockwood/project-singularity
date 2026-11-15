@@ -137,9 +137,9 @@ What is sent to the chat model: the column profiles with up to 5 distinct sample
 
 Recipes: a file whose headers (over all sheets, trimmed and lower-cased, order ignored) match an earlier import in the same database starts from the mapping and filters approved then. The recipe is saved when the change is applied, not when it is submitted. If it no longer fits the database (a column was renamed), the Critic reports the drift and the Designer repairs it.
 
-API key: sent with the request that starts or resumes the run (your own key from the Chat settings, if set, else the configured provider key) and handed to the background process through the environment variable `SINGULARITY_IMPORT_KEY`. It is never stored in the database or returned by the API.
+API key: sent with the request that starts or resumes the run (the key typed on the Import tab, else your own key from the Chat settings, else the configured provider key) and handed to the background process through the environment variable `SINGULARITY_IMPORT_KEY`. It is never stored in the database or returned by the API.
 
-Limits and settings (`import.*` in `singularity.yaml`, all optional): `model` (empty = chat default), `maxFileBytes` (default 50 MB), `sampleValues` (5), `maxRounds` (3), `rowMatch` (true). Rows read per sheet are capped by `limits.maxScriptRows`. A run, its file and its thread are deleted after 24 hours unless submitted. One open run per person per database.
+Limits and settings (`import.*` in `singularity.yaml`, all optional): `model` (empty = chat default), `maxFileBytes` (default 50 MB), `sampleValues` (5), `maxRounds` (3), `rowMatch` (true). Rows read per sheet are capped by `limits.maxScriptRows`. A run, its file and its thread are deleted after 24 hours unless submitted. One open run per person per database; starting another one offers a link back to the open run.
 
 The load is one gated change: nothing is written until an approver approves it, and it goes through the same rules, diff and audit log as any change. A file with nothing new to load (every row already exists, is filtered out or skipped, and no table or column is added) ends `failed` at once with "Nothing new to load: …" and the counts; the Designer is not asked again. Edit the filters or the skipped rows and recheck if that is not what you meant.
 
