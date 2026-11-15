@@ -8,6 +8,7 @@ ROLE_CHECK = {
     "viewer": lambda u: u.can_read,
     "editor": lambda u: u.can_edit,
     "approver": lambda u: u.can_approve,
+    "admin": lambda u: u.can_admin,
 }
 
 

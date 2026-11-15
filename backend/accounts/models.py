@@ -6,9 +6,10 @@ class Role(models.TextChoices):
     VIEWER = "viewer", "Viewer"      # read
     EDITOR = "editor", "Editor"      # read + edit
     APPROVER = "approver", "Approver"  # read + edit + approve
+    ADMIN = "admin", "Admin"  # approver + manage users and access
 
 
-ROLE_RANK = {Role.VIEWER: 0, Role.EDITOR: 1, Role.APPROVER: 2}
+ROLE_RANK = {Role.VIEWER: 0, Role.EDITOR: 1, Role.APPROVER: 2, Role.ADMIN: 3}
 
 
 class User(AbstractUser):
@@ -30,6 +31,10 @@ class User(AbstractUser):
     @property
     def can_approve(self) -> bool:
         return self.rank >= ROLE_RANK[Role.APPROVER]
+
+    @property
+    def can_admin(self) -> bool:
+        return self.rank >= ROLE_RANK[Role.ADMIN]
 
 
 class McpToken(models.Model):

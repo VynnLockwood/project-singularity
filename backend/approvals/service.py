@@ -141,7 +141,7 @@ def _dry_run_actor(user):
 
     if user.can_approve:
         return user
-    approver = User.objects.filter(role=Role.APPROVER, is_active=True).first()
+    approver = User.objects.filter(role__in=[Role.APPROVER, Role.ADMIN], is_active=True).first()
     if approver is None:
         raise ChangeError("invalid", "there is no approver to review a configuration change")
     return approver
