@@ -588,22 +588,41 @@ def _designer_says(run: ImportRun, out: dict) -> None:
          {"round": run.round, "reasons": out["reasons"], "questions": out["questions"]})
 
 
+def _feedback(report: dict) -> list[str]:
+    """What the Designer is told about a failed check: the model-safe problems (no cell values)."""
+    if not report or report.get("ok"):
+        return []
+    return list(report.get("feedback") or [])
+
+
+def _nothing_left(run: ImportRun, plan: dict, report: dict) -> None:
+    """A plan that is fine but has nothing to load: the run ends here, the Designer is not asked again."""
+    _set(run, plan=plan, report=report, state=S.FAILED)
+    _critic_says(run, report)
+
+
 def _design_loop(run: ImportRun, sources: list, profiles: list, api_key: str) -> None:
     cfg = get_config()["import"]
     max_rounds = int(cfg["maxRounds"])
     report = run.report or {}
-    feedback = list(report.get("problems") or []) if report and not report.get("ok") else []
+    feedback = _feedback(report)
     recipe = (run.matches or {}).get("recipe")
     if recipe and run.round == 0 and not report:
         # the recipe is re-checked first: a target renamed or dropped since its approval is drift
         filters = recipe.get("filters") if isinstance(recipe.get("filters"), dict) else {}
-        drift = _critic(run, sources, profiles, {"mapping": recipe.get("mapping") or {}, "filters": filters})
+        recipe_plan = {"mapping": recipe.get("mapping") or {}, "filters": filters}
+        drift = _critic(run, sources, profiles, recipe_plan)
+        if drift.get("nothing"):
+            _nothing_left(run, {**recipe_plan, "reasons": {}, "questions": [],
+                                "picked": (run.plan or {}).get("picked") or {}, "skip": recipe_plan.get("skip")},
+                          drift)
+            return
         if not drift["ok"]:
             _set(run, report=drift)
             _say(run, ImportMessage.Role.CRITIC,
                  "The saved recipe no longer fits this database (drift):\n" + _problem_lines(drift),
                  {"ok": False, "drift": True, "problems": drift["problems"]})
-            feedback = drift["problems"]
+            feedback = _feedback(drift)
         else:
             _drop_script(drift.get("scriptId"))
     rules, targets = rules_text(), targets_text(run.schema, run.matches or {})
@@ -626,11 +645,14 @@ def _design_loop(run: ImportRun, sources: list, profiles: list, api_key: str) ->
         _set(run, plan=plan, state=S.CHECKING)
         _designer_says(run, out)
         report = _critic(run, sources, profiles, plan)
+        if report.get("nothing"):
+            _nothing_left(run, plan, report)
+            return
         _set(run, plan=plan, report=report, state=S.READY if report["ok"] else S.DESIGNING)
         _critic_says(run, report)
         if report["ok"]:
             return
-        feedback = report["problems"]
+        feedback = _feedback(report)
     _fail(run, f"Stopped after {max_rounds} rounds: the plan still has the problems listed above.")
 
 
@@ -652,6 +674,8 @@ def _critic_says(run: ImportRun, report: dict) -> None:
             text += " Dropped columns: " + ", ".join(f"{d['sheet']}.{d['column']}" for d in report["dropped"]) + "."
         if report.get("warnings"):
             text += f" {len(report['warnings'])} rule warnings for the reviewer."
+    elif report.get("nothing"):
+        text = report["problems"][0]
     else:
         n = len(report["problems"])
         text = f"{n} problem{'s' if n != 1 else ''}:\n" + _problem_lines(report)
@@ -663,28 +687,55 @@ def _add(problems: list, text: str) -> None:
         problems.append(_clip(" ".join(str(text).split()), MAX_PROBLEM_CHARS))
 
 
-def _problems(rep: dict) -> list[str]:
-    out = []
+def _both(report: dict, text: str, safe: str | None = None) -> None:
+    """A problem for the person (`problems`) and its model-safe form (`feedback`; the same text by default)."""
+    _add(report["problems"], text)
+    _add(report["feedback"], text if safe is None else safe)
+
+
+_QUOTED = re.compile(r"""'[^']*'|"[^"]*\"""")
+
+
+def _scrub(text) -> str:
+    """Quoted text (which may be a cell value) replaced by '...'."""
+    return _QUOTED.sub("'...'", str(text))
+
+
+def _plural(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
+
+
+def _problems(rep: dict, real) -> tuple[list[str], list[str]]:
+    """(problems for the person, feedback for the model) from a validation report. The person's text is whole; the
+    model's names the column, constraint or table and a count, never a cell value. `real` turns the script's
+    stream names back into the sheet names and headers."""
+    out = {"problems": [], "feedback": []}
     for e in rep.get("errors") or []:
-        where = f"line {e['line']}: " if e.get("kind") == "rows" and e.get("line") else (
-            f"{e['statement']}: " if e.get("statement") else "")
-        _add(out, where + e["message"])
+        kind = e.get("kind")
+        where = f"line {e['line']}: " if kind == "rows" and e.get("line") else (
+            f"{e['statement']}: " if e.get("statement") and kind == "mapping" else "")
+        person = (where or (f"{e['statement']}: " if e.get("statement") else "")) + e["message"]
+        safe = where + (e["message"] if kind in ("mapping", "storage") else _scrub(e["message"]))
+        _both(out, real(person), real(safe))
     gate = rep.get("gate") or {}
     for e in gate.get("errors") or []:
-        _add(out, f"gate: {e}")
+        _both(out, real(f"gate: {e}"))
     for v in gate.get("blocked") or []:
-        _add(out, f"rule {v.get('rule', '?')}: {v.get('message', v)}" if isinstance(v, dict) else f"rule: {v}")
+        _both(out, real(f"rule {v.get('rule', '?')}: {v.get('message', v)}" if isinstance(v, dict) else f"rule: {v}"))
     for t in rep.get("tables") or []:
         if t.get("orphans"):
             sample = (t.get("sample_orphans") or [{}])[0]
-            _add(out, f"{t['name']}: {t['orphans']} rows reference a missing {sample.get('parent', 'parent')} "
-                      f"(e.g. {sample.get('column')} = {sample.get('value')!r})")
+            parent, column = sample.get("parent", "parent"), sample.get("column")
+            _both(out, real(f"{t['name']}: {t['orphans']} rows reference a missing {parent} "
+                            f"(e.g. {column} = {sample.get('value')!r})"),
+                  real(f"{t['name']}: {_plural(t['orphans'], 'row references', 'rows reference')} a missing "
+                       f"{parent} (column {column})"))
     dry = rep.get("dry_run") or {}
     if dry.get("error"):
-        _add(out, f"dry run: {dry['error']}")
-    if not out and not rep.get("ok"):
-        _add(out, "the check did not pass")
-    return out
+        _both(out, real(f"dry run: {dry['error']}"), real(f"dry run: {dry.get('safe_error') or 'it failed'}"))
+    if not out["problems"] and not rep.get("ok"):
+        _both(out, "the check did not pass")
+    return out["problems"], out["feedback"]
 
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9_-]+")
@@ -706,10 +757,36 @@ def _safe(name, used: set, fallback: str) -> str:
     return out
 
 
-def _as_streams(sources: list, profiles: list, plan: dict, schema: str) -> tuple[list, list, dict]:
+def _real_names(tables: dict, columns: dict):
+    """A function that rewrites stream names (`tables`: sheet -> stream, `columns`: sheet -> {header: stream}) in
+    a text back to the sheet names and headers the person and the Designer know."""
+    back_t = {st: sheet for sheet, st in tables.items() if st != sheet}
+
+    def real(text: str) -> str:
+        text = str(text)
+        # columns of the sheets this text names come first: two sheets may share a stream column name
+        named = [sheet for sheet, st in tables.items() if re.search(rf"(?<![\w-]){re.escape(st)}(?![\w-])", text)]
+        back = {}
+        for sheet in [*named, *(x for x in tables if x not in named)]:
+            for h, sc in columns.get(sheet, {}).items():
+                if sc != h:
+                    back.setdefault(sc, h)
+        back.update(back_t)
+        if not back:
+            return text
+        pattern = re.compile(r"(?<![\w-])(" + "|".join(re.escape(k) for k in sorted(back, key=len, reverse=True))
+                             + r")(?![\w-])")
+        return pattern.sub(lambda m: back[m.group(1)], text)
+    return real
+
+
+def _as_streams(sources: list, profiles: list, plan: dict, schema: str) -> tuple[list, list, dict, object]:
     """Sheets and headers are what the person and the Designer see; the script needs parser-safe identifiers.
-    Returns the sources, profiles and plan with sheet and header names replaced by their stream names, and
-    external ref parents qualified as `<schema>.<table>` (the way scripts.mapping names existing tables)."""
+    Returns the sources, profiles and plan with sheet and header names replaced by their stream names (external
+    ref parents qualified as `<schema>.<table>`, the way scripts.mapping names existing tables), and a function
+    that turns stream names in a text back into sheet names and headers.
+
+    Every name in the plan must already be a real sheet or header (`_unknown_names`): nothing passes through."""
     tables, columns, used_t = {}, {}, set()
     for i, s in enumerate(sources):
         tables[s["name"]] = _safe(s["name"], used_t, f"sheet_{i + 1}")
@@ -720,7 +797,7 @@ def _as_streams(sources: list, profiles: list, plan: dict, schema: str) -> tuple
     out_profiles = [{**p, "name": tables.get(p.get("name"), p.get("name"))} for p in profiles]
 
     def col(sheet, h):
-        return columns.get(sheet, {}).get(h, h) if isinstance(h, str) else h
+        return columns[sheet][h] if isinstance(h, str) else h
 
     mapping = copy.deepcopy(plan.get("mapping") or {})
     if isinstance(mapping.get("tables"), dict):
@@ -738,51 +815,125 @@ def _as_streams(sources: list, profiles: list, plan: dict, schema: str) -> tuple
                             r["parent"] = tables[r["parent"]]
                         elif r.get("external") and isinstance(r.get("parent"), str) and "." not in r["parent"]:
                             r["parent"] = f"{schema}.{r['parent']}"
-            new[tables.get(sheet, sheet)] = entry
+            new[tables[sheet]] = entry
         mapping["tables"] = new
-    filters = {tables.get(k, k): [{**c, "column": col(k, c.get("column"))} if isinstance(c, dict) else c
-                                  for c in v] if isinstance(v, list) else v
-               for k, v in (plan.get("filters") or {}).items()}
-    skip = {tables.get(k, k): v for k, v in (plan.get("skip") or {}).items()}
-    return out_sources, out_profiles, {**plan, "mapping": mapping, "filters": filters, "skip": skip}
+    filters = {tables[k]: [{**c, "column": col(k, c.get("column"))} if isinstance(c, dict) else c
+                           for c in v] if isinstance(v, list) else v
+               for k, v in (plan.get("filters") or {}).items() if k in tables}
+    skip = {tables[k]: v for k, v in (plan.get("skip") or {}).items() if k in tables}
+    return out_sources, out_profiles, {**plan, "mapping": mapping, "filters": filters, "skip": skip}, \
+        _real_names(tables, columns)
+
+
+def _unknown_names(sources: list, mapping: dict, filters: dict) -> list[str]:
+    """Sheets and headers the plan names that this file does not have (a stream name echoed back is one)."""
+    out = []
+    headers = {s["name"]: s["headers"] for s in sources}
+    sheets = ", ".join(repr(n) for n in headers)
+    for sheet, entry in ((mapping or {}).get("tables") or {}).items():
+        if sheet not in headers:
+            out.append(f"mapping.tables: unknown sheet {sheet!r} (the sheets are {sheets})")
+            continue
+        if not isinstance(entry, dict):
+            continue
+        hs = headers[sheet]
+        used = list((entry.get("columns") or {}).values()) if isinstance(entry.get("columns"), dict) else []
+        used += entry.get("drop") if isinstance(entry.get("drop"), list) else []
+        for r in entry.get("refs") if isinstance(entry.get("refs"), list) else []:
+            if isinstance(r, dict):
+                used.append(r.get("source_column"))
+                if not r.get("external") and isinstance(r.get("parent"), str) and r["parent"] not in headers:
+                    out.append(f"{sheet}: ref parent {r['parent']!r} is not a sheet of this file; for an existing "
+                               "table set \"external\": true")
+        for h in dict.fromkeys(h for h in used if h is not None):
+            if not isinstance(h, str) or h not in hs:
+                out.append(f"{sheet}: unknown source column {h!r}; the headers are "
+                           + ", ".join(repr(x) for x in hs))
+    for sheet in (filters or {}):
+        if sheet not in headers:
+            out.append(f"filters: unknown sheet {sheet!r} (the sheets are {sheets})")
+    return out
 
 
 def _targets(mapping: dict) -> dict:
     return {n: e.get("target", n) for n, e in ((mapping or {}).get("tables") or {}).items() if isinstance(e, dict)}
 
 
+def _row_check(run: ImportRun, src: dict, prof: dict, entry, state: dict) -> dict:
+    """Which rows already exist (or may) in the plan's target, by the plan's own key mapping. The Matcher's check
+    is reused only when it looked at the same table with the same header feeding the same key column."""
+    target = entry.get("target", src["name"]) if isinstance(entry, dict) else None
+    if target not in state:
+        return {}
+    cols = entry.get("columns") if isinstance(entry.get("columns"), dict) else {}
+    cmap = {t: h for t, h in cols.items() if isinstance(h, str) and h in src["headers"]}
+    rows = (((run.matches or {}).get("sources") or {}).get(src["name"]) or {}).get("rows") or {}
+    if rows.get("table") == target and "key" in rows and \
+            (rows.get("key"), rows.get("header")) == matcher.row_key(state, target, cmap):
+        return rows
+    if not get_config()["import"]["rowMatch"]:
+        return {}
+    return matcher.row_check(run.schema, src, {c["header"]: c for c in prof.get("columns") or []}, cmap,
+                             target, state)
+
+
+def _nothing_new(report: dict, mapping: dict, existing: set) -> bool:
+    """True (and the report says so) when the plan would load no row and change no table."""
+    tables = report["tables"]
+    if any(t["new"] for t in tables.values()):
+        return False
+    for entry in ((mapping or {}).get("tables") or {}).values():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("add_columns") or entry.get("target") not in existing:
+            return False      # a schema change is something to submit, even with no rows
+    exists = sum(t["exists"] for t in tables.values())
+    filtered = sum(t["filtered"] for t in tables.values())
+    skipped = sum(t["skipped"] for t in tables.values())
+    parts = [p for n, p in ((exists, _plural(exists, "row already exists", "rows already exist")),
+                            (filtered, f"{filtered} removed by the filter"),
+                            (skipped, f"{skipped} skipped by you")) if n]
+    text = "Nothing new to load: " + (", ".join(parts) if parts else "the file has no rows") + "."
+    report["problems"], report["feedback"], report["nothing"] = [text], [text], True
+    return True
+
+
 def _critic(run: ImportRun, sources: list, profiles: list, plan: dict) -> dict:
     """Write the plan as a script, store it, and validate it. Never raises for a bad plan: it reports.
 
-    Sets plan["skip"] to the effective skip (rows already existing in the target, plus the person's picks)."""
+    Sets plan["skip"] to the effective skip (rows already existing in the target, plus the person's picks).
+    report["problems"] is for the person; report["feedback"] is the same list as the model may see it."""
     mapping, filters = (plan or {}).get("mapping"), (plan or {}).get("filters") or {}
     picked = (plan or {}).get("picked") or {}
-    report = {"ok": False, "problems": [], "scriptId": None, "tables": {}, "badRows": [], "dropped": [],
-              "warnings": []}
+    report = {"ok": False, "problems": [], "feedback": [], "scriptId": None, "tables": {}, "badRows": [],
+              "dropped": [], "warnings": []}
     for p in design.check_plan(mapping, filters):
-        _add(report["problems"], p)
+        _both(report, p)
     if report["problems"]:
         return report
-    targets = _targets(mapping)
-    matched = (run.matches or {}).get("sources") or {}
+    for p in _unknown_names(sources, mapping, filters):
+        _both(report, p)
+    if report["problems"]:
+        return report
+    state = introspect.snapshot(run.schema)
+    tables = (mapping or {}).get("tables") or {}
+    by_name = {p.get("name"): p for p in profiles}
     skip = {}
     for s in sources:
         name = s["name"]
-        rows = matched.get(name, {}).get("rows") or {}
-        same_target = bool(rows.get("table")) and targets.get(name) == rows.get("table")
-        exists = sorted({e["row"] for e in rows.get("exists") or []}) if same_target else []
-        mine = sorted(set(picked.get(name) or []) - set(exists))
-        skip[name] = sorted(set(exists) | set(mine))
         try:
             kept = writer.apply_filter(s["rows"], s["headers"], filters.get(name))
         except (ValueError, TypeError, AttributeError, KeyError) as exc:
-            _add(report["problems"], f"filters.{name}: {exc}")
+            _both(report, f"filters.{name}: {exc}")
             continue
+        rows = _row_check(run, s, by_name.get(name) or {}, tables.get(name), state) if name in tables else {}
+        exists = sorted({e["row"] for e in rows.get("exists") or []})
+        mine = sorted(set(picked.get(name) or []) - set(exists))
+        skip[name] = sorted(set(exists) | set(mine))
         kept1 = {n + 1 for n in kept}
-        maybe = [m for m in rows.get("maybe") or [] if m["row"] in kept1 and m["row"] not in skip[name]] \
-            if same_target else []
+        maybe = [m for m in rows.get("maybe") or [] if m["row"] in kept1 and m["row"] not in skip[name]]
         report["tables"][name] = {
-            "target": targets.get(name, name), "rows": len(s["rows"]),
+            "target": _targets(mapping).get(name, name), "rows": len(s["rows"]),
             "filtered": len(s["rows"]) - len(kept1),
             "exists": len(kept1 & set(exists)), "skipped": len(kept1 & set(mine)),
             "new": len(kept1 - set(skip[name])), "maybe": maybe,
@@ -790,15 +941,18 @@ def _critic(run: ImportRun, sources: list, profiles: list, plan: dict) -> dict:
     plan["skip"] = {k: v for k, v in skip.items() if v}     # the effective skip, kept on the plan
     if report["problems"]:
         return report
-    existing = sorted(introspect.snapshot(run.schema))
+    if _nothing_new(report, mapping, set(state)):
+        return report
+    existing = sorted(state)
     try:
-        s_sources, s_profiles, s_plan = _as_streams(sources, profiles,
-                                                    {"mapping": mapping, "filters": filters, "skip": skip},
-                                                    run.schema)
+        s_sources, s_profiles, s_plan, real = _as_streams(sources, profiles,
+                                                          {"mapping": mapping, "filters": filters, "skip": skip},
+                                                          run.schema)
         data = writer.write(s_sources, s_profiles, {**s_plan, "existing": existing}, run.schema)
         script = storage.save(run.owner, _script_name(run.pk), data, kind="import")
     except (ValueError, TypeError, AttributeError, KeyError, ScriptError) as exc:
-        _add(report["problems"], f"the plan could not be written as a script: {exc}")
+        _both(report, f"the plan could not be written as a script: {exc}",
+              f"the plan could not be written as a script: {_scrub(exc)}")
         return report
     previous = (run.report or {}).get("scriptId")
     report["scriptId"] = script.pk
@@ -806,10 +960,10 @@ def _critic(run: ImportRun, sources: list, profiles: list, plan: dict) -> dict:
     if previous and previous != script.pk:
         _drop_script(previous)
     report["ok"] = bool(rep.get("ok"))
-    report["problems"] = [] if report["ok"] else _problems(rep)
-    report["badRows"] = [{"line": e["line"], "message": _clip(e["message"], MAX_PROBLEM_CHARS)}
+    report["problems"], report["feedback"] = ([], []) if report["ok"] else _problems(rep, real)
+    report["badRows"] = [{"line": e["line"], "message": _clip(real(e["message"]), MAX_PROBLEM_CHARS)}
                          for e in rep.get("errors") or [] if e.get("kind") == "rows" and e.get("line")][:MAX_PROBLEMS]
-    report["warnings"] = [_clip(v.get("message", v) if isinstance(v, dict) else v, MAX_PROBLEM_CHARS)
+    report["warnings"] = [_clip(real(v.get("message", v) if isinstance(v, dict) else v), MAX_PROBLEM_CHARS)
                           for v in (rep.get("gate") or {}).get("warnings") or []][:MAX_PROBLEMS]
     reasons = (plan or {}).get("reasons") or {}
     for name, entry in ((mapping or {}).get("tables") or {}).items():

@@ -178,21 +178,35 @@ def _cells(src: dict, col_profiles: dict, header: str) -> list:
     return [convert_value(row[i] if i < len(row) else None, col) for row in src["rows"]]
 
 
+def row_key(state, target: str, cmap: dict) -> tuple[str | None, str | None]:
+    """(key column, source header) used for the exact row match: the first single-column unique key (not the
+    generated primary key) that `cmap` (target column -> source header) maps; (None, None) when none is."""
+    pk = state[target]["pk"]
+    keys = sorted(next(iter(k)) for k in state[target]["keys"] if len(k) == 1 and next(iter(k)) != pk)
+    key = next((k for k in keys if k in cmap), None)
+    return (key, cmap[key]) if key else (None, None)
+
+
 def _rows(schema: str, src: dict, col_profiles: dict, columns: dict, target: str, state) -> dict:
-    out = {"table": target, "exists": [], "maybe": [], "examples": []}
+    """The Matcher's row check, with its own guess of which header feeds which target column."""
+    return row_check(schema, src, col_profiles, _column_map(columns, target), target, state)
+
+
+def row_check(schema: str, src: dict, col_profiles: dict, cmap: dict, target: str, state) -> dict:
+    """Which rows of `src` already exist (exact key) or may exist (name match) in `target`, when the sheet is
+    loaded with `cmap` (target column -> source header). Records the key column and header it used."""
+    key, header = row_key(state, target, cmap)
+    out = {"table": target, "key": key, "header": header, "exists": [], "maybe": [], "examples": []}
     d = introspect.describe_table(target, schema)
     pk = state[target]["pk"]
     if d is None or pk is None or not src["rows"]:
         return out
-    cmap = _column_map(columns, target)
     examples = []
 
     # exact match on a single-column unique key (not the generated primary key)
-    keys = sorted(next(iter(k)) for k in state[target]["keys"] if len(k) == 1 and next(iter(k)) != pk)
-    key = next((k for k in keys if k in cmap), None)
     exists_rows = set()
     if key:
-        values = _cells(src, col_profiles, cmap[key])
+        values = _cells(src, col_profiles, header)
         wanted = sorted({v for v in values if v is not None})
         q = sql.SQL("SELECT {pk} AS id, {k}::text AS k FROM {t} WHERE {k}::text = ANY(%s)").format(
             pk=sql.Identifier(pk), k=sql.Identifier(key), t=sql.Identifier(schema, target))

@@ -19,7 +19,8 @@ Report (JSON-serializable, bounded; saved on script.report):
    "gate": {"errors": [str], "blocked": [violation], "warnings": [violation], "truncated": int},
    "tables": [{"name", "source", "rows", "orphans", "sample_orphans": [
                 {"line", "row", "column", "value", "parent": "<table>.<key>"}]}],
-   "dry_run": {"ok": bool, "skipped": bool, "error": str | None, "rows_loaded": {table: rows}}}
+   "dry_run": {"ok": bool, "skipped": bool, "error": str | None, "rows_loaded": {table: rows},
+               "safe_error": str | None}}      # the error without any cell value (ApplyError.safe)
 
 ok = no errors, no gate errors or blocking violations, no orphans, and the dry run succeeded.
 scripts that are "submitted" or "expired" are refused. script.status becomes "validated" only when ok;
@@ -322,6 +323,7 @@ def _run(report: dict, script: Script, mapping: dict | None, schema: str | None 
                          schema=schema)
     except executor.ApplyError as exc:
         dry["error"] = _clip(exc)
+        dry["safe_error"] = _clip(getattr(exc, "safe", None) or "the dry run failed")
         return
     dry["ok"] = True
     dry["rows_loaded"] = {o["table"]: o["expected_rows"] for o in res.operations if o["op"] == "bulk_insert"}

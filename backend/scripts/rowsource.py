@@ -67,4 +67,5 @@ def _rows(stream, idx: list[int], table) -> Iterator[tuple]:
             yield tuple(row[i] for i in idx)
     except RowStreamError as exc:
         i = exc.issue
-        raise ApplyError(f"script line {i.line}: bad row for {stream.table!r} (loading {table}): {i.message}") from None
+        raise ApplyError(f"script line {i.line}: bad row for {stream.table!r} (loading {table}): {i.message}",
+                         safe=f"script line {i.line}: bad row for {stream.table!r} (loading {table})") from None
