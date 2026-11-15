@@ -129,10 +129,14 @@ def test_unknown_role_rejected():
 
 @pytest.mark.django_db
 def test_cannot_remove_last_admin():
-    # the "last approver" rule is now "last active admin" (more in test_accounts_manage.py)
+    # the "last approver" rule is now "last active admin" (more in test_accounts_manage.py). The only way to
+    # reach the guard is an admin whose session is out of date: turned off since, so not an active admin any more.
     admin = make_user("admin@example.com", Role.ADMIN)
-    with pytest.raises(RoleChangeDenied):
-        change_role(admin, admin, "viewer")
+    stale = make_user("stale@example.com", Role.ADMIN)
+    User.objects.filter(pk=stale.pk).update(is_active=False)
+    with pytest.raises(RoleChangeDenied) as e:
+        change_role(stale, admin, "viewer")
+    assert "last active admin" in str(e.value)
     admin.refresh_from_db()
     assert admin.role == Role.ADMIN
 

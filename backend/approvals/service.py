@@ -119,8 +119,12 @@ def _has_role_op(ops) -> bool:
     return isinstance(ops, list) and any(isinstance(o, dict) and o.get("op") == "set_user_role" for o in ops)
 
 
+def _changes_roles(change: Change) -> bool:
+    return change.kind == "config" and (_has_role_op(change.operations) or _has_role_op(change.original_operations))
+
+
 def can_decide(user, change: Change) -> bool:
-    if change.kind == "config" and (_has_role_op(change.operations) or _has_role_op(change.original_operations)):
+    if _changes_roles(change):
         # who may do what is a person's decision: only an admin grants, changes or removes a role
         return user.is_active and user.can_admin
     if change.source == "script" or change.kind in ("schema", "config", "sql"):
@@ -493,7 +497,11 @@ def reject(user, change_id: int, note: str = "") -> Change:
         change = _get_for_update(change_id)
         if change.status not in (Change.Status.PENDING, Change.Status.STALE):
             raise ChangeError("bad_state", f"change #{change.pk} is {change.status}")
-        if not (user.can_approve or (user.can_edit and user.pk == change.requester_id)):
+        if _changes_roles(change):
+            allowed = can_decide(user, change)  # declining a role change is an admin's decision too
+        else:
+            allowed = user.can_approve or (user.can_edit and user.pk == change.requester_id)
+        if not allowed:
             raise ChangeError("forbidden", "you cannot reject this change")
         change.status = Change.Status.REJECTED
         change.decided_by, change.decided_at = user, timezone.now()
@@ -545,7 +553,7 @@ def recheck(user, change_id: int) -> Change:
 
 
 def revert(user, change_id: int) -> Change:
-    """Undo an applied change by applying its stored reverse operations (approvers only)."""
+    """Undo an applied change by applying its stored reverse operations (approvers only; admins for role changes)."""
     if not user.can_approve:
         raise ChangeError("forbidden", "only approvers can revert changes")
     orig = Change.objects.filter(pk=change_id).first()
@@ -557,6 +565,10 @@ def revert(user, change_id: int) -> Change:
         raise ChangeError("bad_state", f"change #{orig.pk} cannot be undone automatically (it dropped something)")
     if Change.objects.filter(reverts=orig).exclude(status__in=[Change.Status.REJECTED, Change.Status.FAILED]).exists():
         raise ChangeError("bad_state", f"change #{orig.pk} was already reverted or has a revert pending")
+    if orig.kind == "config" and (_changes_roles(orig) or _has_role_op(orig.reverse_operations)) \
+            and not (user.is_active and user.can_admin):
+        # checked before the revert is proposed, so a refused revert leaves no pending change behind
+        raise ChangeError("forbidden", "only an admin can revert a role change")
 
     if orig.kind == "config":
         rev = propose_config(user, orig.reverse_operations, source="revert", prompt=f"Revert change #{orig.pk}", reverts=orig)

@@ -4,6 +4,7 @@ import logging
 from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
 from django.db import IntegrityError, transaction
+from django.db.models.functions import Lower, Trim
 
 from audit.models import record
 from config.siconfig import get_config
@@ -43,6 +44,11 @@ def normalize_email(raw) -> str:
 DENIED = "not allowed"
 
 
+def find_user_by_email(email: str) -> User | None:
+    """The user with this (canonical) email, ignoring case and spaces in the stored value; lowest pk if several."""
+    return User.objects.annotate(_canon=Lower(Trim("email"))).filter(_canon=email).order_by("pk").first()
+
+
 def sign_in_from_claims(claims: dict, auth_cfg: dict) -> User:
     """Map verified Google claims to an existing, active User. Sign-in is invite-only: no user is created here."""
     if claims.get("email_verified") is not True:
@@ -51,7 +57,7 @@ def sign_in_from_claims(claims: dict, auth_cfg: dict) -> User:
         email = normalize_email(claims.get("email"))
     except UserManagementDenied:
         raise SignInDenied(DENIED) from None
-    user = User.objects.filter(email__iexact=email).first()
+    user = find_user_by_email(email)
     if user is None or not user.is_active:
         raise SignInDenied(DENIED)
     changed = []
@@ -96,7 +102,7 @@ def ensure_seed_admins(auth_cfg: dict) -> list[User]:
     users = []
     inactive = []
     for email in emails:
-        user = User.objects.filter(email__iexact=email).first()
+        user = find_user_by_email(email)
         if user is None:
             try:
                 with transaction.atomic():
@@ -132,9 +138,17 @@ def _username_for(email: str) -> str:
     return "u-" + hashlib.sha256(email.encode()).hexdigest()
 
 
-def _guard_last_admin(target: User) -> None:
-    """Refuse to take admin away from the last active admin. Locks the active admins so two requests cannot race."""
+def _lock_for_change(target: User) -> list[User]:
+    """Lock the active admins (pk order), then the target, always in that order so two admins acting on each
+    other cannot deadlock. Refreshes the target's role and active flag and returns the locked active admins."""
     admins = list(User.objects.select_for_update().filter(role=Role.ADMIN, is_active=True).order_by("pk"))
+    User.objects.select_for_update().filter(pk=target.pk).first()
+    target.refresh_from_db(fields=["role", "is_active"])
+    return admins
+
+
+def _guard_last_admin(target: User, admins: list[User]) -> None:
+    """Refuse to take admin away from the last active admin (`admins` is the locked active-admin set)."""
     if not any(a.pk != target.pk for a in admins):
         raise UserManagementDenied("cannot remove the last active admin")
 
@@ -151,7 +165,7 @@ def create_user(actor: User, email, role, first_name: str = "", last_name: str =
     first = (first_name or "").strip()[:MAX_NAME] if isinstance(first_name, str) else ""
     last = (last_name or "").strip()[:MAX_NAME] if isinstance(last_name, str) else ""
     duplicate = UserManagementDenied("a user with this email already exists")
-    if User.objects.filter(email__iexact=email).exists():
+    if find_user_by_email(email) is not None:
         raise duplicate
     try:
         with transaction.atomic():
@@ -171,12 +185,11 @@ def set_user_active(actor: User, target: User, active: bool) -> User:
         raise UserManagementDenied("you cannot turn yourself off or on")
     active = bool(active)
     with transaction.atomic():
-        User.objects.select_for_update().filter(pk=target.pk).first()
-        target.refresh_from_db(fields=["role", "is_active"])
+        admins = _lock_for_change(target)
         if target.is_active == active:
             return target
         if not active and target.role == Role.ADMIN:
-            _guard_last_admin(target)
+            _guard_last_admin(target, admins)
         target.is_active = active
         target.save(update_fields=["is_active"])
         record(actor, "user.reactivated" if active else "user.deactivated", target=target.email)
@@ -191,13 +204,12 @@ def change_role(actor: User, target: User, new_role: str) -> User:
     if actor.pk == target.pk:
         raise UserManagementDenied("you cannot change your own role")
     with transaction.atomic():
-        User.objects.select_for_update().filter(pk=target.pk).first()
-        target.refresh_from_db(fields=["role", "is_active"])
+        admins = _lock_for_change(target)
         old_role = target.role
         if old_role == new_role:
             return target
         if old_role == Role.ADMIN and target.is_active:
-            _guard_last_admin(target)
+            _guard_last_admin(target, admins)
         target.role = Role(new_role)
         target.save(update_fields=["role"])
         record(actor, "user.role_changed", target=target.email, details={"from": old_role, "to": target.role.value})

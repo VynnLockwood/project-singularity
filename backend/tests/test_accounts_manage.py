@@ -325,3 +325,70 @@ def test_migration_stops_on_clashing_emails_and_changes_nothing():
     with pytest.raises(RuntimeError) as e:
         _migration().normalize_emails(FakeApps(), None)
     assert "dup@example.com: user ids [1, 2]" in str(e.value) and "solo" not in str(e.value)
+
+
+# ---- fix round 1: reject / revert of role changes, email match, long seed email ------------
+
+def _role_change(editor, email="v@example.com", role="editor"):
+    return service.propose(editor, [{"op": "set_user_role", "email": email, "role": role}], source="mcp")
+
+
+def test_approver_cannot_reject_a_role_change_admin_can(admin):
+    editor = make_user("ed@example.com", Role.EDITOR)
+    approver = make_user("ap@example.com", Role.APPROVER)
+    make_user("v@example.com")
+    ch = _role_change(editor)
+    with pytest.raises(service.ChangeError) as e:
+        service.reject(approver, ch.pk, "no")
+    assert e.value.code == "forbidden"
+    assert service.reject(admin, ch.pk, "no").status == "rejected"
+
+    plain = service.propose(editor, [{"op": "set_setting", "key": "search.topK", "value": 7}], source="mcp")
+    assert service.reject(approver, plain.pk, "no").status == "rejected"
+
+
+def test_approver_cannot_revert_a_role_change_and_leaves_nothing_behind(admin):
+    from approvals.models import Change
+
+    editor = make_user("ed@example.com", Role.EDITOR)
+    approver = make_user("ap@example.com", Role.APPROVER)
+    make_user("v@example.com")
+    ch = service.approve(admin, _role_change(editor).pk)
+    assert ch.status == "applied"
+    before = Change.objects.count()
+    with pytest.raises(service.ChangeError) as e:
+        service.revert(approver, ch.pk)
+    assert e.value.code == "forbidden"
+    assert Change.objects.count() == before and not Change.objects.filter(reverts=ch).exists()
+    assert User.objects.get(email="v@example.com").role == Role.EDITOR
+
+    rev = service.revert(admin, ch.pk)  # not blocked by a left-over pending revert
+    assert rev.status == "applied"
+    assert User.objects.get(email="v@example.com").role == Role.VIEWER
+
+
+def test_approver_can_still_revert_a_non_role_config_change(admin):
+    approver = make_user("ap@example.com", Role.APPROVER)
+    ch = service.propose(approver, [{"op": "set_setting", "key": "search.topK", "value": 7}], source="mcp")
+    service.approve(approver, ch.pk)
+    assert service.revert(approver, ch.pk).status == "applied"
+
+
+def test_set_user_role_finds_a_user_whose_stored_email_is_not_canonical(admin):
+    editor = make_user("ed@example.com", Role.EDITOR)
+    odd = make_user(" Odd@Example.COM")  # written before emails were canonical
+    ch = _role_change(editor, email="odd@example.com")
+    assert ch.status == "pending"
+    service.approve(admin, ch.pk)
+    odd.refresh_from_db()
+    assert odd.role == Role.EDITOR
+
+
+def test_seed_admin_with_a_long_email_gets_a_hashed_username():
+    from accounts.services import ensure_seed_admins
+
+    email = "a" * 60 + "@" + "b" * 60 + "." + "c" * 60 + ".com"
+    users = ensure_seed_admins({"seedAdmins": [email]})
+    assert len(users) == 1
+    u = User.objects.get(email=email)
+    assert u.role == Role.ADMIN and u.username.startswith("u-") and len(u.username) <= 150

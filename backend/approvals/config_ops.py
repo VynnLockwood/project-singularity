@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from django.db import transaction
 
 from accounts import services as account_services
-from accounts.models import User
 from config.siconfig import get_config, invalidate_overrides
 from settings_app import services as rule_services
 from settings_app import tunables
@@ -139,7 +138,7 @@ def _set_role(res: Result, actor, op):
         email = account_services.normalize_email(op.get("email"))
     except account_services.UserManagementDenied:
         email = None
-    target = User.objects.filter(email=email).first() if email else None
+    target = account_services.find_user_by_email(email) if email else None
     if target is None:
         res.errors.append(f"no user with email {op.get('email')!r}")
         return
