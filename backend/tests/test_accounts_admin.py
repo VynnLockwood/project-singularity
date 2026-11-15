@@ -41,4 +41,5 @@ def test_admin_sees_approver_tools_over_mcp():
     approver = make_user("b@example.com", Role.APPROVER)
     assert tools.RANK["admin"] == 3
     names = list(tools.TOOL_ROLES)
+    assert {"approve_change", "revert_change", "list_users"} <= {n for n in names if tools.allowed(admin, n)}
     assert [n for n in names if tools.allowed(admin, n)] == [n for n in names if tools.allowed(approver, n)]
