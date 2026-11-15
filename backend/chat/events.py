@@ -23,3 +23,15 @@ def publish(groups: list[str], payload: dict) -> None:
             send(g, {"type": "event", "payload": payload})
     except Exception:
         log.warning("could not publish event", exc_info=True)
+
+
+def close_user_sockets(user_id: int) -> None:
+    """Close every live events socket of this user (after their role changed or they were turned off). The browser
+    reconnects and is checked again at connect, so it joins the groups its new role allows, or is refused."""
+    try:
+        layer = get_channel_layer()
+        if layer is None:
+            return
+        async_to_sync(layer.group_send)(user_group(user_id), {"type": "session.end"})
+    except Exception:
+        log.warning("could not close a user's sockets", exc_info=True)

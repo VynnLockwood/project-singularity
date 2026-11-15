@@ -1,6 +1,10 @@
 """What a person's role lets them do, for the profile page: the MCP tools (from the same table the MCP server
 uses to hide tools) and a short text per role."""
+import logging
+
 from mcp_server import tools
+
+logger = logging.getLogger("accounts")
 
 ROLE_SUMMARY = [
     "Read data and the schema",
@@ -10,10 +14,22 @@ ROLE_SUMMARY = [
 ]
 
 
-def _descriptions() -> dict[str, str]:
-    from mcp_server.app import mcp  # the server's own tool texts; imported late because it starts Django set-up
+_warned = False
 
-    return {t.name: t.description or "" for t in mcp._tool_manager.list_tools()}
+
+def _descriptions() -> dict[str, str]:
+    """The server's own tool texts. Uses FastMCP's private tool manager, so any failure gives no texts (logged
+    once) instead of breaking /api/me."""
+    global _warned
+    try:
+        from mcp_server.app import mcp  # imported late because it starts Django set-up
+
+        return {t.name: t.description or "" for t in mcp._tool_manager.list_tools()}
+    except Exception:
+        if not _warned:
+            _warned = True
+            logger.warning("could not read MCP tool descriptions; the profile shows tools without them", exc_info=True)
+        return {}
 
 
 def build(user) -> dict:

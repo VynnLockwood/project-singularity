@@ -80,7 +80,12 @@ def _yaml_config() -> dict:
         loaded = yaml.safe_load(path.read_text()) or {}
     cfg = _merge(DEFAULTS, loaded)
     cfg["auth"]["allowedDomains"] = [d.lower() for d in cfg["auth"]["allowedDomains"]]
-    cfg["auth"]["seedAdmins"] = [e.lower() for e in cfg["auth"]["seedAdmins"]]
+    seeds = cfg["auth"].get("seedAdmins")
+    if seeds is None:  # `seedAdmins:` with nothing under it
+        seeds = []
+    if isinstance(seeds, list):  # anything else is left for ensure_seed_admins to warn about and ignore
+        seeds = [e.lower() if isinstance(e, str) else e for e in seeds]
+    cfg["auth"]["seedAdmins"] = seeds
     cfg["chat"]["models"] = seed_models(cfg["chat"])  # seed for the site-managed list
     return cfg
 

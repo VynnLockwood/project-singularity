@@ -3,6 +3,12 @@
 from django.db import migrations, models
 
 
+def downgrade_admins(apps, schema_editor):
+    """Rolling back: the older code has no admin role, so admins become approvers (the closest older role)."""
+    User = apps.get_model("accounts", "User")
+    User.objects.filter(role="admin").update(role="approver")
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -24,4 +30,5 @@ class Migration(migrations.Migration):
                 max_length=16,
             ),
         ),
+        migrations.RunPython(migrations.RunPython.noop, downgrade_admins),
     ]

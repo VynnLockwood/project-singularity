@@ -1,5 +1,9 @@
+import logging
+
 from django.apps import AppConfig
 from django.db.models.signals import post_migrate, pre_migrate
+
+logger = logging.getLogger("accounts")
 
 
 def ensure_singularity_schema(sender, using="default", **kwargs):
@@ -20,14 +24,18 @@ def ensure_singularity_schema(sender, using="default", **kwargs):
 
 
 def seed_admins_after_migrate(sender, using="default", **kwargs):
-    """Create or promote the configured seed admins once the tables exist."""
-    from config.siconfig import get_config
-
-    from .services import ensure_seed_admins
-
+    """Create or promote the configured seed admins once the tables exist. Never aborts migrate: any error is
+    logged and the migration carries on (fix the config and migrate again)."""
     if using != "default":
         return
-    ensure_seed_admins(get_config()["auth"])
+    try:
+        from config.siconfig import get_config
+
+        from . import services
+
+        services.ensure_seed_admins(get_config()["auth"])
+    except Exception:
+        logger.exception("seeding admins after migrate failed; migrate continues")
 
 
 class AccountsConfig(AppConfig):

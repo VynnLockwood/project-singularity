@@ -95,14 +95,40 @@ def _seed_emails(auth_cfg: dict) -> list[str]:
     return emails
 
 
+# Reserved example / test domains (RFC 2606, RFC 6761): a seed here is the shipped placeholder or a test value,
+# never a real person, so it is never created or promoted.
+_PLACEHOLDER_DOMAINS = ("example.com", "example.org", "example.net", "example", "invalid", "test", "localhost")
+
+
+def _is_placeholder(email: str) -> bool:
+    domain = email.rsplit("@", 1)[1]
+    return any(domain == d or domain.endswith("." + d) for d in _PLACEHOLDER_DOMAINS)
+
+
+def _has_real_admin(seeds: list[str]) -> bool:
+    """An active admin that counts for bootstrap. Unclaimed seed admins (listed in seedAdmins and never signed in)
+    do not count, so a mistyped seed cannot block promoting the right person later."""
+    for user in User.objects.filter(role=Role.ADMIN, is_active=True).only("email", "last_login"):
+        if user.last_login is not None or (user.email or "").strip().lower() not in seeds:
+            return True
+    return False
+
+
 def ensure_seed_admins(auth_cfg: dict) -> list[User]:
     """Make sure the configured seedAdmins exist as active admins (idempotent, never raises on a bad seed).
 
-    A missing seed email is created as an active admin. If no active admin exists at all, existing ACTIVE seed
-    users are promoted to admin (bootstrap); turned-off users are never reactivated, and other users are left alone.
+    Seeds on a reserved placeholder domain (example.com, *.test, localhost, ...) are skipped with a warning.
+    A missing seed email is created as an active admin. If no real active admin exists (unclaimed seed admins,
+    never signed in, do not count), existing ACTIVE seed users are promoted to admin (bootstrap); turned-off users
+    are never reactivated, and other users are left alone.
     """
-    emails = _seed_emails(auth_cfg)
-    has_admin = User.objects.filter(role=Role.ADMIN, is_active=True).exists()
+    emails = []
+    for email in _seed_emails(auth_cfg):
+        if _is_placeholder(email):
+            logger.warning("auth.seedAdmins: skipping %s (reserved placeholder domain; set your real email)", email)
+        else:
+            emails.append(email)
+    has_admin = _has_real_admin(emails)
     users = []
     inactive = []
     for email in emails:
@@ -128,6 +154,15 @@ def ensure_seed_admins(auth_cfg: dict) -> list[User]:
     if not User.objects.filter(role=Role.ADMIN, is_active=True).exists():
         logger.warning("no active admin exists after seeding; inactive seed users: %s", ", ".join(inactive) or "none")
     return users
+
+
+def _close_sockets_on_commit(target: User) -> None:
+    """Once the change is committed (never for a dry run that rolls back), close the user's live sockets so they
+    reconnect under their new role, or are refused when turned off."""
+    from chat import events
+
+    pk = target.pk
+    transaction.on_commit(lambda: events.close_user_sockets(pk))
 
 
 def _require_admin(actor: User) -> None:
@@ -196,6 +231,8 @@ def set_user_active(actor: User, target: User, active: bool) -> User:
             _guard_last_admin(target, admins)
         target.is_active = active
         target.save(update_fields=["is_active"])
+        if not active:
+            _close_sockets_on_commit(target)
         record(actor, "user.reactivated" if active else "user.deactivated", target=target.email)
     return target
 
@@ -216,5 +253,6 @@ def change_role(actor: User, target: User, new_role: str) -> User:
             _guard_last_admin(target, admins)
         target.role = Role(new_role)
         target.save(update_fields=["role"])
+        _close_sockets_on_commit(target)
         record(actor, "user.role_changed", target=target.email, details={"from": old_role, "to": target.role.value})
     return target

@@ -211,13 +211,13 @@ Sign-in is invite-only. An admin adds a person, and only then can that person si
 | Role | Can |
 |---|---|
 | viewer | read |
-| editor | read, propose data and schema changes (editors approve their own data changes) |
-| approver | read, edit, approve, reject and revert normal changes, change settings, see `list_users` over MCP |
-| admin | everything an approver can, plus manage users and approve role changes |
+| editor | read, propose data and schema changes (editors approve their own data changes, in the web app only) |
+| approver | read, edit, approve, reject and revert normal changes, change settings; over MCP also `list_users`, `get_audit_log`, `list_pending`, `revert_change`, `create_backup`, `list_backups`, `reindex_search` |
+| admin | everything an approver can, plus manage users and approve or revert role changes |
 
-**Adding people and changing roles.** Admins open the **Users** page (`/users`; other roles get a not-found page). There they add a person by email with a role, change a role, or turn access off and on again. You cannot turn yourself off, and the last active admin cannot lose the role or be turned off. Roles can also be proposed with `set_user_role` from an AI client or the chat, but the change waits until an admin approves it.
+**Adding people and changing roles.** Admins open the **Users** page (`/users`; other roles get a not-found page). There they add a person by email with a role, change a role, or turn access off and on again. You cannot turn yourself off, and the last active admin cannot lose the role or be turned off. Roles can also be proposed with `set_user_role` from an AI client or the chat, but the change waits until an admin approves it; reverting a role change also needs an admin. A role change or turning someone off closes their open live-update connection, so the browser reconnects under the new role. The audit log (`/api/audit`, `get_audit_log`) is for approvers and admins.
 
-**First admins.** `auth.seedAdmins` in `singularity.yaml` lists emails. On every migrate any missing seed is created as an active admin. If no active admin exists, existing seed users who are active are promoted to admin. A turned-off user is never turned back on by this, and a warning is logged when no active admin exists afterwards. `auth.allowedDomains` only limits which email domains an admin may invite; empty means any domain. It does not decide who can sign in.
+**First admins.** `auth.seedAdmins` in `singularity.yaml` lists emails. On every migrate any missing seed is created as an active admin. If no real active admin exists, existing seed users who are active are promoted to admin; a seed admin that is still listed and has never signed in does not count as real, so a mistyped seed cannot block this. Seeds on reserved domains (`example.com`, `example.org`, `example.net`, `*.invalid`, `*.test`, `localhost`) are skipped with a warning. A turned-off user is never turned back on by this, and a warning is logged when no active admin exists afterwards. A seeding error is logged and never stops the migration. `auth.allowedDomains` only limits which email domains an admin may invite; empty means any domain. It does not decide who can sign in.
 
 **AI clients.** A token acts as its user's real role on every call, so a role change or turning a user off takes effect at once. Approving over MCP checks the approver's role, and role changes need an admin. Raw SQL can only be approved in the web app.
 
