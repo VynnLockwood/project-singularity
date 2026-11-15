@@ -4,9 +4,10 @@ import asyncio
 from chat import toolspecs
 from mcp_server import tools
 
-# Not offered to the web chat assistant: these apply or decide a change, and in the web app a person does that.
-# revert_change proposes and approves its own reverse in one call, so it belongs here too.
-NOT_IN_CHAT = {"approve_change", "reject_change", "revert_change"}
+# Not offered to the web chat assistant (chat.toolspecs.NOT_IN_CHAT): the tools that apply or decide a change (in the
+# web app a person does that; revert_change proposes and approves its own reverse in one call), and the MCP-only
+# import helpers (in the web app a file goes through the Import tab).
+NOT_IN_CHAT = toolspecs.NOT_IN_CHAT
 
 
 def test_every_tool_has_a_role_and_an_implementation():
@@ -20,7 +21,13 @@ def test_every_tool_is_registered_with_the_mcp_server():
 
 
 def test_the_web_chat_has_every_tool_except_deciding():
+    assert NOT_IN_CHAT == {"approve_change", "reject_change", "revert_change", "match_data", "get_import_recipe"}
     assert set(toolspecs.SPECS) == set(tools.TOOL_ROLES) - NOT_IN_CHAT
+
+
+def test_import_helpers_are_editor_tools():
+    assert {t: tools.TOOL_ROLES[t] for t in ("match_data", "get_import_recipe")} == {
+        "match_data": "editor", "get_import_recipe": "editor"}
 
 
 def test_clamp():

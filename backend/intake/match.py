@@ -55,6 +55,53 @@ def _recipe(schema: str, sources: list) -> dict | None:
     return {"id": r.pk, "mapping": r.mapping, "filters": r.filters} if r else None
 
 
+def _entry_headers(entry) -> set:
+    """The sheet headers a mapping entry uses: mapped, dropped and ref source columns."""
+    if not isinstance(entry, dict):
+        return set()
+    hs = set((entry.get("columns") or {}).values()) if isinstance(entry.get("columns"), dict) else set()
+    hs |= set(entry.get("drop") or []) if isinstance(entry.get("drop"), list) else set()
+    for r in entry.get("refs") if isinstance(entry.get("refs"), list) else []:
+        if isinstance(r, dict):
+            hs.add(r.get("source_column"))
+    return {_norm_header(h) for h in hs if isinstance(h, str)}
+
+
+def rekey_recipe(recipe: dict, sources: list) -> dict:
+    """A recipe is found by headers only, but its mapping and filters are keyed by the sheet names of the file it
+    was approved for. Re-key them to this file's sheets: one sheet to one sheet, else by equal header sets.
+    Entries that match no sheet stay as they are (the Critic then reports them)."""
+    mapping = recipe.get("mapping") if isinstance(recipe.get("mapping"), dict) else {}
+    tables = mapping.get("tables") if isinstance(mapping.get("tables"), dict) else {}
+    names = [s["name"] for s in sources]
+    rename = {}
+    if len(tables) == 1 and len(names) == 1:
+        rename = {next(iter(tables)): names[0]}
+    else:
+        free = {s["name"]: {_norm_header(h) for h in s["headers"]} for s in sources}
+        for old, entry in tables.items():
+            if old in free:
+                rename[old] = old
+                free.pop(old)
+        for old, entry in tables.items():
+            if old in rename:
+                continue
+            want = _entry_headers(entry)
+            hit = next((n for n, hs in free.items() if want and hs == want), None)
+            if hit:
+                rename[old] = hit
+                free.pop(hit)
+
+    def rekeyed(d):
+        return {rename.get(k, k): v for k, v in d.items()} if isinstance(d, dict) else d
+
+    out = {**recipe, "mapping": {**mapping, "tables": rekeyed(tables)} if tables else recipe.get("mapping")}
+    out["filters"] = rekeyed(recipe.get("filters"))
+    if isinstance(recipe.get("skip"), dict):
+        out["skip"] = rekeyed(recipe["skip"])
+    return out
+
+
 def column_text(col: dict) -> str:
     return f"{col['header']} ({col['type']}): {', '.join(col.get('samples') or [])}"
 

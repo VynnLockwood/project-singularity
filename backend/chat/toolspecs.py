@@ -12,6 +12,10 @@ _OPS = mcp_tools.OPERATIONS_HELP
 
 SCHEMA = {"schema": {"type": "string", "description": "the database (Postgres schema) to use; default master. See list_schemas"}}
 
+# MCP tools the web chat does not offer: deciding a change is the person's job in the web app, and a file to
+# import is uploaded in the Import tab (match_data and get_import_recipe are for MCP clients that hold the data).
+NOT_IN_CHAT = {"approve_change", "reject_change", "revert_change", "match_data", "get_import_recipe"}
+
 SPECS = {
     "get_rules": ("The team's database design rules. Read these before designing tables.", {}, []),
     "list_schemas": ("The databases (a 'database' is a Postgres schema) with table counts and comments. master is the default.", {}, []),
