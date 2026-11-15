@@ -4,6 +4,9 @@ x-backend-env: &backend-env
   DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
   DJANGO_DEBUG: ${DJANGO_DEBUG:-0}
   DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost}
+  # New code defaults this to empty (was hardcoded to the prod URL). Without it, browser
+  # session POSTs would fail CSRF - compose has no env_file, so .env never reaches the container.
+  DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-https://singularity.lunariankids.com}
   DB_HOST: db
   DB_PORT: "5432"
   DB_NAME: ${POSTGRES_DB:-singularity}
