@@ -21,9 +21,11 @@ import { DuplicatesView } from "./DuplicatesView";
 import { NotFound } from "./NotFound";
 import { Rail } from "./Rail";
 import { ReviewTray } from "./ReviewTray";
+import { ProfileView } from "./ProfileView";
 import { ScriptsTab } from "./ScriptsTab";
 import { SettingsView } from "./SettingsView";
 import { TopBar } from "./TopBar";
+import { UsersView } from "./UsersView";
 
 interface Props { me: Me; onLogout: () => void }
 
@@ -117,8 +119,12 @@ function Shell({ me, onLogout }: Props) {
           {view === "scripts" && me.role === "viewer" && <NotFound path="/scripts" onHome={() => navigate({ view: "chat" })} />}
           {view === "connect" && <ConnectView me={me} />}
           {view === "settings" && (
-            <SettingsView me={me} refreshKey={configApplied} waiting={configWaiting} onOpenQueue={() => navigate({ view: "activity" })} />
+            <SettingsView me={me} refreshKey={configApplied} waiting={configWaiting} onOpenQueue={() => navigate({ view: "activity" })}
+              onOpenUsers={() => navigate({ view: "users" })} />
           )}
+          {view === "users" && me.role === "admin" && <UsersView me={me} />}
+          {view === "users" && me.role !== "admin" && <NotFound path="/users" onHome={() => navigate({ view: "chat" })} />}
+          {view === "profile" && <ProfileView me={me} navigate={navigate} />}
           {route.view === "activity" && (
             <ActivityView me={me} tab={route.tab === "history" ? "history" : "queue"} navigate={navigate} pending={mine} live={live}
               onDecide={changes.decide} busy={busy} />

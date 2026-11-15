@@ -13,7 +13,7 @@ vi.mock("@/lib/imports", async (orig) => ({
   startImport: vi.fn(), getImport: vi.fn(), answerImport: vi.fn(), recheckImport: vi.fn(), submitImport: vi.fn(), cancelImport: vi.fn(),
 }));
 
-const me: Me = { id: 1, email: "e@x.com", name: "E", role: "editor" };
+const me: Me = { id: 1, email: "e@x.com", name: "E", role: "editor", active: true };
 
 const run = (over: Partial<ImportRun> = {}): ImportRun => ({
   id: 7, schema: "master", state: "ready", prompt: "vendors", fileName: "vendors.csv", round: 1,

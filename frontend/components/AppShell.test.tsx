@@ -1,10 +1,10 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Me } from "@/lib/api";
 import { change } from "@/lib/fixtures";
 import type { ServerEvent } from "@/lib/events";
 
-const me: Me = { id: 1, email: "ed@example.com", name: "", role: "approver" };
+const me: Me = { id: 1, email: "ed@example.com", name: "", role: "approver", active: true };
 
 describe("AppShell against the real API response shapes", () => {
   afterEach(() => { vi.unstubAllGlobals(); vi.resetModules(); });
@@ -155,6 +155,28 @@ describe("AppShell navigation and review", () => {
     await mount("viewer");
     expect(nav().queryByRole("button", { name: "Scripts" })).toBeNull();
     expect(nav().getByRole("button", { name: "Activity" })).toBeInTheDocument();
+  });
+
+  it("shows the Users page to an admin and Page not found to anyone else", async () => {
+    await mount("admin", "/users");
+    expect(nav().getByRole("button", { name: "Users" })).toHaveAttribute("aria-current", "page");
+    expect(await screen.findByRole("heading", { name: "Users" })).toBeInTheDocument();
+    for (const role of ["viewer", "editor", "approver"] as const) {
+      cleanup();
+      await mount(role, "/users");
+      expect(nav().queryByRole("button", { name: "Users" })).toBeNull();
+      expect(screen.getByRole("heading", { name: "Page not found" })).toBeInTheDocument();
+    }
+  });
+
+  it("opens Profile from the user menu, for every role", async () => {
+    for (const role of ["viewer", "admin"] as const) {
+      cleanup();
+      await mount(role);
+      fireEvent.click(nav().getByRole("button", { name: /Profile/ }));
+      expect(location.pathname).toBe("/profile");
+      expect(screen.getByRole("heading", { name: "ed@example.com" })).toBeInTheDocument();
+    }
   });
 
   it("has a skip link to the content", async () => {

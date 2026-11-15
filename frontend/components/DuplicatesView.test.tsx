@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DuplicateDetail, DuplicateSummary, GridColumn, Me } from "@/lib/api";
 import { change } from "@/lib/fixtures";
 
-const me = (role: Me["role"]): Me => ({ id: 1, email: "ed@example.com", name: "", role });
+const me = (role: Me["role"]): Me => ({ id: 1, email: "ed@example.com", name: "", role, active: true });
 const group = (o: Partial<DuplicateSummary> = {}): DuplicateSummary => ({
   id: 5, table: "customer", fields: ["name"], memberIds: [1, 2], score: 0.96, status: "open",
   detectedAt: "2026-11-05T00:00:00Z", mergeChange: null, ...o,

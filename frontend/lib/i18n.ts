@@ -14,11 +14,12 @@ const dict = {
     canApprove: "Approve schema changes",
     loading: "Loading…",
     forbiddenTitle: "Access denied",
-    forbiddenBody: "Your account is not allowed to use Singularity. Ask an approver for access.",
+    forbiddenBody: "Your account is not allowed to use Singularity. Ask an admin to add you.",
     backHome: "Back to home",
     role_viewer: "Viewer",
     role_editor: "Editor",
     role_approver: "Approver",
+    role_admin: "Admin",
   },
   th: {
     appName: "Singularity",
@@ -33,11 +34,12 @@ const dict = {
     canApprove: "อนุมัติการเปลี่ยนโครงสร้าง",
     loading: "กำลังโหลด…",
     forbiddenTitle: "ไม่มีสิทธิ์เข้าใช้งาน",
-    forbiddenBody: "บัญชีของคุณยังไม่ได้รับอนุญาตให้ใช้ Singularity โปรดติดต่อผู้อนุมัติ",
+    forbiddenBody: "บัญชีของคุณยังไม่ได้รับอนุญาตให้ใช้ Singularity โปรดติดต่อผู้ดูแลระบบ",
     backHome: "กลับหน้าแรก",
     role_viewer: "ผู้ดู",
     role_editor: "ผู้แก้ไข",
     role_approver: "ผู้อนุมัติ",
+    role_admin: "ผู้ดูแลระบบ",
   },
 } as const;
 

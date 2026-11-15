@@ -1,9 +1,10 @@
 import type { Change, Me } from "./api";
+import { atLeast } from "./nav";
 
-/** Mirrors the server's rule: approvers decide anything; editors decide their own data changes. */
+/** Mirrors the server's rule: approvers (and admins) decide anything; editors decide their own data changes. */
 export function canDecide(me: Me, change: Change): boolean {
   if (change.status !== "pending") return false;
-  if (me.role === "approver") return true;
+  if (atLeast(me.role, "approver")) return true;
   return me.role === "editor" && change.kind === "data" && change.requester === me.email;
 }
 

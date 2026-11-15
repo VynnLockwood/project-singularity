@@ -8,7 +8,7 @@ const page: RowsPage = {
   columns: [{ name: "id", type: "bigint", nullable: false, readOnly: true, references: null }, { name: "name", type: "text", nullable: true, readOnly: false, references: null }],
   rows: [{ id: 1, name: "Acme" }],
 };
-const me = (role: Me["role"] = "editor"): Me => ({ id: 1, email: "e@x.com", name: "", role });
+const me = (role: Me["role"] = "editor"): Me => ({ id: 1, email: "e@x.com", name: "", role, active: true });
 const SCHEMAS = [{ name: "master", tables: 2, comment: null }, { name: "empty", tables: 0, comment: null }];
 const graph = (names: string[]) => ({ tables: names.map((name) => ({ name, comment: null, rowEstimate: 3, columns: [{ name: "id", type: "bigint", nullable: false, primaryKey: true }, { name: "name", type: "text", nullable: true, primaryKey: false }] })), relations: [] });
 

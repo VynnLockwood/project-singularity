@@ -10,7 +10,7 @@ const graph: SchemaGraph = {
   ],
   relations: [],
 };
-const me = (role: Me["role"]): Me => ({ id: 1, email: "e@x.io", name: "", role });
+const me = (role: Me["role"]): Me => ({ id: 1, email: "e@x.io", name: "", role, active: true });
 
 async function setup(role: Me["role"] = "editor", g: SchemaGraph | null = graph, comment: string | null = null) {
   const onOpenTable = vi.fn();

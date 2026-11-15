@@ -3,12 +3,16 @@ import type { Change, Me } from "./api";
 import { change } from "./fixtures";
 import { canDecide, diffKind, upsert, warnings } from "./changes";
 
-const me = (role: Me["role"], email = "ed@example.com"): Me => ({ id: 1, email, name: "", role });
+const me = (role: Me["role"], email = "ed@example.com"): Me => ({ id: 1, email, name: "", role, active: true });
 
 describe("canDecide mirrors the server rule", () => {
   it("approvers decide anything pending", () => {
     expect(canDecide(me("approver", "x@x.com"), change())).toBe(true);
     expect(canDecide(me("approver", "x@x.com"), change({ kind: "data" }))).toBe(true);
+  });
+  it("admins decide anything an approver can", () => {
+    expect(canDecide(me("admin", "x@x.com"), change())).toBe(true);
+    expect(canDecide(me("admin", "x@x.com"), change({ kind: "config" }))).toBe(true);
   });
   it("editors decide only their own data changes", () => {
     expect(canDecide(me("editor"), change({ kind: "data" }))).toBe(true);

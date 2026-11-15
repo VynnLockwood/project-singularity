@@ -17,7 +17,7 @@ const listChanges = vi.mocked(api.listChanges);
 const revertChange = vi.mocked(api.revertChange);
 const getChange = vi.mocked(api.getChange);
 
-const me = (role: Me["role"] = "approver"): Me => ({ id: 1, email: "ap@x.com", name: "", role });
+const me = (role: Me["role"] = "approver"): Me => ({ id: 1, email: "ap@x.com", name: "", role, active: true });
 const applied = (id: number, over: Partial<Change> = {}) => change({ id, status: "applied", kind: "data", schema: "master", requester: "ed@x.com", prompt: `prompt ${id}`, reversible: true, ...over });
 const page = (changes: Change[], more = false) => ({ changes, more });
 

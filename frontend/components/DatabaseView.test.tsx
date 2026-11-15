@@ -6,7 +6,7 @@ const col = (name: string) => ({ name, type: "text", nullable: true, primaryKey:
 const tbl = (name: string) => ({ name, comment: null, rowEstimate: 1, columns: [col("id")] });
 const master: SchemaGraph = { tables: [tbl("customer"), tbl("orders"), tbl("item")], relations: [] };
 const empty: SchemaGraph = { tables: [], relations: [] };
-const editor: Me = { id: 1, email: "e@x.io", name: "", role: "editor" };
+const editor: Me = { id: 1, email: "e@x.io", name: "", role: "editor", active: true };
 
 type Api = { getTable: ReturnType<typeof vi.fn>; getSchemas: ReturnType<typeof vi.fn>; getGraph: ReturnType<typeof vi.fn>; proposeChange: ReturnType<typeof vi.fn>; searchSchema?: ReturnType<typeof vi.fn> };
 const viewer: Me = { ...editor, role: "viewer" };

@@ -11,7 +11,7 @@ vi.mock("@/lib/iquery", async (orig) => ({
   recallQuery: vi.fn(), suggestQuery: vi.fn(), learnQuery: vi.fn(), runQuery: vi.fn(),
 }));
 
-const me: Me = { id: 1, email: "v@x.com", name: "V", role: "viewer" };
+const me: Me = { id: 1, email: "v@x.com", name: "V", role: "viewer", active: true };
 const VALUES = [{ table: "partner", column: "name", value: "Acme Ltd" }];
 
 function deferred<T>() {

@@ -503,7 +503,7 @@ export function ScriptsTab({ canEdit }: { canEdit: boolean }) {
     } finally { setBusy(false); }
   };
 
-  if (!canEdit) return <p className="muted">Viewers cannot load scripts. Ask an approver for the editor role.</p>;
+  if (!canEdit) return <p className="muted">Viewers cannot load scripts. Ask an admin for the editor role.</p>;
 
   const max = limits?.max_bytes;
   const tableCount = report?.ops_summary?.tables?.length ?? report?.tables?.length ?? 0;

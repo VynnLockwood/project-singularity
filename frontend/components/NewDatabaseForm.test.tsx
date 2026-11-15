@@ -6,7 +6,7 @@ vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api"
 import { proposeChange } from "@/lib/api";
 import { NewDatabaseForm } from "./NewDatabaseForm";
 
-const me: Me = { id: 1, email: "ed@example.com", name: "", role: "editor" };
+const me: Me = { id: 1, email: "ed@example.com", name: "", role: "editor", active: true };
 const change: Change = {
   id: 7, status: "pending", kind: "schema", source: "web", requester: "ed@example.com", prompt: "t",
   createdAt: "", decidedBy: null, error: "", decisionNote: "", tables: [], diff: ["+ x"], check: {},

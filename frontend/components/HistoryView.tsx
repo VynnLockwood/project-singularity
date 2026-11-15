@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, getChange, getSchemas, listChanges, revertChange, type Change, type Me } from "@/lib/api";
+import { atLeast } from "@/lib/nav";
 import { DEFAULT_FILTERS, filtersToSearch, mergeLive, parseFilters, toApiFilters, type HistoryFilters } from "@/lib/historyFilters";
 import { Badge, Button, EmptyState, Skeleton, statusMeta, useToast } from "@/components/ui";
 import { ChangeCard } from "./ChangeCard";
@@ -28,7 +29,7 @@ function ago(iso: string): string {
 
 /** A revert is offered to approvers for an applied, reversible change that nothing has reverted (or is reverting) yet. */
 function canRevert(c: Change, rows: Change[], me: Me): boolean {
-  if (me.role !== "approver" || c.status !== "applied" || c.reversible !== true) return false;
+  if (!atLeast(me.role, "approver") || c.status !== "applied" || c.reversible !== true) return false;
   return !rows.some((r) => r.reverts === c.id && r.status !== "rejected" && r.status !== "failed");
 }
 

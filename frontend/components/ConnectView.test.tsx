@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { Me } from "@/lib/api";
 
-const me = (role: Me["role"]): Me => ({ id: 1, email: "a@b.c", name: "", role });
+const me = (role: Me["role"]): Me => ({ id: 1, email: "a@b.c", name: "", role, active: true });
 
 async function setup(role: Me["role"]) {
   vi.resetModules();

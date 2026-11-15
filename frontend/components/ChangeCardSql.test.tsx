@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Change, Me } from "@/lib/api";
 import { ChangeCard } from "./ChangeCard";
 
-const me = (role: Me["role"], email = "ap@x.com"): Me => ({ id: 1, email, name: "", role });
+const me = (role: Me["role"], email = "ap@x.com"): Me => ({ id: 1, email, name: "", role, active: true });
 const sqlChange = (over: Partial<Change> = {}): Change => ({
   id: 9, status: "pending", kind: "sql", source: "mcp", requester: "ed@x.com", prompt: "fix the typo in t",
   createdAt: "2026-01-01T00:00:00Z", decidedBy: null, error: "", decisionNote: "", tables: [], schema: "master",

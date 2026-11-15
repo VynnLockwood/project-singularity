@@ -12,7 +12,7 @@ vi.mock("@/lib/api", async (orig) => ({
 
 import { CommandPalette } from "./CommandPalette";
 
-const me = (role: Me["role"]): Me => ({ id: 1, email: "ed@example.com", name: "", role });
+const me = (role: Me["role"]): Me => ({ id: 1, email: "ed@example.com", name: "", role, active: true });
 const table = (name: string) => ({ name, comment: null, rowEstimate: 0, columns: [] });
 
 function mount(role: Me["role"] = "approver") {

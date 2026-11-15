@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Me, TableDetail } from "@/lib/api";
 
-const editor: Me = { id: 1, email: "e@x.io", name: "", role: "editor" };
+const editor: Me = { id: 1, email: "e@x.io", name: "", role: "editor", active: true };
 const viewer: Me = { ...editor, role: "viewer" };
 const aChange = { id: 9, status: "pending", kind: "schema", source: "web", requester: "e@x.io", prompt: "t", createdAt: "", decidedBy: null, error: "", decisionNote: "", tables: [], diff: ["+ x"], check: {} };
 const c = (name: string, type = "text") => ({ name, type, nullable: true, default: null, comment: null, identity: false });

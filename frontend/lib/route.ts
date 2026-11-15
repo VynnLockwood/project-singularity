@@ -1,5 +1,5 @@
 /** Where the person is in the app. The URL is the only source of truth; this file turns it into a typed value and back. */
-export type View = "chat" | "database" | "data" | "query" | "import" | "duplicates" | "scripts" | "activity" | "connect" | "settings";
+export type View = "chat" | "database" | "data" | "query" | "import" | "duplicates" | "scripts" | "activity" | "connect" | "settings" | "users" | "profile";
 export type SettingsSection = "quality" | "rules" | "team";
 
 export type Route =
@@ -9,11 +9,11 @@ export type Route =
   | { view: "import"; schema?: string; run?: number }
   | { view: "settings"; section?: SettingsSection }
   | { view: "activity"; tab?: "history" }
-  | { view: "duplicates" | "scripts" | "connect" }
+  | { view: "duplicates" | "scripts" | "connect" | "users" | "profile" }
   | { view: "notfound"; path: string };
 
 const SECTIONS: readonly string[] = ["quality", "rules", "team"];
-const PLAIN = ["duplicates", "scripts", "connect"] as const;
+const PLAIN = ["duplicates", "scripts", "connect", "users", "profile"] as const;
 
 export function parseRoute(pathname: string): Route {
   let parts: string[];

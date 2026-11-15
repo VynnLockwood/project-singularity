@@ -5,7 +5,12 @@ import type { Route, View } from "./route";
 export interface NavItem { view: View; label: string; icon: IconName; minRole: Role; /** stays in the phone bottom bar */ primary?: boolean }
 export interface NavGroup { group: "Work" | "Quality" | "Review" | "System"; items: NavItem[] }
 
-const RANK: Record<Role, number> = { viewer: 0, editor: 1, approver: 2 };
+const RANK: Record<Role, number> = { viewer: 0, editor: 1, approver: 2, admin: 3 };
+
+/** True when `role` has at least the powers of `min` (the server's ROLE_RANK, mirrored). */
+export function atLeast(role: Role, min: Role): boolean {
+  return RANK[role] >= RANK[min];
+}
 
 export const NAV: NavGroup[] = [
   { group: "Work", items: [
@@ -25,15 +30,17 @@ export const NAV: NavGroup[] = [
   { group: "System", items: [
     { view: "connect", label: "Connect", icon: "plug", minRole: "viewer" },
     { view: "settings", label: "Settings", icon: "settings", minRole: "viewer" },
+    { view: "users", label: "Users", icon: "key", minRole: "admin" },
   ] },
 ];
 
 /** The navigation this role sees. Groups that end up empty are dropped. */
 export function navFor(role: Role): NavGroup[] {
-  return NAV.map((g) => ({ ...g, items: g.items.filter((i) => RANK[role] >= RANK[i.minRole]) })).filter((g) => g.items.length > 0);
+  return NAV.map((g) => ({ ...g, items: g.items.filter((i) => atLeast(role, i.minRole)) })).filter((g) => g.items.length > 0);
 }
 
 export function viewLabel(view: View): string {
+  if (view === "profile") return "Profile"; // in the user menu, not the nav
   return NAV.flatMap((g) => g.items).find((i) => i.view === view)?.label ?? view;
 }
 

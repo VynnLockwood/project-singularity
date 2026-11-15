@@ -1,9 +1,10 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import type { Me } from "@/lib/api";
 import { change } from "@/lib/fixtures";
 import { ChangeCard } from "./ChangeCard";
 
-const me = (role: "viewer" | "editor" | "approver") => ({ id: 1, email: "ed@x.com", name: "", role });
+const me = (role: Me["role"]): Me => ({ id: 1, email: "ed@x.com", name: "", role, active: true });
 const cfg = change({ id: 12, kind: "config", status: "pending", requester: "ed@x.com", source: "mcp", diff: ["~ setting search.topK: 5 → 9"] });
 
 describe("ChangeCard for a settings change", () => {
