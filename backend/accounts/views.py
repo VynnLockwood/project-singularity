@@ -1,6 +1,7 @@
 import secrets
 
 from django.contrib.auth import login, logout
+from django.db import transaction
 from django.http import HttpResponseRedirect, JsonResponse
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_POST
@@ -12,6 +13,7 @@ from . import tokens as token_service
 from .api import endpoint
 from .models import User
 from .services import (
+    NotAdmin,
     SignInDenied,
     UserManagementDenied,
     change_role,
@@ -89,8 +91,7 @@ def logout_view(request):
 
 def _refused(exc: UserManagementDenied):
     """A refused user-management action: 403 when the actor may not manage users at all, otherwise 400."""
-    forbidden = str(exc) == "only admins can manage users"
-    return JsonResponse({"error": str(exc)}, status=403 if forbidden else 400)
+    return JsonResponse({"error": str(exc)}, status=403 if isinstance(exc, NotAdmin) else 400)
 
 
 def _apply(actor, target, body):
@@ -103,10 +104,11 @@ def _apply(actor, target, body):
     if role is not None and not isinstance(role, str):
         return JsonResponse({"error": "unknown role"}, status=400)
     try:
-        if role is not None:
-            change_role(actor, target, role)
-        if active is not None:
-            set_user_active(actor, target, active)
+        with transaction.atomic():  # both steps or neither
+            if role is not None:
+                change_role(actor, target, role)
+            if active is not None:
+                set_user_active(actor, target, active)
     except UserManagementDenied as exc:
         return _refused(exc)
     return None
@@ -150,6 +152,7 @@ def user_role(request, user_id: int):
         change_role(request.user, target, request.json.get("role", ""))
     except UserManagementDenied as exc:
         return _refused(exc)
+    target.refresh_from_db()
     return JsonResponse(_user_json(target))
 
 

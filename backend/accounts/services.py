@@ -22,6 +22,10 @@ class UserManagementDenied(Exception):
     """Raised when an admin action on users is refused; the message is safe to show to the admin."""
 
 
+class NotAdmin(UserManagementDenied):
+    """The actor is not an (active) admin: the request is forbidden, not merely invalid."""
+
+
 RoleChangeDenied = UserManagementDenied  # older name, kept so existing imports and except clauses keep working
 
 MAX_EMAIL = 254
@@ -128,7 +132,7 @@ def ensure_seed_admins(auth_cfg: dict) -> list[User]:
 
 def _require_admin(actor: User) -> None:
     if not (actor.is_active and actor.can_admin):
-        raise UserManagementDenied("only admins can manage users")
+        raise NotAdmin("only admins can manage users")
 
 
 def _username_for(email: str) -> str:
@@ -157,7 +161,7 @@ def create_user(actor: User, email, role, first_name: str = "", last_name: str =
     """Invite a person: an active user with the given role who can sign in with Google. Admins only."""
     _require_admin(actor)
     email = normalize_email(email)
-    if role not in ROLE_RANK:
+    if not isinstance(role, str) or role not in ROLE_RANK:
         raise UserManagementDenied("unknown role")
     domains = get_config()["auth"].get("allowedDomains") or []
     if domains and email.rsplit("@", 1)[1] not in domains:
@@ -199,7 +203,7 @@ def set_user_active(actor: User, target: User, active: bool) -> User:
 def change_role(actor: User, target: User, new_role: str) -> User:
     """Change someone's role. Admins only (so only an admin grants or removes admin), never your own role."""
     _require_admin(actor)
-    if new_role not in ROLE_RANK:
+    if not isinstance(new_role, str) or new_role not in ROLE_RANK:
         raise UserManagementDenied("unknown role")
     if actor.pk == target.pk:
         raise UserManagementDenied("you cannot change your own role")

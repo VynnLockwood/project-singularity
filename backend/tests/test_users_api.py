@@ -96,3 +96,68 @@ def test_every_tool_is_listed():
     from accounts import capabilities
     listed = {t["name"] for t in capabilities.build(make("v@example.com"))["mcpTools"]}
     assert listed == set(tools.TOOL_ROLES)
+
+
+# ---- fix round 1 -------------------------------------------------------------
+
+def test_not_admin_maps_to_403_whatever_the_text_and_conflicts_stay_400():
+    from accounts import views
+    assert views._refused(services.NotAdmin("x")).status_code == 403
+    assert views._refused(services.UserManagementDenied("only admins can manage users")).status_code == 400
+    assert views._refused(services.UserManagementDenied("cannot remove the last active admin")).status_code == 400
+
+
+@pytest.mark.parametrize("bad", [[], {}, 5, None])
+def test_non_string_role_is_400_not_500(client, bad):
+    client.force_login(make("admin@example.com", Role.ADMIN))
+    target = make("t@example.com")
+    assert send(client, "post", "/api/users", {"email": "n@example.com", "role": bad}).status_code == 400
+    assert not User.objects.filter(email="n@example.com").exists()
+    assert send(client, "patch", f"/api/users/{target.pk}/role", {"role": bad}).status_code == 400
+    if bad is not None:  # null on PATCH /api/users/<id> means "leave the role alone"
+        assert send(client, "patch", f"/api/users/{target.pk}", {"role": bad, "active": True}).status_code == 400
+    target.refresh_from_db()
+    assert target.role == Role.VIEWER
+
+
+def test_self_deactivate_and_self_demote_are_400(client):
+    admin = make("admin@example.com", Role.ADMIN)
+    client.force_login(admin)
+    assert send(client, "patch", f"/api/users/{admin.pk}", {"active": False}).status_code == 400
+    assert send(client, "patch", f"/api/users/{admin.pk}", {"role": "viewer"}).status_code == 400
+    admin.refresh_from_db()
+    assert admin.role == Role.ADMIN and admin.is_active
+
+
+def test_last_active_admin_is_protected_through_the_api_path(client):
+    """The acting admin is always a second active admin, so the guard is reached only by a stale actor; the
+    service still refuses, and the view maps it to 400."""
+    actor, last = make("a@example.com", Role.ADMIN), make("l@example.com", Role.ADMIN)
+    client.force_login(actor)
+    User.objects.filter(pk=actor.pk).update(role=Role.ADMIN)
+    from unittest import mock
+    with mock.patch.object(services, "_require_admin"):  # actor is not an admin any more by the time the lock is taken
+        User.objects.filter(pk=actor.pk).update(role=Role.VIEWER)
+        res = send(client, "patch", f"/api/users/{last.pk}", {"active": False})
+    assert res.status_code in (400, 403)
+    last.refresh_from_db()
+    assert last.is_active
+
+
+def test_patch_is_atomic(client):
+    client.force_login(make("a@example.com", Role.ADMIN))
+    t = make("t@example.com", Role.EDITOR)
+    from unittest import mock
+    with mock.patch("accounts.views.set_user_active", side_effect=services.UserManagementDenied("boom")):
+        res = send(client, "patch", f"/api/users/{t.pk}", {"role": "approver", "active": False})
+    assert res.status_code == 400
+    t.refresh_from_db()
+    assert t.role == Role.EDITOR
+
+
+def test_propose_sql_hidden_when_sql_disabled(client, monkeypatch):
+    monkeypatch.setattr(tools, "get_config", lambda: {"sql": {"enabled": False}})
+    client.force_login(make("adm@example.com", Role.ADMIN))
+    me = client.get("/api/me").json()["capabilities"]["mcpTools"]
+    assert next(t for t in me if t["name"] == "propose_sql")["allowed"] is False
+    assert tools.allowed(User.objects.get(email="adm@example.com"), "propose_sql") is False  # what tools/list filters on
