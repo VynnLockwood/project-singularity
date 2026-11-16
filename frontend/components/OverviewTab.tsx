@@ -1,6 +1,7 @@
 "use client";
 
 import type { Me, SchemaGraph } from "@/lib/api";
+import { atLeast } from "@/lib/nav";
 import { SearchBox } from "./SearchBox";
 import { Button, Panel, Skeleton } from "./ui";
 
@@ -57,7 +58,7 @@ export function OverviewTab({ me, schema, comment, graph, onAskAssistant, onOpen
         key={schema}
         schema={schema}
         canPropose={me.role !== "viewer"}
-        canReindex={me.role === "approver"}
+        canReindex={atLeast(me.role, "approver")}
         onAskAssistant={onAskAssistant}
       />
       {me.role !== "viewer" && (

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Change, Me } from "./api";
 import { DEFAULT_FILTERS, filtersToSearch, matches, mergeLive, parseFilters, toApiFilters } from "./historyFilters";
 
-const me: Me = { id: 1, email: "me@x.com", name: "", role: "approver" };
+const me: Me = { id: 1, email: "me@x.com", name: "", role: "approver", active: true };
 const ch = (id: number, over: Partial<Change> = {}): Change => ({
   id, status: "applied", kind: "data", source: "web", requester: "me@x.com", prompt: "", createdAt: "2026-01-01T00:00:00Z",
   decidedBy: null, error: "", decisionNote: "", tables: [], schema: "master", diff: [], check: {}, ...over,

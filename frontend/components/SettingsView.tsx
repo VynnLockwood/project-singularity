@@ -2,9 +2,11 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  ApiError, getSettings, listRules, listUsers, rollbackRule, ruleVersions, saveSettings, setUserRole, updateRule,
+  ApiError, getSettings, listRules, rollbackRule, ruleVersions, saveSettings, updateRule,
   type Me, type Rule, type RuleVersion, type SettingsPayload, type Tunable,
 } from "@/lib/api";
+import { atLeast } from "@/lib/nav";
+import { Button } from "@/components/ui";
 import { ChatModelSettings } from "@/components/ChatModelSettings";
 import { INTENSITY_EVENT, LEVELS, readIntensity, writeIntensity, type Intensity } from "@/lib/cosmos";
 
@@ -204,34 +206,28 @@ export function RulesPanel({ canEdit }: { canEdit: boolean }) {
   );
 }
 
-export function TeamPanel({ me }: { me: Me }) {
-  const [users, setUsers] = useState<Me[]>([]);
-  const [error, setError] = useState("");
-  const load = useCallback(() => listUsers().then(setUsers).catch((e) => setError(fail(e))), []);
-  useEffect(() => { load(); }, [load]);
+/** Admins manage people on the Users page. The list of people is admin-only on the server, so others get the who-to-ask. */
+export function TeamPanel({ me, onOpenUsers }: { me: Me; onOpenUsers?: () => void }) {
+  if (me.role === "admin") {
+    return (
+      <div>
+        <p className="muted small">Add people, change their role or turn their access off on the Users page. Only the people listed there can sign in.</p>
+        <Button icon="key" onClick={onOpenUsers}>Open Users</Button>
+      </div>
+    );
+  }
   return (
     <div>
-      <p className="muted small">New people sign in as <em>viewer</em> (see singularity.yaml). Editors can propose changes; approvers can also approve schema changes and change settings.</p>
-      {error && <p className="problems" role="alert">{error}</p>}
-      <ul className="settings-list" aria-label="Team">
-        {users.map((u) => (
-          <li key={u.id}>
-            <div><strong>{u.email}</strong> <span className="muted small">{u.name}</span></div>
-            <select aria-label={`Role of ${u.email}`} value={u.role} disabled={u.id === me.id}
-              onChange={async (e) => { setError(""); try { await setUserRole(u.id, e.target.value as Me["role"]); await load(); } catch (x) { setError(fail(x)); } }}>
-              <option value="viewer">viewer</option>
-              <option value="editor">editor</option>
-              <option value="approver">approver</option>
-            </select>
-          </li>
-        ))}
-      </ul>
+      <p className="muted small">Editors propose changes; approvers also approve them and change settings. Admins manage people and roles.</p>
+      <p className="muted small">Only an admin can see the list of people. Ask an admin to add you or change your role.</p>
     </div>
   );
 }
 
-export function SettingsView({ me, waiting = 0, onOpenQueue, refreshKey = 0 }: { me: Me; waiting?: number; onOpenQueue?: () => void; refreshKey?: number }) {
-  const approver = me.role === "approver";
+export function SettingsView({ me, waiting = 0, onOpenQueue, onOpenUsers, refreshKey = 0 }: {
+  me: Me; waiting?: number; onOpenQueue?: () => void; onOpenUsers?: () => void; refreshKey?: number;
+}) {
+  const approver = atLeast(me.role, "approver");
   const [section, setSection] = useState<Section>("quality");
   const sections: [Section, string][] = [["quality", "Quality"], ["rules", "Rules"], ...(approver ? ([["team", "Team"]] as [Section, string][]) : [])];
   return (
@@ -249,7 +245,7 @@ export function SettingsView({ me, waiting = 0, onOpenQueue, refreshKey = 0 }: {
       )}
       {section === "quality" && <QualitySettings key={`q${refreshKey}`} canEdit={approver} />}
       {section === "rules" && <RulesPanel key={`r${refreshKey}`} canEdit={approver} />}
-      {section === "team" && approver && <TeamPanel key={`t${refreshKey}`} me={me} />}
+      {section === "team" && approver && <TeamPanel key={`t${refreshKey}`} me={me} onOpenUsers={onOpenUsers} />}
     </div>
   );
 }

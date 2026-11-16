@@ -49,7 +49,7 @@ export function ConnectView({ me }: { me: Me }) {
     try { await revokeToken(id); await load(); } catch { setError("Could not revoke that token."); }
   };
 
-  if (!allowed) return <p className="muted">Viewers cannot connect AI clients. Ask an approver for the editor role.</p>;
+  if (!allowed) return <p className="muted">Viewers cannot connect AI clients. Ask an admin for the editor role.</p>;
 
   return (
     <div className="connect">

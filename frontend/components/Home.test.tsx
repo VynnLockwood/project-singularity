@@ -29,7 +29,7 @@ describe("Home (sign-in screen)", () => {
 
 describe("i18n", () => {
   it("has the same keys in English and Thai", () => {
-    for (const key of ["signIn", "role_viewer", "role_editor", "role_approver", "forbiddenBody", "gateLine"] as const) {
+    for (const key of ["signIn", "role_viewer", "role_editor", "role_approver", "role_admin", "forbiddenBody", "gateLine"] as const) {
       expect(t("en", key)).toBeTruthy();
       expect(t("th", key)).toBeTruthy();
     }

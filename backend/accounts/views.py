@@ -1,18 +1,26 @@
-import json
 import secrets
 
 from django.contrib.auth import login, logout
+from django.db import transaction
 from django.http import HttpResponseRedirect, JsonResponse
 from django.views.decorators.csrf import ensure_csrf_cookie
-from django.views.decorators.http import require_GET, require_http_methods, require_POST
+from django.views.decorators.http import require_GET, require_POST
 
 from config.siconfig import get_config
 
-from . import google
+from . import capabilities, google
 from . import tokens as token_service
 from .api import endpoint
 from .models import User
-from .services import RoleChangeDenied, SignInDenied, change_role, sign_in_from_claims
+from .services import (
+    NotAdmin,
+    SignInDenied,
+    UserManagementDenied,
+    change_role,
+    create_user,
+    set_user_active,
+    sign_in_from_claims,
+)
 
 STATE_KEY = "google_oauth_state"
 
@@ -23,6 +31,8 @@ def _user_json(user: User) -> dict:
         "email": user.email,
         "name": f"{user.first_name} {user.last_name}".strip(),
         "role": user.role,
+        "active": user.is_active,
+        "lastLoginAt": user.last_login.isoformat() if user.last_login else None,
     }
 
 
@@ -40,7 +50,7 @@ def csrf(request):
 def me(request):
     if not request.user.is_authenticated:
         return JsonResponse({"error": "unauthenticated"}, status=401)
-    return JsonResponse(_user_json(request.user))
+    return JsonResponse({**_user_json(request.user), "capabilities": capabilities.build(request.user)})
 
 
 @require_GET
@@ -79,33 +89,70 @@ def logout_view(request):
     return JsonResponse({"ok": True})
 
 
-@require_GET
-def users_list(request):
-    if not request.user.is_authenticated:
-        return JsonResponse({"error": "unauthenticated"}, status=401)
-    if not request.user.can_approve:
-        return JsonResponse({"error": "forbidden"}, status=403)
-    users = User.objects.order_by("email")
-    return JsonResponse({"users": [_user_json(u) for u in users]})
+def _refused(exc: UserManagementDenied):
+    """A refused user-management action: 403 when the actor may not manage users at all, otherwise 400."""
+    return JsonResponse({"error": str(exc)}, status=403 if isinstance(exc, NotAdmin) else 400)
 
 
-@require_http_methods(["PATCH"])
-def user_role(request, user_id: int):
-    if not request.user.is_authenticated:
-        return JsonResponse({"error": "unauthenticated"}, status=401)
-    if not request.user.can_approve:
-        return JsonResponse({"error": "forbidden"}, status=403)
+def _apply(actor, target, body):
+    """Apply the optional role and active fields of a PATCH; returns an error response or None."""
+    role, active = body.get("role"), body.get("active")
+    if role is None and active is None:
+        return JsonResponse({"error": "nothing to change"}, status=400)
+    if active is not None and not isinstance(active, bool):
+        return JsonResponse({"error": "active must be true or false"}, status=400)
+    if role is not None and not isinstance(role, str):
+        return JsonResponse({"error": "unknown role"}, status=400)
     try:
-        body = json.loads(request.body or b"{}")
-    except json.JSONDecodeError:
-        return JsonResponse({"error": "invalid json"}, status=400)
+        with transaction.atomic():  # both steps or neither
+            if role is not None:
+                change_role(actor, target, role)
+            if active is not None:
+                set_user_active(actor, target, active)
+    except UserManagementDenied as exc:
+        return _refused(exc)
+    return None
+
+
+@endpoint(["GET", "POST"], min_role="admin")
+def users_list(request):
+    if request.method == "GET":
+        return JsonResponse({"users": [_user_json(u) for u in User.objects.order_by("email")]})
+    body = request.json
+    name = body.get("name") or ""
+    if not isinstance(name, str):
+        return JsonResponse({"error": "name must be text"}, status=400)
+    first, _, last = name.strip().partition(" ")
+    try:
+        user = create_user(request.user, body.get("email"), body.get("role"), first_name=first, last_name=last.strip())
+    except UserManagementDenied as exc:
+        return _refused(exc)
+    return JsonResponse(_user_json(user), status=201)
+
+
+@endpoint("PATCH", min_role="admin")
+def user_detail(request, user_id: int):
+    target = User.objects.filter(pk=user_id).first()
+    if target is None:
+        return JsonResponse({"error": "not found"}, status=404)
+    err = _apply(request.user, target, request.json)
+    if err:
+        return err
+    target.refresh_from_db()
+    return JsonResponse(_user_json(target))
+
+
+@endpoint("PATCH", min_role="admin")
+def user_role(request, user_id: int):
+    """The older role-only route, kept for the Settings page; same service as PATCH /api/users/<id>."""
     target = User.objects.filter(pk=user_id).first()
     if target is None:
         return JsonResponse({"error": "not found"}, status=404)
     try:
-        change_role(request.user, target, body.get("role", ""))
-    except RoleChangeDenied as exc:
-        return JsonResponse({"error": str(exc)}, status=400)
+        change_role(request.user, target, request.json.get("role", ""))
+    except UserManagementDenied as exc:
+        return _refused(exc)
+    target.refresh_from_db()
     return JsonResponse(_user_json(target))
 
 

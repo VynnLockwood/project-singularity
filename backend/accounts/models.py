@@ -1,19 +1,26 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from django.db.models.functions import Lower
 
 
 class Role(models.TextChoices):
     VIEWER = "viewer", "Viewer"      # read
     EDITOR = "editor", "Editor"      # read + edit
     APPROVER = "approver", "Approver"  # read + edit + approve
+    ADMIN = "admin", "Admin"  # approver + manage users and access
 
 
-ROLE_RANK = {Role.VIEWER: 0, Role.EDITOR: 1, Role.APPROVER: 2}
+ROLE_RANK = {Role.VIEWER: 0, Role.EDITOR: 1, Role.APPROVER: 2, Role.ADMIN: 3}
 
 
 class User(AbstractUser):
     email = models.EmailField(unique=True)
     role = models.CharField(max_length=16, choices=Role.choices, default=Role.VIEWER)
+
+    class Meta(AbstractUser.Meta):
+        # emails are stored trimmed and lower-cased (accounts.services.normalize_email); this keeps
+        # "Nolan@Gmail.com" and "nolan@gmail.com" from ever being two users, whoever writes the row
+        constraints = [models.UniqueConstraint(Lower("email"), name="accounts_user_email_ci_unique")]
 
     @property
     def rank(self) -> int:
@@ -30,6 +37,10 @@ class User(AbstractUser):
     @property
     def can_approve(self) -> bool:
         return self.rank >= ROLE_RANK[Role.APPROVER]
+
+    @property
+    def can_admin(self) -> bool:
+        return self.rank >= ROLE_RANK[Role.ADMIN]
 
 
 class McpToken(models.Model):

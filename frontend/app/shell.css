@@ -34,6 +34,9 @@ body:has(.shell) .cosmos { opacity: 0.35; }
 .shell-live[data-online="false"] .ui-icon { color: var(--disk-hot); }
 .shell-me { padding: 0 var(--space-3); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .shell-role { padding: 0 var(--space-3) var(--space-2); color: var(--text-faint); }
+.shell-me-link { min-height: 44px; }
+.shell-me-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.shell-me-link .shell-me, .shell-me-link .shell-role { padding: 0; }
 .shell-signout { font-size: var(--size-text); }
 .shell-more { display: none; }
 

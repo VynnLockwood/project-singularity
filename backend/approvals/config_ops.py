@@ -1,7 +1,7 @@
 """Configuration changes as operations: settings, rules and roles.
 
 These are the important knobs, so when an AI client wants one changed it proposes it like any other change:
-it waits in the approval queue (approvers only decide), shows a diff, and can be reverted. The work itself
+it waits in the approval queue (approvers decide; a role change needs an admin), shows a diff, and can be reverted. The work itself
 is done by the same services the Settings tab uses, so every validation rule is shared.
 
   set_setting{key,value}   reset_setting{key}
@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from django.db import transaction
 
 from accounts import services as account_services
-from accounts.models import User
 from config.siconfig import get_config, invalidate_overrides
 from settings_app import services as rule_services
 from settings_app import tunables
@@ -135,14 +134,18 @@ def _rollback_rule(res: Result, actor, op):
 
 
 def _set_role(res: Result, actor, op):
-    target = User.objects.filter(email__iexact=str(op.get("email", ""))).first()
+    try:
+        email = account_services.normalize_email(op.get("email"))
+    except account_services.UserManagementDenied:
+        email = None
+    target = account_services.find_user_by_email(email) if email else None
     if target is None:
         res.errors.append(f"no user with email {op.get('email')!r}")
         return
     before = target.role
     try:
         account_services.change_role(actor, target, str(op.get("role", "")))
-    except account_services.RoleChangeDenied as exc:
+    except account_services.UserManagementDenied as exc:
         res.errors.append(f"{target.email}: {exc}")
         return
     if before != target.role:

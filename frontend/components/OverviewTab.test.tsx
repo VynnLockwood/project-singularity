@@ -10,7 +10,7 @@ const graph: SchemaGraph = {
   ],
   relations: [],
 };
-const me = (role: Me["role"]): Me => ({ id: 1, email: "e@x.io", name: "", role });
+const me = (role: Me["role"]): Me => ({ id: 1, email: "e@x.io", name: "", role, active: true });
 
 async function setup(role: Me["role"] = "editor", g: SchemaGraph | null = graph, comment: string | null = null) {
   const onOpenTable = vi.fn();
@@ -62,8 +62,8 @@ describe("OverviewTab", () => {
     expect(onAsk).toHaveBeenCalledWith(expect.stringContaining("crm"));
   });
 
-  it("only approvers get the rebuild button", async () => {
-    await setup("approver");
+  it.each(["approver", "admin"] as const)("an %s gets the rebuild button", async (role) => {
+    await setup(role);
     expect(screen.getByRole("button", { name: "Rebuild search index" })).toBeInTheDocument();
   });
   it("editors do not get the rebuild button", async () => {

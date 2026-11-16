@@ -62,7 +62,7 @@ TOOL_ROLES = {
     "get_audit_log": "approver",   # audit details can hold other people's prompts and emails
 }
 
-RANK = {"viewer": 0, "editor": 1, "approver": 2}
+RANK = {"viewer": 0, "editor": 1, "approver": 2, "admin": 3}
 
 # What each newer tool is for, in the words an AI client reads. One text, used by both the MCP
 # server (mcp_server/app.py) and the web chat (chat/toolspecs.py), so the two cannot drift apart.

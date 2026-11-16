@@ -58,8 +58,9 @@ def test_everything_requires_sign_in(client, method, url):
 
 
 def test_viewer_can_read_but_not_propose(viewer):
-    for url in ("/api/changes", "/api/rules", "/api/schema/tables", "/api/audit"):
+    for url in ("/api/changes", "/api/rules", "/api/schema/tables"):
         assert viewer.get(url).status_code == 200
+    assert viewer.get("/api/audit").status_code == 403  # approvers and admins only
     assert post(viewer, "/api/changes", CREATE).status_code == 403
     assert viewer.get("/api/queue").status_code == 403
     assert viewer.get("/api/mcp-tokens").status_code == 403
@@ -226,10 +227,19 @@ def test_token_lifecycle(editor):
 def test_audit_endpoint(editor, approver, viewer):
     c = post(editor, "/api/changes", CREATE).json()
     post(approver, f"/api/changes/{c['id']}/approve")
-    entries = viewer.get("/api/audit").json()["entries"]
+    entries = approver.get("/api/audit").json()["entries"]
     assert {"change.proposed", "change.approved", "change.applied"} <= {e["action"] for e in entries}
-    only = viewer.get("/api/audit?action=change.applied").json()["entries"]
+    only = approver.get("/api/audit?action=change.applied").json()["entries"]
     assert len(only) == 1 and only[0]["actor"] == "approver@example.com"
+
+
+def test_audit_endpoint_needs_approver(editor, approver, viewer):
+    """The audit log holds invited emails and roles (user.* entries): approvers and admins only, like MCP."""
+    admin = login(Role.ADMIN)
+    assert viewer.get("/api/audit").status_code == 403
+    assert editor.get("/api/audit").status_code == 403
+    assert approver.get("/api/audit").status_code == 200
+    assert admin.get("/api/audit").status_code == 200
 
 
 # ---- schema graph (2D diagram data) -------------------------------------------

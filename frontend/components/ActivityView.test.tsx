@@ -6,7 +6,7 @@ import { ActivityView } from "./ActivityView";
 
 vi.mock("./HistoryView", () => ({ HistoryView: () => <p>history pane</p> }));
 
-const me = (role: Me["role"] = "approver"): Me => ({ id: 1, email: "ap@x.com", name: "", role });
+const me = (role: Me["role"] = "approver"): Me => ({ id: 1, email: "ap@x.com", name: "", role, active: true });
 const props = (over = {}) => ({ me: me(), tab: "queue" as const, navigate: vi.fn(), pending: [change({ id: 1 }), change({ id: 2 })], live: [], onDecide: vi.fn(), ...over });
 
 describe("ActivityView", () => {

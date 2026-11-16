@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { breadcrumb, navFor } from "./nav";
+import type { Role } from "./api";
+import { atLeast, breadcrumb, NAV, navFor } from "./nav";
 
-const views = (role: "viewer" | "editor" | "approver") => navFor(role).flatMap((g) => g.items.map((i) => i.view));
+const views = (role: Role) => navFor(role).flatMap((g) => g.items.map((i) => i.view));
 
 describe("navFor", () => {
   it("gives an editor every view, in four groups", () => {
@@ -17,6 +18,25 @@ describe("navFor", () => {
     expect(views("viewer")).not.toContain("scripts");
     expect(views("viewer")).toContain("activity");
   });
+  it("shows Users only to an admin, in System", () => {
+    for (const role of ["viewer", "editor", "approver"] as const) expect(views(role)).not.toContain("users");
+    expect(views("admin")).toEqual(["chat", "database", "data", "query", "import", "duplicates", "scripts", "activity", "connect", "settings", "users"]);
+    expect(navFor("admin").find((g) => g.group === "System")?.items.map((i) => i.view)).toEqual(["connect", "settings", "users"]);
+    expect(NAV.flatMap((g) => g.items).find((i) => i.view === "users")).toMatchObject({ label: "Users", minRole: "admin" });
+  });
+  it("keeps Profile out of the nav: it lives in the user menu", () => {
+    expect(NAV.flatMap((g) => g.items).map((i) => i.view)).not.toContain("profile");
+  });
+});
+
+describe("atLeast", () => {
+  it("ranks viewer < editor < approver < admin", () => {
+    expect(atLeast("admin", "approver")).toBe(true);
+    expect(atLeast("approver", "approver")).toBe(true);
+    expect(atLeast("editor", "approver")).toBe(false);
+    expect(atLeast("approver", "admin")).toBe(false);
+    expect(atLeast("viewer", "viewer")).toBe(true);
+  });
 });
 
 describe("breadcrumb", () => {
@@ -26,5 +46,7 @@ describe("breadcrumb", () => {
     expect(breadcrumb({ view: "chat" })).toEqual(["Chat"]);
     expect(breadcrumb({ view: "import", schema: "master", run: 3 })).toEqual(["Import", "master"]);
     expect(breadcrumb({ view: "notfound", path: "/nope" })).toEqual(["Page not found"]);
+    expect(breadcrumb({ view: "users" })).toEqual(["Users"]);
+    expect(breadcrumb({ view: "profile" })).toEqual(["Profile"]);
   });
 });

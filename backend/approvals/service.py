@@ -115,7 +115,18 @@ def _mark_stale(change: Change, user, error: str) -> Change:
     return change
 
 
+def _has_role_op(ops) -> bool:
+    return isinstance(ops, list) and any(isinstance(o, dict) and o.get("op") == "set_user_role" for o in ops)
+
+
+def _changes_roles(change: Change) -> bool:
+    return change.kind == "config" and (_has_role_op(change.operations) or _has_role_op(change.original_operations))
+
+
 def can_decide(user, change: Change) -> bool:
+    if _changes_roles(change):
+        # who may do what is a person's decision: only an admin grants, changes or removes a role
+        return user.is_active and user.can_admin
     if change.source == "script" or change.kind in ("schema", "config", "sql"):
         # structure, rules, settings, roles, raw SQL and every script load: approvers only
         return user.can_approve
@@ -135,13 +146,24 @@ def _apply_check(change: Change, res, *, ops_for_tables) -> None:
         change.decision_note = "blocked by the rules gate"
 
 
-def _dry_run_actor(user):
-    """Who the dry run pretends to be: the services insist on an approver, and the real approver re-checks later."""
-    from accounts.models import Role, User
+def _dry_run_actor(user, ops=None):
+    """Who the dry run pretends to be: the services insist on an approver (an admin for role changes), and the
+    person who decides re-checks later. Role ops prefer an admin who is not one of the people being changed."""
+    from accounts.models import ROLE_RANK, Role, User
 
+    if _has_role_op(ops):
+        if user.is_active and user.can_admin:
+            return user
+        admins = User.objects.filter(role=Role.ADMIN, is_active=True).order_by("pk")
+        targets = {str(o.get("email", "")).strip().lower() for o in ops if isinstance(o, dict) and o.get("op") == "set_user_role"}
+        admin = next((a for a in admins if a.email.lower() not in targets), None) or admins.first()
+        if admin is None:
+            raise ChangeError("invalid", "there is no admin to review a role change")
+        return admin
     if user.can_approve:
         return user
-    approver = User.objects.filter(role=Role.APPROVER, is_active=True).first()
+    ranks = [r for r, n in ROLE_RANK.items() if n >= ROLE_RANK[Role.APPROVER]]
+    approver = User.objects.filter(role__in=ranks, is_active=True).order_by("pk").first()
     if approver is None:
         raise ChangeError("invalid", "there is no approver to review a configuration change")
     return approver
@@ -152,7 +174,7 @@ def propose_config(user, raw_ops, *, source: str, prompt: str = "", conversation
     """A settings / rules / roles change: checked now, applied only when an approver approves it."""
     if not user.can_edit:
         raise ChangeError("forbidden", "your role cannot propose changes")
-    res = config_ops.run(raw_ops, _dry_run_actor(user), dry_run=True)
+    res = config_ops.run(raw_ops, _dry_run_actor(user, raw_ops), dry_run=True)
     change = Change(
         requester=user, source=source, prompt=prompt, conversation_id=conversation_id, kind="config",
         original_operations=raw_ops if isinstance(raw_ops, list) else [], operations=raw_ops if isinstance(raw_ops, list) else [],
@@ -475,7 +497,11 @@ def reject(user, change_id: int, note: str = "") -> Change:
         change = _get_for_update(change_id)
         if change.status not in (Change.Status.PENDING, Change.Status.STALE):
             raise ChangeError("bad_state", f"change #{change.pk} is {change.status}")
-        if not (user.can_approve or (user.can_edit and user.pk == change.requester_id)):
+        if _changes_roles(change):
+            allowed = can_decide(user, change)  # declining a role change is an admin's decision too
+        else:
+            allowed = user.can_approve or (user.can_edit and user.pk == change.requester_id)
+        if not allowed:
             raise ChangeError("forbidden", "you cannot reject this change")
         change.status = Change.Status.REJECTED
         change.decided_by, change.decided_at = user, timezone.now()
@@ -496,7 +522,7 @@ def recheck(user, change_id: int) -> Change:
         if change.status == Change.Status.REJECTED and change.decided_by_id is not None:
             raise ChangeError("bad_state", "a change declined by a person cannot be re-checked; propose it again")
         if change.kind == "config":
-            res = config_ops.run(change.original_operations, _dry_run_actor(user), dry_run=True)
+            res = config_ops.run(change.original_operations, _dry_run_actor(user, change.original_operations), dry_run=True)
             change.diff = res.diff
             change.check_result = {"errors": res.errors, "violations": [], "autoAdded": []}
             change.status = Change.Status.REJECTED if res.errors else Change.Status.PENDING
@@ -527,7 +553,7 @@ def recheck(user, change_id: int) -> Change:
 
 
 def revert(user, change_id: int) -> Change:
-    """Undo an applied change by applying its stored reverse operations (approvers only)."""
+    """Undo an applied change by applying its stored reverse operations (approvers only; admins for role changes)."""
     if not user.can_approve:
         raise ChangeError("forbidden", "only approvers can revert changes")
     orig = Change.objects.filter(pk=change_id).first()
@@ -539,6 +565,10 @@ def revert(user, change_id: int) -> Change:
         raise ChangeError("bad_state", f"change #{orig.pk} cannot be undone automatically (it dropped something)")
     if Change.objects.filter(reverts=orig).exclude(status__in=[Change.Status.REJECTED, Change.Status.FAILED]).exists():
         raise ChangeError("bad_state", f"change #{orig.pk} was already reverted or has a revert pending")
+    if orig.kind == "config" and (_changes_roles(orig) or _has_role_op(orig.reverse_operations)) \
+            and not (user.is_active and user.can_admin):
+        # checked before the revert is proposed, so a refused revert leaves no pending change behind
+        raise ChangeError("forbidden", "only an admin can revert a role change")
 
     if orig.kind == "config":
         rev = propose_config(user, orig.reverse_operations, source="revert", prompt=f"Revert change #{orig.pk}", reverts=orig)

@@ -5,7 +5,7 @@ from accounts.api import endpoint, limit_param
 from .models import as_dict, entries
 
 
-@endpoint("GET")
+@endpoint("GET", min_role="approver")  # entries hold invited emails, roles and prompts: same as MCP get_audit_log
 def audit_log(request):
     items, _ = entries(action=request.GET.get("action"), limit=limit_param(request, default=100, maximum=500))
     return JsonResponse({"entries": [as_dict(a) for a in items]})

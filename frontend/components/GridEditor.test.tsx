@@ -18,7 +18,7 @@ const ROWS = [
   { id: 1, note: "first", qty: 1, customerId: 10 },
   { id: 2, note: "second", qty: 2, customerId: 11 },
 ];
-const me = (role: Me["role"]): Me => ({ id: 1, email: "ed@example.com", name: "", role });
+const me = (role: Me["role"]): Me => ({ id: 1, email: "ed@example.com", name: "", role, active: true });
 
 async function setup(role: Me["role"] = "editor", data = page(ROWS), onBusy: (b: boolean) => void = vi.fn(), extra: Record<string, unknown> = {}) {
   vi.resetModules();

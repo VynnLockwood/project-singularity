@@ -57,8 +57,16 @@ export function Rail({ me, route, navigate, waiting, online, onLogout }: Props) 
           <Icon name="dot" size={12} />
           {online ? "Live" : "Reconnecting…"}
         </span>
-        <span className="shell-me" title={me.email}>{me.email}</span>
-        <span className="shell-role">{me.role}</span>
+        <button
+          type="button" className="shell-nav-item shell-me-link" title="Your profile" aria-label={`Profile: ${me.email}, ${me.role}`}
+          aria-current={route.view === "profile" ? "page" : undefined} onClick={() => navigate({ view: "profile" })}
+        >
+          <Icon name="user" size={18} />
+          <span className="shell-me-text">
+            <span className="shell-me">{me.email}</span>
+            <span className="shell-role">{me.role}</span>
+          </span>
+        </button>
         <button type="button" className="shell-nav-item shell-signout" onClick={onLogout}>
           <Icon name="logout" size={18} />
           <span className="shell-nav-label">Sign out</span>

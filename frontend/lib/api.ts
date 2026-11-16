@@ -1,12 +1,31 @@
 import type { DataView } from "./dataRoute";
 
-export type Role = "viewer" | "editor" | "approver";
+export type Role = "viewer" | "editor" | "approver" | "admin";
+/** Lowest to highest; each role can do everything the ones before it can. */
+export const ROLES: readonly Role[] = ["viewer", "editor", "approver", "admin"];
+
+/** One MCP tool and whether this person's role may call it (from the server's own tool table). */
+export interface McpCapability {
+  name: string;
+  minRole: Role;
+  allowed: boolean;
+  description: string;
+}
+export interface Capabilities {
+  mcpTools: McpCapability[];
+  /** one line per role, lowest first, saying what that role adds */
+  roleSummary: string[];
+}
 
 export interface Me {
   id: number;
   email: string;
   name: string;
   role: Role;
+  active: boolean;
+  lastLoginAt?: string | null;
+  /** older servers send none */
+  capabilities?: Capabilities;
 }
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "/api";
@@ -433,8 +452,20 @@ export const updateRule = (id: number, fields: Partial<Pick<Rule, "params" | "se
 export const ruleVersions = (id: number) => call<{ versions: RuleVersion[] }>("GET", `/rules/${id}/versions`).then((r) => r.versions);
 export const rollbackRule = (id: number, version: number) => call<Rule>("POST", `/rules/${id}/rollback`, { version });
 
-export const listUsers = () => call<{ users: Me[] }>("GET", "/users").then((r) => r.users);
-export const setUserRole = (id: number, role: Me["role"]) => call<Me>("PATCH", `/users/${id}/role`, { role });
+// ---- users (admin only) -------------------------------------------------------
+
+/** A person who may sign in; `active: false` means their access is off (web and MCP). */
+export interface User {
+  id: number;
+  email: string;
+  name: string;
+  role: Role;
+  active: boolean;
+  lastLoginAt: string | null;
+}
+export const listUsers = () => call<{ users: User[] }>("GET", "/users").then((r) => r.users ?? []);
+export const createUser = (body: { email: string; role: Role; name?: string }) => call<User>("POST", "/users", body);
+export const updateUser = (id: number, fields: { role?: Role; active?: boolean }) => call<User>("PATCH", `/users/${id}`, fields);
 
 // ---- scripts: pg_dump-style SQL intake (editor only) ---------------------------
 

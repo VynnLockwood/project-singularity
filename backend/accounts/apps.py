@@ -1,5 +1,9 @@
+import logging
+
 from django.apps import AppConfig
-from django.db.models.signals import pre_migrate
+from django.db.models.signals import post_migrate, pre_migrate
+
+logger = logging.getLogger("accounts")
 
 
 def ensure_singularity_schema(sender, using="default", **kwargs):
@@ -19,9 +23,25 @@ def ensure_singularity_schema(sender, using="default", **kwargs):
             cur.execute("CREATE SCHEMA singularity")
 
 
+def seed_admins_after_migrate(sender, using="default", **kwargs):
+    """Create or promote the configured seed admins once the tables exist. Never aborts migrate: any error is
+    logged and the migration carries on (fix the config and migrate again)."""
+    if using != "default":
+        return
+    try:
+        from config.siconfig import get_config
+
+        from . import services
+
+        services.ensure_seed_admins(get_config()["auth"])
+    except Exception:
+        logger.exception("seeding admins after migrate failed; migrate continues")
+
+
 class AccountsConfig(AppConfig):
     name = "accounts"
     default_auto_field = "django.db.models.BigAutoField"
 
     def ready(self):
         pre_migrate.connect(ensure_singularity_schema, dispatch_uid="ensure_singularity_schema")
+        post_migrate.connect(seed_admins_after_migrate, sender=self, dispatch_uid="ensure_seed_admins")

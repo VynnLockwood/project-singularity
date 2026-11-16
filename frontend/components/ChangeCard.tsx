@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { Change, Me } from "@/lib/api";
-import { canDecide, diffKind, warnings } from "@/lib/changes";
+import { canDecide, changesRoles, diffKind, warnings } from "@/lib/changes";
 import { Badge, Button } from "@/components/ui";
 
 interface Props {
@@ -93,7 +93,7 @@ export function ChangeCard({ change, me, onDecide, deciding, busy }: Props) {
         </div>
       )}
       {change.status === "pending" && !decidable && (
-        <p className="muted small">Waiting for an approver.</p>
+        <p className="muted small">{changesRoles(change) ? "Needs an admin to approve." : "Waiting for an approver."}</p>
       )}
       {change.status === "applied" && change.decidedBy && (
         <p className="muted small">Applied · approved by {change.decidedBy}</p>

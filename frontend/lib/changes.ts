@@ -1,9 +1,19 @@
 import type { Change, Me } from "./api";
+import { atLeast } from "./nav";
 
-/** Mirrors the server's rule: approvers decide anything; editors decide their own data changes. */
+/** A settings change that grants, changes or removes a role: the server lets only an admin decide it. */
+export function changesRoles(change: Change): boolean {
+  return change.kind === "config" && (change.operations ?? []).some((o) => o.op === "set_user_role");
+}
+
+/**
+ * Mirrors the server's rule (approvals/service.py can_decide): role changes need an admin; otherwise approvers
+ * (and admins) decide anything and editors decide their own data changes.
+ */
 export function canDecide(me: Me, change: Change): boolean {
   if (change.status !== "pending") return false;
-  if (me.role === "approver") return true;
+  if (changesRoles(change)) return me.role === "admin";
+  if (atLeast(me.role, "approver")) return true;
   return me.role === "editor" && change.kind === "data" && change.requester === me.email;
 }
 

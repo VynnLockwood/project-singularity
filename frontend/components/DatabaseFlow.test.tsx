@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Me, SchemaGraph, SchemaInfo, TableDetail } from "@/lib/api";
 
-const approver: Me = { id: 1, email: "a@x.io", name: "", role: "approver" };
+const approver: Me = { id: 1, email: "a@x.io", name: "", role: "approver", active: true };
 const viewer: Me = { ...approver, id: 2, email: "v@x.io", role: "viewer" };
 const aChange = { id: 9, status: "pending", kind: "schema", source: "web", requester: "a@x.io", prompt: "t", createdAt: "", decidedBy: null, error: "", decisionNote: "", tables: [], diff: ["+ x"], check: {} };
 

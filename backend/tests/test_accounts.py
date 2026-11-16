@@ -27,51 +27,32 @@ def make_user(email, role=Role.VIEWER):
 # ---- sign-in service -------------------------------------------------------
 
 @pytest.mark.django_db
-def test_new_user_gets_default_role():
+def test_first_sign_in_fills_name_from_claims():
+    make_user("new@example.com")
     user = sign_in_from_claims(claims("new@example.com", given_name="Ann"), CFG)
     assert user.role == Role.VIEWER
     assert user.first_name == "Ann"
-    assert not user.has_usable_password()
 
 
 @pytest.mark.django_db
-def test_seed_admin_becomes_approver_on_first_sign_in():
-    user = sign_in_from_claims(claims("Boss@Example.com"), CFG)
-    assert user.email == "boss@example.com"
-    assert user.role == Role.APPROVER
-
-
-@pytest.mark.django_db
-def test_default_role_comes_from_config():
-    user = sign_in_from_claims(claims("e@example.com"), {**CFG, "defaultRole": "editor"})
-    assert user.role == Role.EDITOR
-
-
-@pytest.mark.django_db
-def test_wrong_domain_rejected():
-    with pytest.raises(SignInDenied):
-        sign_in_from_claims(claims("x@other.com"), CFG)
-    assert not User.objects.filter(email="x@other.com").exists()
-
-
-@pytest.mark.django_db
-def test_lookalike_domain_rejected():
-    with pytest.raises(SignInDenied):
-        sign_in_from_claims(claims("x@evil-example.com"), CFG)
-    with pytest.raises(SignInDenied):
-        sign_in_from_claims(claims("x@example.com.evil.io"), CFG)
+def test_unknown_email_rejected_and_not_created():
+    for email in ("x@other.com", "x@example.com", "x@evil-example.com"):
+        with pytest.raises(SignInDenied):
+            sign_in_from_claims(claims(email), CFG)
+        assert not User.objects.filter(email=email).exists()
 
 
 @pytest.mark.django_db
 def test_unverified_email_rejected():
+    make_user("a@example.com")
     with pytest.raises(SignInDenied):
         sign_in_from_claims(claims("a@example.com", verified=False), CFG)
 
 
 @pytest.mark.django_db
-def test_no_allowed_domains_means_nobody_can_sign_in():
-    with pytest.raises(SignInDenied):
-        sign_in_from_claims(claims("a@example.com"), {**CFG, "allowedDomains": []})
+def test_allowed_domains_no_longer_gate_sign_in():
+    make_user("a@other.com")
+    assert sign_in_from_claims(claims("a@other.com"), {**CFG, "allowedDomains": []}).email == "a@other.com"
 
 
 @pytest.mark.django_db
@@ -92,9 +73,10 @@ def test_disabled_account_rejected():
 
 @pytest.mark.django_db
 def test_sign_in_is_audited():
+    make_user("a@example.com")
     sign_in_from_claims(claims("a@example.com"), CFG)
     actions = list(AuditLog.objects.values_list("action", flat=True))
-    assert "user.created" in actions and "user.signed_in" in actions
+    assert "user.signed_in" in actions and "user.created" not in actions
 
 
 # ---- role helpers ----------------------------------------------------------
@@ -115,8 +97,8 @@ def test_role_permissions(role, read, edit, approve):
 # ---- role changes ----------------------------------------------------------
 
 @pytest.mark.django_db
-def test_approver_can_change_role_and_it_is_audited():
-    admin = make_user("admin@example.com", Role.APPROVER)
+def test_admin_can_change_role_and_it_is_audited():
+    admin = make_user("admin@example.com", Role.ADMIN)
     target = make_user("t@example.com")
     change_role(admin, target, "editor")
     target.refresh_from_db()
@@ -128,8 +110,8 @@ def test_approver_can_change_role_and_it_is_audited():
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("role", [Role.VIEWER, Role.EDITOR])
-def test_non_approver_cannot_change_role(role):
+@pytest.mark.parametrize("role", [Role.VIEWER, Role.EDITOR, Role.APPROVER])
+def test_non_admin_cannot_change_role(role):
     actor = make_user("a@example.com", role)
     target = make_user("t@example.com")
     with pytest.raises(RoleChangeDenied):
@@ -140,23 +122,28 @@ def test_non_approver_cannot_change_role(role):
 
 @pytest.mark.django_db
 def test_unknown_role_rejected():
-    admin = make_user("admin@example.com", Role.APPROVER)
+    admin = make_user("admin@example.com", Role.ADMIN)
     with pytest.raises(RoleChangeDenied):
         change_role(admin, make_user("t@example.com"), "superuser")
 
 
 @pytest.mark.django_db
-def test_cannot_remove_last_approver():
-    admin = make_user("admin@example.com", Role.APPROVER)
-    with pytest.raises(RoleChangeDenied):
-        change_role(admin, admin, "viewer")
+def test_cannot_remove_last_admin():
+    # the "last approver" rule is now "last active admin" (more in test_accounts_manage.py). The only way to
+    # reach the guard is an admin whose session is out of date: turned off since, so not an active admin any more.
+    admin = make_user("admin@example.com", Role.ADMIN)
+    stale = make_user("stale@example.com", Role.ADMIN)
+    User.objects.filter(pk=stale.pk).update(is_active=False)
+    with pytest.raises(RoleChangeDenied) as e:
+        change_role(stale, admin, "viewer")
+    assert "last active admin" in str(e.value)
     admin.refresh_from_db()
-    assert admin.role == Role.APPROVER
+    assert admin.role == Role.ADMIN
 
 
 @pytest.mark.django_db
-def test_can_demote_an_approver_when_another_remains():
-    a = make_user("a@example.com", Role.APPROVER)
+def test_admin_can_demote_the_last_approver():
+    a = make_user("a@example.com", Role.ADMIN)
     b = make_user("b@example.com", Role.APPROVER)
     change_role(a, b, "editor")
     b.refresh_from_db()
@@ -200,6 +187,7 @@ def test_login_redirects_to_google_with_state(client, settings):
 
 @pytest.mark.django_db
 def test_callback_signs_in_and_sets_session(client, monkeypatch):
+    make_user("boss@example.com", Role.APPROVER)
     client.get("/api/auth/google/login")
     state = client.session["google_oauth_state"]
     monkeypatch.setattr(google, "fetch_claims", lambda code, uri: claims("boss@example.com"))
@@ -224,7 +212,7 @@ def test_callback_without_prior_login_rejected(client):
 
 
 @pytest.mark.django_db
-def test_callback_wrong_domain_forbidden(client, monkeypatch):
+def test_callback_unknown_email_forbidden(client, monkeypatch):
     client.get("/api/auth/google/login")
     state = client.session["google_oauth_state"]
     monkeypatch.setattr(google, "fetch_claims", lambda c, u: claims("x@other.com"))
@@ -247,6 +235,7 @@ def test_callback_google_failure_is_400(client, monkeypatch):
 
 @pytest.mark.django_db
 def test_state_cannot_be_replayed(client, monkeypatch):
+    make_user("a@example.com")
     client.get("/api/auth/google/login")
     state = client.session["google_oauth_state"]
     monkeypatch.setattr(google, "fetch_claims", lambda c, u: claims("a@example.com"))
@@ -267,10 +256,12 @@ def test_users_list_permissions(client):
     assert client.get("/api/users").status_code == 401
     client.force_login(User.objects.get(email="v@example.com"))
     assert client.get("/api/users").status_code == 403
-    admin = make_user("admin@example.com", Role.APPROVER)
+    client.force_login(make_user("ap@example.com", Role.APPROVER))
+    assert client.get("/api/users").status_code == 403  # approvers no longer see the user list
+    admin = make_user("admin@example.com", Role.ADMIN)
     client.force_login(admin)
     emails = [u["email"] for u in client.get("/api/users").json()["users"]]
-    assert emails == ["admin@example.com", "v@example.com"]
+    assert emails == ["admin@example.com", "ap@example.com", "v@example.com"]
 
 
 def patch_role(client, user_id, role):
@@ -287,7 +278,12 @@ def test_role_change_endpoint(client):
     client.force_login(make_user("e@example.com", Role.EDITOR))
     assert patch_role(client, target.pk, "editor").status_code == 403
 
-    client.force_login(make_user("admin@example.com", Role.APPROVER))
+    client.force_login(make_user("ap@example.com", Role.APPROVER))
+    assert patch_role(client, target.pk, "editor").status_code == 403  # only an admin changes roles
+    target.refresh_from_db()
+    assert target.role == Role.VIEWER
+
+    client.force_login(make_user("admin@example.com", Role.ADMIN))
     assert patch_role(client, target.pk, "editor").status_code == 200
     target.refresh_from_db()
     assert target.role == Role.EDITOR
@@ -297,7 +293,7 @@ def test_role_change_endpoint(client):
 
 @pytest.mark.django_db
 def test_csrf_enforced_on_role_change():
-    admin = make_user("admin@example.com", Role.APPROVER)
+    admin = make_user("admin@example.com", Role.ADMIN)
     target = make_user("t@example.com")
     strict = Client(enforce_csrf_checks=True)
     strict.force_login(admin)

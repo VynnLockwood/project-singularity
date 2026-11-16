@@ -6,7 +6,7 @@ import { ReviewTray } from "./ReviewTray";
 import { ChangeCard } from "./ChangeCard";
 import { SchemaDiagram } from "./SchemaView";
 
-const me = (role: Me["role"], email = "ed@example.com"): Me => ({ id: 1, email, name: "", role });
+const me = (role: Me["role"], email = "ed@example.com"): Me => ({ id: 1, email, name: "", role, active: true });
 
 describe("ChangeCard", () => {
   it("colours diff lines and lets an approver approve or reject", () => {

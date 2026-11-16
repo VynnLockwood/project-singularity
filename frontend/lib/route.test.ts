@@ -19,7 +19,7 @@ describe("parseRoute", () => {
     expect(parseRoute("/settings/zzz")).toEqual({ view: "settings" });
   });
   it("reads the plain views", () => {
-    for (const v of ["duplicates", "scripts", "activity", "connect"] as const) expect(parseRoute(`/${v}`)).toEqual({ view: v });
+    for (const v of ["duplicates", "scripts", "activity", "connect", "users", "profile"] as const) expect(parseRoute(`/${v}`)).toEqual({ view: v });
   });
   it("reads the History tab of Activity and ignores an unknown tab", () => {
     expect(parseRoute("/activity/history")).toEqual({ view: "activity", tab: "history" });
@@ -46,6 +46,7 @@ describe("buildPath", () => {
     { view: "query" }, { view: "query", schema: "master" },
     { view: "settings" }, { view: "settings", section: "team" },
     { view: "duplicates" }, { view: "scripts" }, { view: "activity" }, { view: "activity", tab: "history" }, { view: "connect" },
+    { view: "users" }, { view: "profile" },
   ];
   it.each(samples)("round trips %o", (r) => expect(parseRoute(buildPath(r))).toEqual(r));
   it("puts chat at the root and encodes segments", () => {
@@ -54,6 +55,10 @@ describe("buildPath", () => {
     expect(buildPath({ view: "database", schema: "master", table: "a b" })).toBe("/database/master/a%20b");
   });
   it("drops a table that has no schema", () => expect(buildPath({ view: "data", table: "x" })).toBe("/data"));
+  it("puts users and profile at their own paths", () => {
+    expect(buildPath({ view: "users" })).toBe("/users");
+    expect(buildPath({ view: "profile" })).toBe("/profile");
+  });
   it("gives back the path of an unknown place", () => expect(buildPath({ view: "notfound", path: "/nope" })).toBe("/nope"));
 });
 

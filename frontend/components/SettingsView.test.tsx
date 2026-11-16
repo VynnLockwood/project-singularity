@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { describe, expect, it, vi } from "vitest";
 import type { Me, Rule, Tunable } from "@/lib/api";
 
-const me = (role: Me["role"]): Me => ({ id: 1, email: "ap@x.com", name: "", role });
+const me = (role: Me["role"]): Me => ({ id: 1, email: "ap@x.com", name: "", role, active: true });
 const tunables: Tunable[] = [
   { key: "search.minConfidence", label: "Search confidence", help: "h", kind: "float", min: 0, max: 1, default: 0.8, value: 0.8, overridden: false },
   { key: "search.topK", label: "Search results", help: "h", kind: "int", min: 1, max: 20, default: 5, value: 9, overridden: true },
@@ -15,7 +15,7 @@ const rule: Rule = { id: 4, name: "noFloat", type: "forbidden_type", params: { t
 
 const keySet = { openrouter: true, opencode: false };
 
-async function setup(role: Me["role"]) {
+async function setup(role: Me["role"], extra: Record<string, unknown> = {}, onOpenUsers?: () => void) {
   vi.resetModules();
   const fns = {
     getSettings: vi.fn().mockResolvedValue({ settings: tunables, keySet }),
@@ -25,12 +25,14 @@ async function setup(role: Me["role"]) {
     updateRule: vi.fn().mockResolvedValue(rule),
     ruleVersions: vi.fn().mockResolvedValue([{ version: 2, action: "updated", changedBy: "x@y.z", createdAt: "2026-01-01T00:00:00Z" }, { version: 1, action: "created", changedBy: null, createdAt: "2026-01-01T00:00:00Z" }]),
     rollbackRule: vi.fn().mockResolvedValue(rule),
-    listUsers: vi.fn().mockResolvedValue([me("approver"), { id: 2, email: "ed@x.com", name: "", role: "viewer" }]),
-    setUserRole: vi.fn().mockResolvedValue({}),
+    listUsers: vi.fn().mockResolvedValue([
+      { ...me("approver"), lastLoginAt: null }, { id: 2, email: "ed@x.com", name: "", role: "viewer", active: true, lastLoginAt: null },
+    ]),
+    ...extra,
   };
   vi.doMock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), ...fns }));
   const { SettingsView } = await import("./SettingsView");
-  render(<SettingsView me={me(role)} />);
+  render(<SettingsView me={me(role)} onOpenUsers={onOpenUsers} />);
   return fns;
 }
 
@@ -109,12 +111,22 @@ describe("SettingsView", () => {
     await waitFor(() => expect(rollbackRule).toHaveBeenCalledWith(4, 1));
   });
 
-  it("changes a teammate's role but not your own", async () => {
-    const { setUserRole } = await setup("approver");
+  it("sends an admin to the Users page from Team", async () => {
+    const open = vi.fn();
+    const { listUsers } = await setup("admin", {}, open);
+    expect(await screen.findByLabelText("Search confidence")).toBeEnabled(); // an admin can do what an approver can
     fireEvent.click(screen.getByText("Team"));
-    expect(await screen.findByLabelText("Role of ap@x.com")).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("Role of ed@x.com"), { target: { value: "editor" } });
-    await waitFor(() => expect(setUserRole).toHaveBeenCalledWith(2, "editor"));
+    fireEvent.click(screen.getByRole("button", { name: "Open Users" }));
+    expect(open).toHaveBeenCalled();
+    expect(listUsers).not.toHaveBeenCalled();
+  });
+
+  it("explains to an approver who manages people, without asking the server for the admin-only list", async () => {
+    const { listUsers } = await setup("approver");
+    fireEvent.click(screen.getByText("Team"));
+    expect(await screen.findByText("Only an admin can see the list of people. Ask an admin to add you or change your role.")).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Team" })).toBeNull();
+    expect(listUsers).not.toHaveBeenCalled();
   });
 });
 

@@ -17,7 +17,7 @@ const listChanges = vi.mocked(api.listChanges);
 const revertChange = vi.mocked(api.revertChange);
 const getChange = vi.mocked(api.getChange);
 
-const me = (role: Me["role"] = "approver"): Me => ({ id: 1, email: "ap@x.com", name: "", role });
+const me = (role: Me["role"] = "approver"): Me => ({ id: 1, email: "ap@x.com", name: "", role, active: true });
 const applied = (id: number, over: Partial<Change> = {}) => change({ id, status: "applied", kind: "data", schema: "master", requester: "ed@x.com", prompt: `prompt ${id}`, reversible: true, ...over });
 const page = (changes: Change[], more = false) => ({ changes, more });
 
@@ -162,8 +162,8 @@ describe("HistoryView revert", () => {
     fireEvent.click((await screen.findByText(`prompt ${rows[0].id}`)).closest("button")!);
   };
 
-  it("is shown to an approver for an applied, reversible change", async () => {
-    await open("approver", [applied(3)]);
+  it.each(["approver", "admin"] as const)("is shown to an %s for an applied, reversible change", async (role) => {
+    await open(role, [applied(3)]);
     expect(screen.getByRole("button", { name: /Revert/ })).toBeInTheDocument();
   });
 

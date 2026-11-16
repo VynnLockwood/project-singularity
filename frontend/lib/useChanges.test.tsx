@@ -19,7 +19,7 @@ vi.mock("./api", async (orig) => ({ ...(await orig<typeof import("./api")>()), g
 import { ApiError } from "./api";
 import { activityLevel, useChanges } from "./useChanges";
 
-const me: Me = { id: 1, email: "ann@example.com", name: "", role: "approver" };
+const me: Me = { id: 1, email: "ann@example.com", name: "", role: "approver", active: true };
 const change = (id: number, over: Partial<Change> = {}): Change => ({
   id, status: "pending", kind: "schema", source: "mcp", requester: "bob@example.com", prompt: "", createdAt: "",
   decidedBy: null, error: "", decisionNote: "", tables: [], diff: [], check: {}, ...over,

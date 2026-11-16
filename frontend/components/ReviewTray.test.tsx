@@ -5,7 +5,7 @@ import type { Change, Me } from "@/lib/api";
 import { change } from "@/lib/fixtures";
 import { ReviewTray } from "./ReviewTray";
 
-const me: Me = { id: 1, email: "a@x.com", name: "", role: "approver" };
+const me: Me = { id: 1, email: "a@x.com", name: "", role: "approver", active: true };
 
 function Host({ changes, deciding = null, onOutside }: { changes: Change[]; deciding?: number | null; onOutside?: () => void }) {
   const [open, setOpen] = useState(false);
