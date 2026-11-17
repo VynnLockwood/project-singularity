@@ -30,40 +30,68 @@ NOT_FOUND = "script #{} does not exist"
 SOMEONE_ELSE = "this script belongs to someone else"
 
 
-def script_database(script: Script) -> str | None:
-    """The database a script is known to be for: the one it last passed validation against; None before that."""
-    v = (script.report or {}).get("validated_schema") if isinstance(script.report, dict) else None
-    return v if isinstance(v, str) and v else None
+# every place a script's stored report names a database: the one it passed for, the one the last check used,
+# the one the file names, and the one a queued or running check was asked for
+REPORT_DATABASE_KEYS = (("validated_schema",), ("schema",), ("detected_schema",), ("job", "schema"))
+
+
+def _at(report, path):
+    cur = report
+    for k in path:
+        if not isinstance(cur, dict) or k not in cur:
+            return None
+        cur = cur[k]
+    return cur
+
+
+def script_databases(script: Script) -> set[str] | None:
+    """Every database a script's stored data names (see REPORT_DATABASE_KEYS). None when it cannot be told: no
+    validation has passed yet (no `validated_schema`), or a stored name is not a non-empty string."""
+    report = script.report if isinstance(script.report, dict) else {}
+    if not isinstance(report.get("validated_schema"), str) or not report["validated_schema"]:
+        return None
+    out = set()
+    for path in REPORT_DATABASE_KEYS:
+        v = _at(report, path)
+        if v is None:
+            continue
+        if not isinstance(v, str) or not v:
+            return None
+        out.add(v)
+    return out
 
 
 def hidden_from(user, script: Script | None) -> bool:
-    """True when `user` must be told the script does not exist: it is someone else's and its database is not
-    known yet or is one they cannot read. A person's own scripts are always theirs to see."""
+    """True when `user` must be told the script does not exist: it is someone else's and the databases its
+    report names are not known, or include one they cannot read. A person's own scripts are always theirs."""
     from accounts import access
 
     if script is None:
         return True
     if script.owner_id == user.pk:
         return False
-    db = script_database(script)
-    return db is None or not access.can(user, db, "viewer")
+    dbs = script_databases(script)
+    return dbs is None or not all(access.can(user, db, "viewer") for db in dbs)
 
 
 def check_reach(user, script: Script) -> None:
-    """Someone else's script whose database they can read: a global approver who is approver there may act on
-    it. Anyone else gets the old refusal (PermissionError); an approver below approver there gets the role text."""
+    """Someone else's script whose databases they can read: a global approver who is approver on every one of
+    them may act on it. Anyone else gets the old refusal (PermissionError); an approver below approver on one of
+    them gets the role text. Call after `hidden_from`."""
     from accounts import access
 
     if script.owner_id == user.pk:
         return
     if not user.can_approve:
         raise PermissionError(SOMEONE_ELSE)
-    access.require(user, script_database(script), "approver")
+    for db in sorted(script_databases(script) or ()):
+        access.require(user, db, "approver")
 
 
 def visible(user):
     """The scripts `user` may list or open (without import runs' scripts): their own, and for a global approver
-    others' scripts validated for a database where they are approver. Filtered in the query."""
+    others' scripts whose report names only databases where they are approver (`validated_schema` required).
+    Filtered in the query, like `hidden_from` and `check_reach` decide one script."""
     from django.db.models import Q
 
     from accounts import access
@@ -75,7 +103,11 @@ def visible(user):
     if not user.can_approve:
         return qs.filter(owner=user)
     dbs = [e["name"] for e in access.effective_schemas(user) if e["role"] in (Role.APPROVER, Role.ADMIN)]
-    return qs.filter(Q(owner=user) | Q(report__validated_schema__in=dbs))
+    others = Q(report__validated_schema__in=dbs)
+    for path in REPORT_DATABASE_KEYS[1:]:
+        key = "report__" + "__".join(path)
+        others &= Q(**{f"{key}__isnull": True}) | Q(**{key: None}) | Q(**{f"{key}__in": dbs})
+    return qs.filter(Q(owner=user) | others)
 
 
 def validate(user, script_id: int, mapping: dict | None, schema: str | None = None) -> dict:
@@ -109,6 +141,8 @@ def submit(user, script_id: int, note: str = "", schema: str | None = None, *, _
             raise storage.ScriptError(NOT_FOUND.format(script_id))
         if script.kind == "import" and not _import_run:
             raise storage.ScriptError(IMPORT_ONLY.format(script.pk))
+        if not _import_run:
+            check_reach(user, script)   # the same reach as reading it: owner, or approver on its databases
         if script.expires_at and script.expires_at <= timezone.now():
             raise storage.ScriptError(f"script #{script_id} has expired")
         if script.status != Script.Status.VALIDATED:

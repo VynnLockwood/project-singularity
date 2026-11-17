@@ -105,6 +105,8 @@ def submit_view(request, script_id):
         change = service.submit(request.user, script_id, str(request.json.get("note", ""))[:2000])
     except storage.ScriptError as exc:
         return error(str(exc), 409)
+    except PermissionError as exc:
+        return error(str(exc), 403)
     return JsonResponse({"change_id": change.pk}, status=201)
 
 

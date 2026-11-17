@@ -144,8 +144,13 @@ MCP = {
 }
 
 
+def _norm(i):
+    """What to replace: an id as it appears in messages (`#12`), or a database name."""
+    return (f"#{i}", "#<id>") if isinstance(i, int) else (i, "<db>")
+
+
 def _web_answer(resp, i):
-    return resp.status_code, resp.content.decode().replace(str(i), "<id>")
+    return resp.status_code, resp.content.decode().replace(*_norm(i))
 
 
 def _mcp_answer(fn, i):
@@ -153,7 +158,7 @@ def _mcp_answer(fn, i):
         out = ("ok", fn())
     except tools.ToolFailure as exc:
         out = ("fail", str(exc))
-    return json.loads(json.dumps(out, default=str).replace(str(i), "<id>"))
+    return json.loads(json.dumps(out, default=str).replace(*_norm(i)))
 
 
 @pytest.mark.parametrize("case", list(WEB))
@@ -316,7 +321,10 @@ def test_script_autodetected_schema_needs_editor_before_dry_run(dbs, monkeypatch
     real_snapshot = validate_mod.introspect.snapshot
     monkeypatch.setattr(validate_mod.introspect, "snapshot", lambda s, *a, **k: (seen.append(s), real_snapshot(s, *a, **k))[1])
 
-    def no_dry_run(*a, **k):
+    dry_runs = []
+
+    def no_dry_run(*a, **k):   # validate's catch-all would swallow an exception: record the call as well
+        dry_runs.append(a)
         raise AssertionError("the dry run must not run")
 
     monkeypatch.setattr(validate_mod.executor, "execute", no_dry_run)
@@ -325,13 +333,15 @@ def test_script_autodetected_schema_needs_editor_before_dry_run(dbs, monkeypatch
     report = script_service.validate(u, s.pk, None)
     assert report["ok"] is False and report["detected_schema"] == HIDDEN
     assert any("editor role on 'crm'" in e["message"] for e in report["errors"]), report["errors"]
-    assert seen == [] and Script.objects.get(pk=s.pk).status == Script.Status.UPLOADED
+    assert seen == [] and dry_runs == [] and Script.objects.get(pk=s.pk).status == Script.Status.UPLOADED
+    assert not any("dry run must not run" in e["message"] or "unexpected" in e["message"] for e in report["errors"])
+    assert report["dry_run"]["skipped"] is True and [e["kind"] for e in report["errors"]] == ["access"]
 
     # unreachable: the file's database is treated like one that does not exist here (master is used)
     v = grant(make_user(Role.EDITOR), "master", Role.EDITOR)
     hidden = script_service.validate(v, make_script(v, validated=False).pk, None)
     missing = script_service.validate(v, make_script(v, MISSING, validated=False).pk, None)
-    assert HIDDEN not in seen
+    assert HIDDEN not in seen and all(e["kind"] != "access" for e in hidden["errors"])
     assert (hidden["schema"], hidden["schema_source"]) == (missing["schema"], missing["schema_source"]) == \
         ("master", "default")
 
@@ -516,3 +526,77 @@ def test_new_entries_name_their_database(dbs):
     tools.create_backup(dbs, "master")
     assert AuditLog.objects.filter(action="backup.created").latest("id").details["schema"] == "master"
     SchemaGrant.objects.filter(user=ed).delete()
+
+
+# ---- fix round 1: a script is for every database its stored report names -------------------------
+
+REVALIDATE_SQL = "CREATE TABLE only_crm (x text);\nCOPY only_crm (x) FROM stdin;\nA\nB\n\\.\n"
+
+
+@pytest.fixture
+def revalidated(dbs, other):
+    """`other` validates a script for master (it passes), then checks it again for crm (it fails there)."""
+    from scripts import service as script_service
+
+    s = storage.save(other, "r.sql", REVALIDATE_SQL.encode())
+    assert script_service.validate(other, s.pk, None, "master")["ok"] is True
+    again = script_service.validate(other, s.pk, None, HIDDEN)
+    assert again["ok"] is False and again["schema"] == HIDDEN
+    s.refresh_from_db()
+    assert s.status == Script.Status.VALIDATED and s.report["validated_schema"] == "master"
+    return s
+
+
+@pytest.fixture
+def master_approver(dbs):
+    return grant(make_user(Role.APPROVER), "master", Role.APPROVER)
+
+
+def test_failed_revalidation_for_hidden_database_hides_script_web(revalidated, master_approver):
+    c = client(master_approver)
+    assert revalidated.pk not in [s["id"] for s in c.get("/api/scripts").json()["scripts"]]
+    assert _web_answer(c.get(f"/api/scripts/{revalidated.pk}"), revalidated.pk) == \
+        _web_answer(c.get(f"/api/scripts/{MISSING_ID}"), MISSING_ID)
+    # an approver on both databases still sees it
+    grant(master_approver, HIDDEN, Role.APPROVER)
+    assert revalidated.pk in [s["id"] for s in c.get("/api/scripts").json()["scripts"]]
+    assert c.get(f"/api/scripts/{revalidated.pk}").status_code == 200
+
+
+def test_failed_revalidation_for_hidden_database_hides_script_mcp(revalidated, master_approver):
+    for call in (lambda i: tools.get_script(master_approver, i), lambda i: tools.validate_script(master_approver, i)):
+        assert _mcp_answer(lambda: call(revalidated.pk), revalidated.pk) == \
+            _mcp_answer(lambda: call(MISSING_ID), MISSING_ID)
+
+
+def test_check_in_flight_for_hidden_database_hides_script(dbs, other, master_approver, monkeypatch):
+    from scripts import jobs
+    from scripts import service as script_service
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **k: None)   # the check never actually runs
+    s = storage.save(other, "r.sql", REVALIDATE_SQL.encode())
+    assert script_service.validate(other, s.pk, None, "master")["ok"] is True
+    assert jobs.start(other, s.pk, None, HIDDEN) == {"state": "running"}
+    s.refresh_from_db()
+    assert s.report["job"]["schema"] == HIDDEN and s.report["validated_schema"] == "master"
+    c = client(master_approver)
+    assert s.pk not in [x["id"] for x in c.get("/api/scripts").json()["scripts"]]
+    assert _web_answer(c.get(f"/api/scripts/{s.pk}"), s.pk) == _web_answer(c.get(f"/api/scripts/{MISSING_ID}"), MISSING_ID)
+    assert _mcp_answer(lambda: tools.get_script(master_approver, s.pk), s.pk) == \
+        _mcp_answer(lambda: tools.get_script(master_approver, MISSING_ID), MISSING_ID)
+
+
+def test_submit_of_someone_elses_script_needs_the_same_reach_as_reading_it(dbs, other):
+    from approvals.models import Change
+    from scripts import service as script_service
+
+    s = storage.save(other, "r.sql", REVALIDATE_SQL.encode())
+    assert script_service.validate(other, s.pk, None, "master")["ok"] is True
+    ed = grant(make_user(Role.EDITOR), "master", Role.EDITOR)   # can read master, but it is not their script
+    before = Change.objects.count()
+    r = post(client(ed), f"/api/scripts/{s.pk}/submit", {})
+    assert r.status_code == 403 and "belongs to someone else" in r.json()["error"]
+    with pytest.raises(PermissionError):
+        script_service.submit(ed, s.pk)
+    assert Change.objects.count() == before
+    assert Script.objects.get(pk=s.pk).status == Script.Status.VALIDATED
