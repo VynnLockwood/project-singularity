@@ -97,6 +97,7 @@ class Scan:
     schemas: set[str] = field(default_factory=set)
     catalog: bool = False            # reads a system catalog relation
     unclear: list[str] = field(default_factory=list)
+    unparsable: bool = False
 
 
 _IDENT = re.compile(r'\s*("(?:[^"]|"")+"|[^".\s()]+)\s*')
@@ -405,7 +406,8 @@ def scan(sql_or_node) -> Scan:
     try:
         stmts = pglast.parse_sql(sql_or_node)
     except pglast.parser.ParseError as exc:
-        out.unclear(f"syntax error: {exc}")
+        out.unclear(str(exc))           # the parser's own text ("syntax error at or near ...")
+        out.scan.unparsable = True
         return out.scan
     for raw in stmts:
         out.statement(raw.stmt)
@@ -426,7 +428,7 @@ def catalog_names_leak(body: str) -> bool:
     """True when the SQL reads a system catalog relation (`pg_namespace`, `pg_class`, `pg_tables`, ...,
     `information_schema.*`), which would list database names; also True for SQL that does not parse."""
     s = scan(body)
-    return s.catalog or any(u.startswith("syntax error") for u in s.unclear)
+    return s.catalog or s.unparsable
 
 
 def text_problem(sql_or_node, allowed, *, is_admin: bool) -> str | None:

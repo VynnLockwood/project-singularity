@@ -403,3 +403,38 @@ def test_known_gap_function_reading_other_database_is_not_detected(viewer):
     build("CREATE FUNCTION master.peek() RETURNS text LANGUAGE plpgsql STABLE AS "
           "$$ BEGIN RETURN (SELECT name FROM crm.t LIMIT 1); END $$")
     assert run(viewer, "SELECT peek()")["rows"] == [["Secret Co"]]
+
+
+# ---- the text helpers -------------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("sql,names", [
+    ("SELECT * FROM crm.t JOIN master.u ON true", {"crm", "master"}),
+    ("SELECT crm.t.c FROM t", {"crm"}),
+    ("SELECT NULL::crm.ty, crm.f(), 1 OPERATOR(crm.+) 2", {"crm"}),
+    ("COMMENT ON COLUMN crm.t.c IS 'x'", {"crm"}),
+    ("COMMENT ON SCHEMA crm IS 'x'", {"crm"}),
+    ("ALTER TABLE master.t SET SCHEMA crm", {"master", "crm"}),
+    ("GRANT USAGE ON SCHEMA crm TO PUBLIC", {"crm"}),
+    ("DROP TYPE crm.e", {"crm"}),
+    ("CREATE TRIGGER g BEFORE INSERT ON t FOR EACH ROW EXECUTE FUNCTION crm.tf()", {"crm"}),
+    ("SELECT nextval('crm.s'), 'crm.t'::regclass", {"crm"}),
+    ("DO $$ BEGIN PERFORM 1 FROM crm.t; END $$", {"crm"}),
+])
+def test_named_schemas_covers_qualified_names(sql, names):
+    assert isolation.named_schemas(sql) - isolation.SYSTEM == names
+
+
+@pytest.mark.parametrize("sql", [
+    "DO $$ BEGIN EXECUTE 'select 1'; END $$", "SELECT query_to_xml('x', true, false, '')", "SELECT (",
+    "CREATE EXTENSION x", "SELECT 16384::regclass", "SELECT pg_get_viewdef(1)",
+])
+def test_named_schemas_fails_closed(sql):
+    with pytest.raises(isolation.Unclear):
+        isolation.named_schemas(sql)
+
+
+def test_catalog_names_leak():
+    assert isolation.catalog_names_leak("SELECT * FROM pg_namespace")
+    assert isolation.catalog_names_leak("SELECT * FROM information_schema.columns")
+    assert isolation.catalog_names_leak("SELECT (")
+    assert not isolation.catalog_names_leak("SELECT pg_catalog.lower(name), 1::pg_catalog.int4 FROM t")
