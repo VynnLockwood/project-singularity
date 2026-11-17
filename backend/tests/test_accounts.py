@@ -106,7 +106,9 @@ def test_admin_can_change_role_and_it_is_audited():
     entry = AuditLog.objects.get(action="user.role_changed")
     assert entry.actor_email == "admin@example.com"
     assert entry.target == "t@example.com"
-    assert entry.details == {"from": "viewer", "to": "editor"}
+    # the test hook's `*` viewer grant sat at the old role, so it follows the promotion (tests/test_access_manage.py)
+    assert entry.details == {"from": "viewer", "to": "editor",
+                             "access_star_raised": {"from": "viewer", "to": "editor"}}
 
 
 @pytest.mark.django_db
