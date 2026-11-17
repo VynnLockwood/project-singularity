@@ -28,6 +28,11 @@ CREATE TABLE master.subdistrict (
 SCRATCH = "export_roundtrip"
 
 
+def viewer():
+    """A saved viewer: an unsaved User has no grants, so every database is hidden from it (per-database access)."""
+    return User.objects.create(username="viewer@x.com", email="viewer@x.com", role=Role.VIEWER)
+
+
 def export_as(user):
     """Call the real view with a hand-built request; no client."""
     req = RF.get("/api/schema/export")
@@ -46,7 +51,7 @@ def test_anonymous_export_is_unauthorized():
 def test_export_returns_sql_attachment(master):
     with pgsetup.connect("singularity_master_rw", master) as rw:
         rw.execute(SEED)
-    r = export_as(User(role=Role.VIEWER))
+    r = export_as(viewer())
     assert r.status_code == 200
     assert r["Content-Type"].startswith("text/sql")
     assert r["Content-Disposition"].startswith('attachment; filename="singularity-master-')
@@ -58,7 +63,7 @@ def test_export_returns_sql_attachment(master):
 def test_export_leaks_no_singularity_internals(master):
     with pgsetup.connect("singularity_master_rw", master) as rw:
         rw.execute(SEED)
-    body = b"".join(export_as(User(role=Role.VIEWER)).streaming_content).decode().lower()
+    body = b"".join(export_as(viewer()).streaming_content).decode().lower()
     assert [name for name in INTERNAL if name in body] == []
 
 
@@ -69,7 +74,7 @@ def test_exported_sql_loads_into_a_real_postgres(master):
     with pgsetup.connect("singularity_master_rw", master) as rw:
         rw.execute(SEED)
 
-    r = export_as(User(role=Role.VIEWER))
+    r = export_as(viewer())
     assert r.status_code == 200
     sql = b"".join(r.streaming_content).decode()
     assert sql.count("CREATE TABLE") == 3
