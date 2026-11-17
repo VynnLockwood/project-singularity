@@ -600,3 +600,19 @@ def test_submit_of_someone_elses_script_needs_the_same_reach_as_reading_it(dbs, 
         script_service.submit(ed, s.pk)
     assert Change.objects.count() == before
     assert Script.objects.get(pk=s.pk).status == Script.Status.VALIDATED
+
+
+def test_a_file_named_database_hidden_from_the_viewer_hides_the_script(dbs, other, master_approver):
+    """The file names crm; it was checked for master (crm unreachable for the owner, or chosen): others who
+    cannot reach crm do not see it, but a name that is no database here (public) hides nothing."""
+    crm_named = make_script(other, "master")
+    crm_named.report = {**crm_named.report, "detected_schema": HIDDEN}
+    crm_named.save(update_fields=["report"])
+    public = make_script(other, "master")
+    public.report = {**public.report, "detected_schema": "public"}
+    public.save(update_fields=["report"])
+    c = client(master_approver)
+    listed = [x["id"] for x in c.get("/api/scripts").json()["scripts"]]
+    assert public.pk in listed and crm_named.pk not in listed
+    assert c.get(f"/api/scripts/{public.pk}").status_code == 200
+    assert c.get(f"/api/scripts/{crm_named.pk}").status_code == 404

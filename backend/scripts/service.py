@@ -57,8 +57,14 @@ def script_databases(script: Script) -> set[str] | None:
             continue
         if not isinstance(v, str) or not v:
             return None
+        if path == ("detected_schema",) and v not in _managed():
+            continue   # a name in the file that is no database here (e.g. public) names none of ours
         out.add(v)
     return out
+
+
+def _managed() -> set[str]:
+    return {m["name"] for m in introspect.managed_schemas()}
 
 
 def hidden_from(user, script: Script | None) -> bool:
@@ -106,7 +112,10 @@ def visible(user):
     others = Q(report__validated_schema__in=dbs)
     for path in REPORT_DATABASE_KEYS[1:]:
         key = "report__" + "__".join(path)
-        others &= Q(**{f"{key}__isnull": True}) | Q(**{key: None}) | Q(**{f"{key}__in": dbs})
+        ok = Q(**{f"{key}__isnull": True}) | Q(**{key: None}) | Q(**{f"{key}__in": dbs})
+        if path == ("detected_schema",):   # a name in the file that is no database here names none of ours
+            ok |= ~Q(**{f"{key}__in": sorted(_managed())})
+        others &= ok
     return qs.filter(Q(owner=user) | others)
 
 

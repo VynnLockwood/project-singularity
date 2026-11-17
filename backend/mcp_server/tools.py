@@ -1021,7 +1021,7 @@ def get_script(user, script_id: int) -> dict:
         raise ToolFailure(f"script #{script_id} does not exist")
     try:
         script_service.check_reach(user, s)
-    except (PermissionError, access.AccessDenied) as exc:
+    except (PermissionError, access.AccessDenied, introspect.UnknownSchema) as exc:
         raise ToolFailure(str(exc)) from exc
     return {"id": s.pk, "name": s.name, "size": s.size, "status": s.status,
             "change_id": s.change_id, "report": _trim_report(s.report or {}) if s.report else None}
