@@ -59,6 +59,7 @@ Every tool states the role it needs; a client only sees the tools its user's rol
 | `get_audit_log` | approver | Who did what and when. |
 | `list_users` | approver | People and their roles. |
 | `reindex_search` | approver | Refresh the schema search index. |
+| `get_user_access`, `set_user_access` | admin | Read or replace one person's per-database grants (applied at once, audited as `access.changed` with `via: "mcp"`; not offered in the web chat). |
 
 ## Raw SQL
 
@@ -213,7 +214,7 @@ Sign-in is invite-only. An admin adds a person, and only then can that person si
 | viewer | read |
 | editor | read, propose data and schema changes (editors approve their own data changes, in the web app only) |
 | approver | read, edit, approve, reject and revert normal changes, change settings; over MCP also `list_users`, `get_audit_log`, `list_pending`, `revert_change`, `create_backup`, `list_backups`, `reindex_search` |
-| admin | everything an approver can, plus manage users and approve or revert role changes |
+| admin | everything an approver can, plus manage users, approve or revert role changes, and manage per-database access (Users page, or `get_user_access` / `set_user_access` over MCP) |
 
 **Adding people and changing roles.** Admins open the **Users** page (`/users`; other roles get a not-found page). There they add a person by email with a role, change a role, or turn access off and on again. You cannot turn yourself off, and the last active admin cannot lose the role or be turned off. Roles can also be proposed with `set_user_role` from an AI client or the chat, but the change waits until an admin approves it; reverting a role change also needs an admin. A role change or turning someone off closes their open live-update connection, so the browser reconnects under the new role. The audit log (`/api/audit`, `get_audit_log`) is for approvers and admins.
 

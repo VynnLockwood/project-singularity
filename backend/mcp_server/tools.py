@@ -60,6 +60,8 @@ TOOL_ROLES = {
     "get_load": "editor",
     "cancel_load": "editor",
     "get_audit_log": "approver",   # audit details can hold other people's prompts and emails
+    "get_user_access": "admin",    # who can reach which database is an admin's to see and decide
+    "set_user_access": "admin",
 }
 
 RANK = {"viewer": 0, "editor": 1, "approver": 2, "admin": 3}
@@ -123,6 +125,23 @@ DESCRIPTIONS = {
     "list_changes": (
         "History of proposed changes, newest first: pending, applied, rejected, failed or stale. Filter by status, "
         "kind (schema, data, config), schema, or mine=true for your own. Summaries only; call get_change for the diff."
+    ),
+    "get_user_access": (
+        "Admins only. Which databases one person (by email) can reach: their stored grants ({schema, role}; schema "
+        "'*' means all databases, role 'none' on a database denies it under '*'; 'stale' marks a grant for a "
+        "database that no longer exists), their global role (cap: no grant takes effect above it) and 'databases', "
+        "each database they reach with their effective level. Admins reach every database without grants."
+    ),
+    "set_user_access": (
+        "Admins only. Replace ALL of one person's database grants with 'grants', a list of {schema, role}: schema is "
+        "a database name or '*' for all databases (present and future); role is viewer, editor or approver, or none "
+        "to deny one database under '*' ('*' itself cannot be none). Never above their global role; admins need no "
+        "grants. Send the full list (call get_user_access first and edit it): anything left out is removed; [] "
+        "removes all access. Applied at once, an admin's decision like on the web Users page, and audited as "
+        "access.changed (via mcp); the person's open sessions reconnect with the new access. Returns the grants "
+        "before and after. To widen someone beyond their global role, change the role first (propose_config_change "
+        "set_user_role): a promotion raises a '*' grant that matched the old role, recorded as access_star_raised "
+        "on the user.role_changed audit entry, not as access.changed. Confirm with the person before calling."
     ),
     "get_audit_log": (
         "Who did what and when (approvers only): sign-ins, proposals, decisions, exports, settings changes. "
@@ -326,6 +345,54 @@ def list_users(user) -> dict:
 
     return {"users": [{"email": u.email, "name": f"{u.first_name} {u.last_name}".strip(), "role": u.role, "active": u.is_active}
                       for u in User.objects.order_by("email")]}
+
+
+def _access_target(user, email):
+    """The user an admin's access tool acts on. Refuses a non-admin first, so nobody else can probe emails."""
+    from accounts import services as account_services
+
+    if not (user is not None and user.is_active and user.can_admin):
+        raise ToolFailure("only admins can manage users")
+    try:
+        canon = account_services.normalize_email(email)
+    except account_services.UserManagementDenied:
+        canon = None
+    target = account_services.find_user_by_email(canon) if canon else None
+    if target is None:
+        raise ToolFailure(f"no user with email {email!r}")  # the same text as set_user_role's lookup
+    return target
+
+
+def _access_view(target, stored: dict) -> dict:
+    from accounts import access
+
+    return {"email": target.email, "role": str(target.role), "cap": stored["cap"], "grants": stored["grants"],
+            "databases": access.effective_schemas(target)}
+
+
+def get_user_access(user, email: str) -> dict:
+    """A person's database grants (as stored, `*` first) and the databases they reach with the level on each."""
+    from accounts import services as account_services
+
+    target = _access_target(user, email)
+    return _access_view(target, account_services.user_access(target))
+
+
+def set_user_access(user, email: str, grants: list) -> dict:
+    """Replace all of a person's grants at once (an admin's decision, applied directly, audited as access.changed
+    with via mcp). Returns the grants before and after and the databases they now reach."""
+    from accounts import services as account_services
+
+    target = _access_target(user, email)
+    before = account_services.user_access(target)["grants"]
+    try:
+        after = account_services.set_user_access(user, target, grants, via="mcp")
+    except account_services.UserManagementDenied as exc:
+        raise ToolFailure(str(exc)) from exc
+    strip = [{k: g[k] for k in ("schema", "role")} for g in before]
+    out = _access_view(target, after)
+    return {"email": out["email"], "role": out["role"], "cap": out["cap"], "before": before,
+            "after": out["grants"], "changed": strip != out["grants"], "databases": out["databases"]}
 
 
 def propose_config_change(user, operations: list, prompt: str = "", *, source: str = "mcp",
@@ -970,6 +1037,8 @@ IMPL = {
     "get_settings": get_settings,
     "propose_config_change": propose_config_change,
     "list_users": list_users,
+    "get_user_access": get_user_access,
+    "set_user_access": set_user_access,
     "get_change": get_change,
     "approve_change": approve_change,
     "reject_change": reject_change,

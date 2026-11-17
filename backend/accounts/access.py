@@ -122,6 +122,33 @@ def readable_schemas(user) -> list[str]:
     return [m["name"] for m in introspect.managed_schemas() if _effective(user, m["name"], grants) is not None]
 
 
+def effective_schemas(user) -> list[dict]:
+    """Each managed database the user can read, with their level there: `[{"name", "role"}]`, master first.
+
+    The same decision as `effective_role`, made once for the whole list (profile, /api/me, get_user_access).
+    """
+    if not _active(user):
+        return []
+    grants = _grants(user) if not _is_admin(user) else {}
+    out = []
+    for m in introspect.managed_schemas():
+        role = _effective(user, m["name"], grants)
+        if role is not None:
+            out.append({"name": m["name"], "role": str(role)})
+    return out
+
+
+def reaches_all(user) -> bool:
+    """True when the user reaches every database, present and future: an admin, or a `*` grant with no
+    database denied under it (a cap below the grant still lowers the level, not the reach)."""
+    if not _active(user):
+        return False
+    if _is_admin(user):
+        return True
+    grants = _grants(user)
+    return ALL in grants and NONE not in grants.values()
+
+
 def _unknown(schema) -> introspect.UnknownSchema:
     # exactly what introspect.require_managed raises for a database that does not exist
     return introspect.UnknownSchema(introspect.unknown_schema_message(schema))

@@ -1,3 +1,4 @@
+import logging
 import secrets
 
 from django.contrib.auth import login, logout
@@ -8,7 +9,7 @@ from django.views.decorators.http import require_GET, require_POST
 
 from config.siconfig import get_config
 
-from . import capabilities, google
+from . import access, capabilities, google
 from . import tokens as token_service
 from .api import endpoint
 from .models import User
@@ -26,6 +27,8 @@ from .services import (
 )
 
 STATE_KEY = "google_oauth_state"
+
+logger = logging.getLogger("accounts")
 
 
 def _user_json(user: User) -> dict:
@@ -58,7 +61,18 @@ def csrf(request):
 def me(request):
     if not request.user.is_authenticated:
         return JsonResponse({"error": "unauthenticated"}, status=401)
-    return JsonResponse({**_user_json(request.user), "capabilities": capabilities.build(request.user)})
+    return JsonResponse({**_user_json(request.user), "access": _my_access(request.user),
+                         "capabilities": capabilities.build(request.user)})
+
+
+def _my_access(user) -> dict:
+    """The databases the signed-in person reaches, with their level on each (the same decision the server
+    enforces). If the databases cannot be read right now, an empty list rather than a broken /api/me."""
+    try:
+        return {"all": access.reaches_all(user), "schemas": access.effective_schemas(user)}
+    except Exception:
+        logger.warning("could not read the databases for /api/me", exc_info=True)
+        return {"all": False, "schemas": []}
 
 
 @require_GET
