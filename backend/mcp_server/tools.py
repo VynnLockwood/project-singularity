@@ -696,9 +696,8 @@ def create_backup(user, schema: str = "master", label: str = "manual") -> dict:
 
 
 def list_backups(user, schema: str | None = None) -> dict:
-    from schema import backup
-
     from accounts import access
+    from schema import backup
 
     if schema is not None and not isinstance(schema, str):
         raise ToolFailure("schema must be a database name, for example \"master\".")
@@ -706,7 +705,7 @@ def list_backups(user, schema: str | None = None) -> dict:
         try:
             access.require(user, schema, "approver")
         except introspect.UnknownSchema:
-            pass   # missing, hidden or dropped: the filtered list answers (empty, except a dropped one for admins)
+            pass   # missing, hidden or dropped: the filtered list answers (empty; a dropped one only for admins)
         except access.AccessDenied as exc:
             raise ToolFailure(str(exc)) from exc
     return {"backups": backup.list_backups(user, schema or None)}

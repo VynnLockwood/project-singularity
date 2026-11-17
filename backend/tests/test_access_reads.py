@@ -374,3 +374,18 @@ def test_unknown_schema_text_is_unchanged_for_admins(dbs):
     with pytest.raises(tools.ToolFailure) as e:
         tools.list_tables(dbs, MISSING)
     assert str(e.value) == f"{introspect.unknown_schema_message(MISSING)} Call list_schemas to see the databases."
+
+
+def test_backups_of_a_dropped_database_stay_hidden_from_non_admins(dbs, master_db):
+    """A `*` approver denied crm must not learn crm's name from its backups once crm is dropped (and the deny
+    with it). Only databases that exist now and where the user is approver are listed; admins see all."""
+    u = star_with_deny(make_user(Role.APPROVER))
+    assert any(b["schema"] == HIDDEN for b in tools.list_backups(dbs)["backups"])   # automatic crm backups
+    with pgsetup.connect("singularity_master_rw", master_db) as rw:
+        rw.execute(f'DROP SCHEMA "{HIDDEN}" CASCADE')
+    SchemaGrant.objects.filter(schema=HIDDEN).delete()       # what drop_schema does to grants
+    assert {b["schema"] for b in tools.list_backups(u)["backups"]} == {"master"}
+    assert tools.list_backups(u, HIDDEN) == tools.list_backups(u, MISSING) == {"backups": []}
+    assert {b["schema"] for b in backup.list_backups(u)} == {"master"}
+    assert HIDDEN in {b["schema"] for b in tools.list_backups(dbs)["backups"]}
+    assert {b["schema"] for b in tools.list_backups(dbs, HIDDEN)["backups"]} == {HIDDEN}

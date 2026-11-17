@@ -5,7 +5,7 @@ import shutil
 
 import pytest
 
-from accounts.models import Role
+from accounts.models import Role, User
 from audit.models import AuditLog
 from mcp_server import tools
 from schema import backup
@@ -94,9 +94,12 @@ def test_list_backups_newest_first_filtered_and_only_real_dumps(users, settings)
     touch(folder, "notes.txt")
     touch(folder, "bad.dump")
     (folder / "sub-20260104T000000Z-dir.dump").mkdir()            # a folder is not a backup
-    out = tools.list_backups(users[Role.APPROVER])["backups"]
+    # `other` is not a database now: only an admin sees its backup (per-database access, test_access_reads)
+    admin = User.objects.create(username="admin@example.com", email="admin@example.com", role=Role.ADMIN)
+    out = tools.list_backups(admin)["backups"]
     assert [b["file"] for b in out] == [
         "other-20260103T000000Z-x.dump", "master-20260102T000000Z-change-5.dump", "master-20260101T000000Z-manual.dump"]
+    assert [b["file"] for b in tools.list_backups(users[Role.APPROVER])["backups"]] == [b["file"] for b in out[1:]]
     assert out[1] == {"file": "master-20260102T000000Z-change-5.dump", "schema": "master", "label": "change-5",
                       "bytes": 20, "created_at": "2026-01-02T00:00:00Z"}
     only = tools.list_backups(users[Role.APPROVER], schema="master")["backups"]
