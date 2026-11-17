@@ -16,10 +16,13 @@ from .services import (
     NotAdmin,
     SignInDenied,
     UserManagementDenied,
+    access_summary,
     change_role,
     create_user,
+    set_user_access,
     set_user_active,
     sign_in_from_claims,
+    user_access,
 )
 
 STATE_KEY = "google_oauth_state"
@@ -34,6 +37,11 @@ def _user_json(user: User) -> dict:
         "active": user.is_active,
         "lastLoginAt": user.last_login.isoformat() if user.last_login else None,
     }
+
+
+def _admin_user_json(user: User) -> dict:
+    """A user as the admin-only Users endpoints show it: with a summary of their database grants."""
+    return {**_user_json(user), "access": access_summary(user)}
 
 
 def _redirect_uri(request) -> str:
@@ -117,17 +125,18 @@ def _apply(actor, target, body):
 @endpoint(["GET", "POST"], min_role="admin")
 def users_list(request):
     if request.method == "GET":
-        return JsonResponse({"users": [_user_json(u) for u in User.objects.order_by("email")]})
+        return JsonResponse({"users": [_admin_user_json(u) for u in User.objects.order_by("email")]})
     body = request.json
     name = body.get("name") or ""
     if not isinstance(name, str):
         return JsonResponse({"error": "name must be text"}, status=400)
     first, _, last = name.strip().partition(" ")
     try:
-        user = create_user(request.user, body.get("email"), body.get("role"), first_name=first, last_name=last.strip())
+        user = create_user(request.user, body.get("email"), body.get("role"), first_name=first, last_name=last.strip(),
+                           access=body.get("access"))
     except UserManagementDenied as exc:
         return _refused(exc)
-    return JsonResponse(_user_json(user), status=201)
+    return JsonResponse(_admin_user_json(user), status=201)
 
 
 @endpoint("PATCH", min_role="admin")
@@ -139,7 +148,7 @@ def user_detail(request, user_id: int):
     if err:
         return err
     target.refresh_from_db()
-    return JsonResponse(_user_json(target))
+    return JsonResponse(_admin_user_json(target))
 
 
 @endpoint("PATCH", min_role="admin")
@@ -153,7 +162,23 @@ def user_role(request, user_id: int):
     except UserManagementDenied as exc:
         return _refused(exc)
     target.refresh_from_db()
-    return JsonResponse(_user_json(target))
+    return JsonResponse(_admin_user_json(target))
+
+
+@endpoint(["GET", "PUT"], min_role="admin")
+def user_access_view(request, user_id: int):
+    """A user's database grants (GET) or the whole list replaced at once (PUT `{"grants": [...]}`)."""
+    target = User.objects.filter(pk=user_id).first()
+    if target is None:
+        return JsonResponse({"error": "not found"}, status=404)
+    if request.method == "GET":
+        return JsonResponse(user_access(target))
+    if "grants" not in request.json:
+        return JsonResponse({"error": "send grants: a list of {schema, role} entries"}, status=400)
+    try:
+        return JsonResponse(set_user_access(request.user, target, request.json["grants"], via="web"))
+    except UserManagementDenied as exc:
+        return _refused(exc)
 
 
 # ---- MCP access tokens (each user manages their own) -------------------------

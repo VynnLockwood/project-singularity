@@ -64,6 +64,7 @@ WEB_ONLY = {
     "api/users": USERS,
     "api/users/<int:user_id>": USERS,
     "api/users/<int:user_id>/role": USERS,
+    "api/users/<int:user_id>/access": "MCP tools added in the next task",
     "api/intelligent-query/learn": "what people accepted and ran is learned from the web editor, not from an AI's guess",
     "api/intelligent-query/examples": "reviewing and removing the team's saved queries is an approver's job in the web app",
     "api/intelligent-query/examples/<int:example_id>": "reviewing and removing the team's saved queries is an approver's job in the web app",

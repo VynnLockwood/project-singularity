@@ -9,7 +9,7 @@ from django.db.models.functions import Lower, Trim
 from audit.models import record
 from config.siconfig import get_config
 
-from .models import ROLE_RANK, Role, User
+from .models import GRANT_NONE, GRANT_ROLES, ROLE_RANK, Role, SchemaGrant, User
 
 logger = logging.getLogger("accounts")
 
@@ -192,8 +192,13 @@ def _guard_last_admin(target: User, admins: list[User]) -> None:
         raise UserManagementDenied("cannot remove the last active admin")
 
 
-def create_user(actor: User, email, role, first_name: str = "", last_name: str = "") -> User:
-    """Invite a person: an active user with the given role who can sign in with Google. Admins only."""
+def create_user(actor: User, email, role, first_name: str = "", last_name: str = "",
+                access: list[dict] | None = None, *, via: str = "web") -> User:
+    """Invite a person: an active user with the given role who can sign in with Google. Admins only.
+
+    `access` (optional) is the initial list of grants, checked by the same rules as `set_user_access` and written
+    in the same transaction: an invalid grant refuses the whole invitation. Without it the user has no grants.
+    """
     _require_admin(actor)
     email = normalize_email(email)
     if not isinstance(role, str) or role not in ROLE_RANK:
@@ -203,18 +208,144 @@ def create_user(actor: User, email, role, first_name: str = "", last_name: str =
         raise UserManagementDenied("this email domain is not allowed: " + ", ".join(domains))
     first = (first_name or "").strip()[:MAX_NAME] if isinstance(first_name, str) else ""
     last = (last_name or "").strip()[:MAX_NAME] if isinstance(last_name, str) else ""
+    _check_via(via)
+    if access is not None:
+        _clean_grants(access, email, role)  # refuse bad input before touching the database
     duplicate = UserManagementDenied("a user with this email already exists")
     if find_user_by_email(email) is not None:
         raise duplicate
-    try:
-        with transaction.atomic():
-            user = User(username=_username_for(email), email=email, role=Role(role), first_name=first, last_name=last)
-            user.set_unusable_password()
-            user.save()
-    except IntegrityError:
-        raise duplicate from None
-    record(actor, "user.created", target=email, details={"role": user.role})
+    with transaction.atomic():
+        try:
+            with transaction.atomic():
+                user = User(username=_username_for(email), email=email, role=Role(role), first_name=first,
+                            last_name=last)
+                user.set_unusable_password()
+                user.save()
+        except IntegrityError:
+            raise duplicate from None
+        record(actor, "user.created", target=email, details={"role": user.role})
+        if access:
+            _write_grants(actor, user, _clean_grants(access, email, user.role), via)
     return user
+
+
+# ---- per-database access (grants) --------------------------------------------
+
+ACCESS_CHANNELS = ("web", "mcp")
+_GRANT_LEVELS = {r.value for r in GRANT_ROLES} | {GRANT_NONE}
+
+
+def _check_via(via) -> None:
+    if via not in ACCESS_CHANNELS:
+        raise UserManagementDenied("via must be web or mcp")
+
+
+def _stored_grants(target: User) -> list[dict]:
+    return [{"schema": s, "role": r}
+            for s, r in SchemaGrant.objects.filter(user_id=target.pk).order_by("schema").values_list("schema", "role")]
+
+
+def user_access(target: User) -> dict:
+    """The target's stored grants (schema order, `*` first) and their cap, the global role.
+
+    A grant whose database is no longer managed is still listed, flagged `"stale": true`; it has no effect and
+    the next `set_user_access` drops it unless it is sent again (which is refused, the database is gone).
+    """
+    from schema import introspect
+
+    grants = _stored_grants(target)
+    if grants:
+        managed = {m["name"] for m in introspect.managed_schemas()}
+        for g in grants:
+            if g["schema"] != "*" and g["schema"] not in managed:
+                g["stale"] = True
+    return {"grants": grants, "cap": str(target.role)}
+
+
+def access_summary(target: User) -> dict:
+    """For the Users page: `all` (admin, or a `*` grant) and the specific grants as `{"name", "role"}`."""
+    if target.role == Role.ADMIN:
+        return {"all": True, "schemas": []}
+    grants = _stored_grants(target)
+    return {"all": any(g["schema"] == "*" for g in grants),
+            "schemas": [{"name": g["schema"], "role": g["role"]} for g in grants if g["schema"] != "*"]}
+
+
+def _clean_grants(grants, email: str, cap) -> list[dict]:
+    """Check a whole list of grants for a user whose global role is `cap`; returns it sorted by schema.
+
+    Raises UserManagementDenied with a reason the admin can act on. Unknown extra keys (such as the `stale` flag
+    that `user_access` returns) are ignored.
+    """
+    from schema import introspect
+
+    if str(cap) == Role.ADMIN:
+        if grants == []:
+            return []
+        raise UserManagementDenied("admins reach every database; they need no grants")
+    if not isinstance(grants, list):
+        raise UserManagementDenied("grants must be a list of {schema, role} entries")
+    managed = None
+    cap_rank = ROLE_RANK[Role(cap)]
+    seen: dict[str, str] = {}
+    for g in grants:
+        if not isinstance(g, dict):
+            raise UserManagementDenied("each grant must be an object with a schema and a role")
+        schema, role = g.get("schema"), g.get("role")
+        if not isinstance(schema, str) or not schema.strip():
+            raise UserManagementDenied("each grant needs a schema: a database name, or * for all databases")
+        if not isinstance(role, str) or role not in _GRANT_LEVELS:
+            raise UserManagementDenied("a grant's role must be viewer, editor, approver or none")
+        if schema in seen:
+            raise UserManagementDenied(f"database {schema!r} is listed twice")
+        if schema == "*":
+            if role == GRANT_NONE:
+                raise UserManagementDenied(
+                    "All databases (*) cannot be set to none: no entry for All databases already means no access "
+                    "there; remove the row instead")
+        else:
+            if managed is None:
+                managed = {m["name"] for m in introspect.managed_schemas()}
+            if schema not in managed:
+                raise UserManagementDenied(introspect.unknown_schema_message(schema))
+        if role != GRANT_NONE and ROLE_RANK[Role(role)] > cap_rank:
+            where = "All databases" if schema == "*" else repr(schema)
+            raise UserManagementDenied(
+                f"{role} on {where} is above {email}'s global role ({Role(cap).value}); it could never take effect. "
+                "Change their role first.")
+        seen[schema] = role
+    return [{"schema": s, "role": seen[s]} for s in sorted(seen)]
+
+
+def _write_grants(actor: User, target: User, after: list[dict], via: str) -> bool:
+    """Replace the target's grants with `after` (already checked), inside the caller's transaction.
+
+    Returns False when nothing changes (no write, no audit). Otherwise audits `access.changed` and closes the
+    target's live sockets once committed, so the new access applies at once.
+    """
+    before = _stored_grants(target)
+    if before == after:
+        return False
+    SchemaGrant.objects.filter(user_id=target.pk).delete()
+    SchemaGrant.objects.bulk_create([SchemaGrant(user=target, schema=g["schema"], role=g["role"]) for g in after])
+    record(actor, "access.changed", target=target.email, details={"before": before, "after": after, "via": via})
+    _close_sockets_on_commit(target)
+    return True
+
+
+def set_user_access(actor: User, target: User, grants: list[dict], *, via: str = "web") -> dict:
+    """Replace all of the target's grants with `grants` (each `{schema, role}`), atomically. Admins only.
+
+    Rules: schema is a managed database or `*`; role is viewer/editor/approver, or none for a specific database
+    (a deny under `*`); each database once; never above the target's global role; never for an admin target.
+    Returns `user_access(target)`.
+    """
+    _require_admin(actor)
+    _check_via(via)
+    with transaction.atomic():
+        _lock_for_change(target)  # the cap is the role as committed, not a stale copy
+        _write_grants(actor, target, _clean_grants(grants, target.email, target.role), via)
+    return user_access(target)
 
 
 def set_user_active(actor: User, target: User, active: bool) -> User:
@@ -254,5 +385,23 @@ def change_role(actor: User, target: User, new_role: str) -> User:
         target.role = Role(new_role)
         target.save(update_fields=["role"])
         _close_sockets_on_commit(target)
-        record(actor, "user.role_changed", target=target.email, details={"from": old_role, "to": target.role.value})
+        details = {"from": old_role, "to": target.role.value}
+        raised = _raise_star_grant(target, old_role, target.role)
+        if raised:
+            details["access_star_raised"] = raised
+        record(actor, "user.role_changed", target=target.email, details=details)
     return target
+
+
+def _raise_star_grant(target: User, old_role, new_role) -> dict | None:
+    """On a promotion, a `*` grant that sat exactly at the old global role follows the user up to the new one
+    (it tracked the role); a narrower `*` grant, specific grants and every demotion are left alone (the global
+    role caps them). Admin is never a grant. Returns `{"from", "to"}` when it raised the grant."""
+    if new_role not in GRANT_ROLES or old_role not in GRANT_ROLES:
+        return None
+    if ROLE_RANK[Role(new_role)] <= ROLE_RANK[Role(old_role)]:
+        return None
+    if not SchemaGrant.objects.filter(user_id=target.pk, schema="*", role=Role(old_role).value).update(
+            role=Role(new_role).value):
+        return None
+    return {"from": Role(old_role).value, "to": Role(new_role).value}

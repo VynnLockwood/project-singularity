@@ -47,7 +47,7 @@ def test_admin_lists_creates_patches_users(client):
     by = {u["email"]: u for u in users}
     assert set(by) == {"admin@example.com", "off@example.com"}
     assert by["off@example.com"]["active"] is False
-    assert set(by["off@example.com"]) == {"id", "email", "name", "role", "active", "lastLoginAt"}
+    assert set(by["off@example.com"]) == {"id", "email", "name", "role", "active", "lastLoginAt", "access"}
     assert by["admin@example.com"]["lastLoginAt"] is not None  # force_login sets last_login
     assert by["off@example.com"]["lastLoginAt"] is None
 
