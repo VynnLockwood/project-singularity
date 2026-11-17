@@ -100,6 +100,7 @@ Both run with `search_path` set to one database, but a qualified name (`other.ta
 
 - The read-only `query` tool/endpoint and the intelligent-query path reject a statement whose plan touches any database the user cannot read: run `EXPLAIN (VERBOSE, FORMAT JSON)` first and check every relation's schema against `readable_schemas(user)` (plus `pg_catalog`/`information_schema` as today), then execute. View expansion shows underlying relations, so a view cannot hide them.
 - Raw SQL proposals (`propose_sql`, scripts) must not name a database the proposer lacks editor on (qualified identifiers found by the existing SQL parser); the approver of the target database decides as today.
+- **Decision (user): strong app-level check, no per-database Postgres roles.** In addition to the plan check, refuse statements that read catalog objects that list database names for a non-admin (`pg_namespace`, `pg_class`/`pg_tables` and other `pg_*` catalogs beyond what the app itself needs, `information_schema.schemata/tables/columns`), so names do not leak. **Known, accepted gap:** a function in a readable database that itself reads another database is not detected; document it in the README and the profile of the risk.
 - If a robust check is not possible for a statement shape, refuse that shape with a plain message instead of allowing it.
 
 ### Management surfaces (admin only)
