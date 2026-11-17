@@ -455,7 +455,8 @@ def run_query(user, sql: str, limit: int | None = None, schema: str = "master") 
     limits = get_config()["limits"]
     cap = limits["maxQueryRows"]
     try:
-        return query.run_select(sql, limit=min(limit or cap, cap), timeout_ms=limits["queryTimeoutMs"], schema=schema)
+        return query.run_select(sql, user=user, limit=min(limit or cap, cap), timeout_ms=limits["queryTimeoutMs"],
+                                schema=schema)
     except (query.QueryError, introspect.UnknownSchema) as exc:
         raise ToolFailure(str(exc)) from exc
 

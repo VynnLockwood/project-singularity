@@ -70,6 +70,11 @@ def _is_admin(user) -> bool:
     return getattr(user, "role", None) == Role.ADMIN
 
 
+def is_admin(user) -> bool:
+    """An active admin: reaches every database, present and future (SQL isolation skips its checks)."""
+    return _active(user) and _is_admin(user)
+
+
 def _grants(user) -> dict[str, str]:
     """The user's stored grants, schema -> role (read once per decision)."""
     if not getattr(user, "pk", None):

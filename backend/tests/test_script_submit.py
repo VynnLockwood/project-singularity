@@ -11,6 +11,7 @@ from scripts import service, storage
 from scripts.mapping import suggest_mapping
 from scripts.models import Script
 from scripts.sqlparse import parse_script
+from .ops_helpers import ADMIN
 
 pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("master")]
 
@@ -89,7 +90,7 @@ def test_editor_submit_data_only_then_an_approver_loads_rows(editor, approver):
     assert e.value.code == "forbidden"
     applied = approvals.approve(approver, change.pk)
     assert applied.status == Change.Status.APPLIED
-    rows = query.run_select('SELECT province_id, province_name FROM province ORDER BY 1')["rows"]
+    rows = query.run_select('SELECT province_id, province_name FROM province ORDER BY 1', user=ADMIN)["rows"]
     assert rows == [[10, "Alpha"], [11, "Beta"]]
 
 
@@ -105,10 +106,10 @@ def test_create_table_script_waits_for_an_approver(editor, approver):
     assert e.value.code == "forbidden"
     applied = approvals.approve(approver, change.pk)
     assert applied.status == Change.Status.APPLIED
-    rows = query.run_select("SELECT code, province_name FROM province ORDER BY 1")["rows"]
+    rows = query.run_select("SELECT code, province_name FROM province ORDER BY 1", user=ADMIN)["rows"]
     assert rows == [["10", "กรุงเทพมหานคร"], ["11", "สมุทรปราการ"]]
-    assert query.run_select("SELECT count(*) FROM district")["rows"][0][0] == 2
-    assert query.run_select("SELECT count(*) FROM subdistrict")["rows"][0][0] == 3
+    assert query.run_select("SELECT count(*) FROM district", user=ADMIN)["rows"][0][0] == 2
+    assert query.run_select("SELECT count(*) FROM subdistrict", user=ADMIN)["rows"][0][0] == 3
     s.refresh_from_db()
     assert s.status == Script.Status.SUBMITTED
 

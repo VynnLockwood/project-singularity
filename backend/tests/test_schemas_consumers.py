@@ -17,6 +17,7 @@ from search import embedder, indexer
 from search.models import DIMENSIONS, SchemaEmbedding
 
 from . import pgsetup
+from .ops_helpers import ADMIN
 
 pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("master")]
 
@@ -80,8 +81,8 @@ def test_rows_table_missing_in_other_schema(two):
 
 
 def test_run_select_per_schema_and_refuses_unmanaged(two, monkeypatch):
-    assert query.run_select("select code from t order by 1", schema="crm")["rows"] == [["C1"], ["C2"], ["C3"]]
-    assert query.run_select("select code from t order by 1")["rows"] == [["M1"], ["M2"]]
+    assert query.run_select("select code from t order by 1", schema="crm", user=ADMIN)["rows"] == [["C1"], ["C2"], ["C3"]]
+    assert query.run_select("select code from t order by 1", user=ADMIN)["rows"] == [["M1"], ["M2"]]
     import schema.query as q
 
     def boom():
@@ -89,7 +90,7 @@ def test_run_select_per_schema_and_refuses_unmanaged(two, monkeypatch):
     monkeypatch.setattr(q, "ro_connection", boom)
     for bad in ("public", "singularity", "pg_catalog"):
         with pytest.raises(introspect.UnknownSchema):
-            query.run_select("select 1", schema=bad)
+            query.run_select("select 1", schema=bad, user=ADMIN)
 
 
 class FakeEngine:
@@ -116,7 +117,7 @@ def test_duplicates_scan_and_merge_touch_crm_only(two, monkeypatch):
     ch = dup.propose_merge(g, 1, two)
     assert ch.schema == "crm"
     service.approve(two, ch.pk)
-    assert query.run_select("select count(*) from t")["rows"] == [[2]]
+    assert query.run_select("select count(*) from t", user=ADMIN)["rows"] == [[2]]
 
 
 def fake_vector(text):
@@ -169,7 +170,7 @@ def test_script_targets_crm_and_leaves_master_alone(two, settings, tmp_path):
     service.approve(two, ch.pk)
     assert "province" in {t["name"] for t in introspect.list_tables("crm")}
     assert "province" not in {t["name"] for t in introspect.list_tables()}
-    assert query.run_select("select count(*) from province", schema="crm")["rows"] == [[2]]
+    assert query.run_select("select count(*) from province", schema="crm", user=ADMIN)["rows"] == [[2]]
 
 
 def test_validate_refuses_unmanaged_schema(two, settings, tmp_path):

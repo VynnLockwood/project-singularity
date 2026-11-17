@@ -8,6 +8,7 @@ from audit.models import AuditLog
 from schema import introspect, query
 from settings_app import services as rules_service
 from settings_app.models import Rule
+from .ops_helpers import ADMIN
 
 pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("master")]
 
@@ -94,7 +95,7 @@ def test_editor_self_approves_data_change(editor, approver):
     assert c.kind == "data"
     c = service.approve(editor, c.pk)
     assert c.status == "applied"
-    assert query.run_select("SELECT name, created_by FROM customer")["rows"] == [["Acme", "editor@example.com"]]
+    assert query.run_select("SELECT name, created_by FROM customer", user=ADMIN)["rows"] == [["Acme", "editor@example.com"]]
 
 
 def test_other_editor_cannot_approve_someone_elses_data_change(editor, editor2, approver):
@@ -278,7 +279,7 @@ def test_revert_data_change(approver):
     ins = service.approve(approver, service.propose(approver, INSERT_ACME, source="web").pk)
     rev = service.revert(approver, ins.pk)
     assert rev.status == "applied" and rev.source == "revert" and rev.reverts_id == ins.pk
-    assert query.run_select('SELECT is_active FROM customer')["rows"] == [[False]]
+    assert query.run_select('SELECT is_active FROM customer', user=ADMIN)["rows"] == [[False]]
     assert "change.reverted" in actions()
 
 
@@ -450,7 +451,7 @@ def test_revert_of_large_bulk_load_uses_script_cap(approver):
                                  original_operations=[op], operations=[op], reverse_operations=r.reverse_ops)
     rev = service.revert(approver, orig.pk)
     assert rev.status == Change.Status.APPLIED, rev.error
-    assert query.run_select("SELECT count(*) FROM master.big WHERE is_active")["rows"][0][0] == 0
+    assert query.run_select("SELECT count(*) FROM master.big WHERE is_active", user=ADMIN)["rows"][0][0] == 0
 
 
 def rules_service_active():

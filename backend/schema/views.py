@@ -91,7 +91,7 @@ def run_query(request):
         return error("limit must be a number")
     try:
         return JsonResponse(query.run_select(
-            request.json.get("sql"), limit=limit, timeout_ms=limits["queryTimeoutMs"],
+            request.json.get("sql"), user=request.user, limit=limit, timeout_ms=limits["queryTimeoutMs"],
             schema=schema))
     except query.QueryError as exc:
         return error(str(exc), 400)

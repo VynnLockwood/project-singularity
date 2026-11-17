@@ -8,6 +8,7 @@ from schema import backup, executor, introspect, query
 from schema.conn import rw_connection
 
 from . import pgsetup
+from .ops_helpers import ADMIN
 
 pytestmark = pytest.mark.usefixtures("master")
 
@@ -43,7 +44,7 @@ def make_crm():
 
 
 def rows(sql):
-    r = query.run_select(sql)
+    r = query.run_select(sql, user=ADMIN)
     names = [c["name"] if isinstance(c, dict) else c for c in r["columns"]]
     return [dict(zip(names, x)) for x in r["rows"]]
 
