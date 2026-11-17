@@ -355,7 +355,7 @@ class _Collector:
 
     def expression(self, query: str, mode: int) -> None:
         if mode in (3, 4, 5):                       # target := expression
-            m = re.match(r"^(.*?)(:=|=)(.*)$", query, re.S)
+            m = re.match(r"^(.*?)(:=|=)(.*)$", query, re.DOTALL)
             if m is None:
                 self.unclear("a plpgsql assignment cannot be checked")
                 return
@@ -370,7 +370,7 @@ class _Collector:
             self.statement(raw.stmt)
 
     def decl_type(self, typname: str) -> None:
-        name = re.sub(r"%(row)?type$", "", typname, flags=re.I)
+        name = re.sub(r"%(row)?type$", "", typname, flags=re.IGNORECASE)
         try:
             parts = _literal_name(name.split("(", 1)[0].split("[", 1)[0])
         except Unclear:
@@ -451,6 +451,40 @@ def check_text(body: str, allowed, *, is_admin: bool) -> None:
     problem = text_problem(body, allowed, is_admin=is_admin)
     if problem:
         raise QueryError(problem)
+
+
+def reach_problem(user, sql_or_node, level: str = "editor") -> tuple[str, str] | None:
+    """For SQL that will run as the read/write role (raw SQL, view queries): `(code, message)` when it names a
+    database where `user` lacks `level`, reads the catalogs, or cannot be checked; None when fine. Admins: None.
+
+    code "invalid" with the unknown-database text for a database they cannot reach (hidden equals missing: the
+    same text whether it exists or not), "forbidden" with the role text for one they can read but not at `level`.
+    """
+    from accounts import access
+
+    if access.is_admin(user):
+        return None
+    s = scan(sql_or_node)
+    for name in sorted(s.schemas - SYSTEM):
+        try:
+            access.require(user, name, level)
+        except introspect.UnknownSchema as exc:
+            return "invalid", f"{exc} Call list_schemas to see the databases."
+        except access.AccessDenied as exc:
+            return "forbidden", str(exc)
+    if s.unclear:
+        return "invalid", f"{s.unclear[0]}; only an admin can propose it"
+    if s.catalog:
+        return "invalid", CATALOG_REFUSAL
+    return None
+
+
+def view_queries(ops):
+    """`(where, query)` for each create_view operation's query (the SQL a change carries besides raw SQL)."""
+    if not isinstance(ops, list):
+        return []
+    return [(f"operation {i + 1} (create_view)", o["query"]) for i, o in enumerate(ops)
+            if isinstance(o, dict) and o.get("op") == "create_view" and isinstance(o.get("query"), str)]
 
 
 def _plan_nodes(tree):

@@ -8,6 +8,7 @@ from django.utils import timezone
 from pgvector.django import CosineDistance
 from psycopg import sql as psql
 
+from schema import isolation
 from schema.conn import ro_connection
 from schema.query import _START
 from search import embedder
@@ -40,23 +41,48 @@ def select_problem(text: str) -> str | None:
     return None
 
 
-def explains(schema: str, text: str) -> str | None:
-    """None when the database can plan `text` read-only and the plan changes nothing; otherwise the reason."""
-    return _plan(schema, text)[0]
+def explains(schema: str, text: str, *, user) -> str | None:
+    """None when the database can plan `text` read-only, the plan changes nothing and, for `user`, the SQL names and
+    its plan reads only databases they can read (no catalog listings); otherwise the reason."""
+    return _plan(schema, text, user)[0]
 
 
-def _plan(schema: str, text: str) -> tuple[str | None, bool]:
-    """(reason, definite). `definite` is False for a failure that says nothing about the SQL (connection lost, timeout)."""
+def _reach(user) -> tuple[set[str], bool]:
+    from accounts import access
+
+    admin = access.is_admin(user)
+    return (set() if admin else set(access.readable_schemas(user))), admin
+
+
+def reaches(user, text: str) -> bool:
+    """True when `text` names only databases `user` can read (the text check; no database round trip)."""
+    allowed, admin = _reach(user)
+    return isolation.text_problem(text, allowed, is_admin=admin) is None
+
+
+def _plan(schema: str, text: str, user) -> tuple[str | None, bool]:
+    """(reason, definite). `definite` is False for a failure that says nothing about the SQL (connection lost, timeout).
+
+    `user=None` checks only that the SQL still runs (the team memory's own upkeep); with a user, their reach too."""
     problem = select_problem(text)
     if problem:
         return problem, True
     body = text.strip().rstrip(";")
+    if user is not None:
+        allowed, admin = _reach(user)
+        problem = isolation.text_problem(body, allowed, is_admin=admin)
+        if problem:
+            return problem, True
     try:
         with ro_connection() as conn:
             conn.execute("SET TRANSACTION READ ONLY")
             conn.execute(f"SET LOCAL statement_timeout = {EXPLAIN_TIMEOUT_MS}")
             conn.execute(psql.SQL("SET LOCAL search_path = {}").format(psql.Identifier(schema)))
+            if user is not None:
+                isolation.check_plan(conn, body, allowed, is_admin=admin)
             plan = conn.execute("EXPLAIN (FORMAT JSON) " + body).fetchone()
+    except isolation.QueryError as exc:
+        return str(exc), True
     except psycopg.Error as exc:
         return (exc.diag.message_primary or str(exc)), (exc.sqlstate or "").startswith("42")  # 42xxx: syntax or unknown name
     if "ModifyTable" in json.dumps(next(iter(plan.values()))):
@@ -73,7 +99,7 @@ def _value_set(values: list[dict]) -> set[tuple]:
 
 
 def learn(user, schema: str, comments: list[str], text: str, values: list[dict]) -> QueryExample:
-    problem = explains(schema, text)
+    problem = explains(schema, text, user=user)
     if problem:
         raise ValueError(problem)
     norm = normalize_sql(text)
@@ -102,7 +128,7 @@ def _nearest(schema: str, comments: list[str], limit: int):
 
 def _still_valid(ex: QueryExample) -> bool:
     """False (and the example is deleted) when its SQL no longer runs, e.g. the schema changed."""
-    problem, definite = _plan(ex.schema, ex.sql)
+    problem, definite = _plan(ex.schema, ex.sql, None)
     if problem is None or not definite:   # a dropped connection must not wipe the team's memory
         return True
     ex.delete()
@@ -113,24 +139,26 @@ def _touch(ex: QueryExample) -> None:
     QueryExample.objects.filter(pk=ex.pk).update(last_used=timezone.now())
 
 
-def recall(schema: str, comments: list[str], values: list[dict], threshold: float) -> QueryExample | None:
-    """A saved query to show at once: close enough in meaning AND found with the same stored values."""
+def recall(schema: str, comments: list[str], values: list[dict], threshold: float, *, user) -> QueryExample | None:
+    """A saved query to show at once: close enough in meaning AND found with the same stored values. One that names
+    a database `user` cannot read is not shown to them (it stays for others)."""
     for ex in _nearest(schema, comments, 3):
         if 1 - ex.dist < threshold:
             return None
-        if _value_set(ex.values) == _value_set(values) and _still_valid(ex):
+        if _value_set(ex.values) == _value_set(values) and reaches(user, ex.sql) and _still_valid(ex):
             _touch(ex)
             return ex
     return None
 
 
-def examples(schema: str, comments: list[str], k: int) -> list[QueryExample]:
-    """The k nearest active examples that still run; stale ones are removed on the way."""
+def examples(schema: str, comments: list[str], k: int, *, user) -> list[QueryExample]:
+    """The k nearest active examples that still run and name only databases `user` can read; stale ones are removed
+    on the way (ones beyond the user's reach are only skipped)."""
     out: list[QueryExample] = []
     for ex in _nearest(schema, comments, k * 2):
         if len(out) >= k:
             break
-        if _still_valid(ex):
+        if reaches(user, ex.sql) and _still_valid(ex):
             _touch(ex)
             out.append(ex)
     return out

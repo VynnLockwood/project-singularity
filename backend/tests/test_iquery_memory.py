@@ -7,6 +7,7 @@ from iquery import memory
 from iquery.models import QueryExample
 
 from .conftest import fake_vector
+from .ops_helpers import ADMIN
 from .test_iquery_context import build
 
 pytestmark = [pytest.mark.django_db(transaction=True), pytest.mark.usefixtures("master")]
@@ -75,32 +76,32 @@ def test_learn_refuses_a_non_select(world):
 
 def test_recall_needs_same_values(world):
     active(["contracts of acme"])
-    assert memory.recall("master", ["contracts of acme"], A, 0.95).sql == SQL
-    assert memory.recall("master", ["contracts of acme"], B, 0.95) is None
+    assert memory.recall("master", ["contracts of acme"], A, 0.95, user=ADMIN).sql == SQL
+    assert memory.recall("master", ["contracts of acme"], B, 0.95, user=ADMIN) is None
 
 
 def test_recall_ignores_candidates_and_far_comments(world):
     ex = active(["contracts of acme"])
-    assert memory.recall("master", ["something else entirely"], A, 0.95) is None
+    assert memory.recall("master", ["something else entirely"], A, 0.95, user=ADMIN) is None
     ex.status = "candidate"
     ex.save()
-    assert memory.recall("master", ["contracts of acme"], A, 0.95) is None
+    assert memory.recall("master", ["contracts of acme"], A, 0.95, user=ADMIN) is None
 
 
 def test_examples_drop_stale(world):
     ok = active(["contracts of acme"])
     gone = active(["contracts of acme again"], sql='SELECT * FROM "dropped_table"')
-    got = memory.examples("master", ["contracts of acme"], 3)
+    got = memory.examples("master", ["contracts of acme"], 3, user=ADMIN)
     assert [e.pk for e in got] == [ok.pk]
     assert not QueryExample.objects.filter(pk=gone.pk).exists()
 
 
 def test_explains_rejects_modifying_cte(world):
-    err = memory.explains("master", "WITH d AS (DELETE FROM partner RETURNING *) SELECT * FROM d")
+    err = memory.explains("master", "WITH d AS (DELETE FROM partner RETURNING *) SELECT * FROM d", user=ADMIN)
     assert err
     build("SELECT 1")
     from schema import conn
     with conn.rw_connection(autocommit=True) as c:
         assert c.execute("SELECT count(*) AS n FROM master.partner").fetchone()["n"] == 1
-    assert memory.explains("master", SQL) is None
-    assert memory.explains("master", 'SELECT * FROM "nope"')
+    assert memory.explains("master", SQL, user=ADMIN) is None
+    assert memory.explains("master", 'SELECT * FROM "nope"', user=ADMIN)

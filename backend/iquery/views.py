@@ -39,7 +39,7 @@ def _run(request, fn):
 @endpoint("POST")
 @unknown_schema_is_400
 def recall(request):
-    return _run(request, lambda schema, comments, ctx, key: suggest.recall_for(schema, comments))
+    return _run(request, lambda schema, comments, ctx, key: suggest.recall_for(request.user, schema, comments))
 
 
 @endpoint("POST")

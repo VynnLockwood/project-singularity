@@ -276,6 +276,22 @@ def _may_use(report: dict, user, schema: str) -> bool:
     return True
 
 
+def _views_reach(report: dict, user, ops: list[dict]) -> bool:
+    """With `user`: every view query may name or read only databases where they are editor, else an "access"
+    error (the unknown-database text for one they cannot reach, the same as for a missing one). Before the
+    gate and the dry run."""
+    if user is None:
+        return True
+    from schema import isolation
+
+    for where, q in isolation.view_queries(ops):
+        problem = isolation.reach_problem(user, q, "editor")
+        if problem:
+            _add_error(report, "access", 0, q, f"{where}: {problem[1]}")
+            return False
+    return True
+
+
 def _run(report: dict, script: Script, mapping: dict | None, schema: str | None = None, progress=lambda p: None,
          *, user=None) -> None:
     if mapping is not None:
@@ -320,6 +336,8 @@ def _run(report: dict, script: Script, mapping: dict | None, schema: str | None 
         return
     ops = bind_script(mapped.ops, script.pk)
     report["ops_summary"] = _summary(ops)
+    if not _views_reach(report, user, ops):
+        return
 
     limits = get_config()["limits"]
     max_ops = limits["maxOpsPerScript"]
