@@ -42,4 +42,8 @@ def test_admin_sees_approver_tools_over_mcp():
     assert tools.RANK["admin"] == 3
     names = list(tools.TOOL_ROLES)
     assert {"approve_change", "revert_change", "list_users"} <= {n for n in names if tools.allowed(admin, n)}
-    assert [n for n in names if tools.allowed(admin, n)] == [n for n in names if tools.allowed(approver, n)]
+    # admin = every approver tool, plus only the per-database grant tools (admin-only by design)
+    admin_only = [n for n in names if tools.allowed(admin, n) and not tools.allowed(approver, n)]
+    assert admin_only == ["get_user_access", "set_user_access"]
+    assert [n for n in names if tools.allowed(approver, n)] == [n for n in names if tools.allowed(admin, n)
+                                                               and n not in admin_only]
