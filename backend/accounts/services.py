@@ -240,9 +240,25 @@ def _check_via(via) -> None:
         raise UserManagementDenied("via must be web or mcp")
 
 
+def _grant_key(schema: str) -> tuple:
+    """The one canonical grant order: `*` first, then code-point order (never the database's collation)."""
+    return (schema != "*", schema)
+
+
+def _canonical(by_schema: dict[str, str]) -> list[dict]:
+    return [{"schema": s, "role": by_schema[s]} for s in sorted(by_schema, key=_grant_key)]
+
+
+def _stored_map(target: User) -> dict[str, str]:
+    return dict(SchemaGrant.objects.filter(user_id=target.pk).values_list("schema", "role"))
+
+
 def _stored_grants(target: User) -> list[dict]:
-    return [{"schema": s, "role": r}
-            for s, r in SchemaGrant.objects.filter(user_id=target.pk).order_by("schema").values_list("schema", "role")]
+    return _canonical(_stored_map(target))
+
+
+def _short(name: str, limit: int = 64) -> str:
+    return name if len(name) <= limit else name[:limit] + "…"
 
 
 def user_access(target: User) -> dict:
@@ -250,9 +266,12 @@ def user_access(target: User) -> dict:
 
     A grant whose database is no longer managed is still listed, flagged `"stale": true`; it has no effect and
     the next `set_user_access` drops it unless it is sent again (which is refused, the database is gone).
+    An admin has no grants (they reach every database); rows left from before are never shown as active.
     """
     from schema import introspect
 
+    if target.role == Role.ADMIN:
+        return {"grants": [], "cap": str(target.role)}
     grants = _stored_grants(target)
     if grants:
         managed = {m["name"] for m in introspect.managed_schemas()}
@@ -297,7 +316,7 @@ def _clean_grants(grants, email: str, cap) -> list[dict]:
         if not isinstance(role, str) or role not in _GRANT_LEVELS:
             raise UserManagementDenied("a grant's role must be viewer, editor, approver or none")
         if schema in seen:
-            raise UserManagementDenied(f"database {schema!r} is listed twice")
+            raise UserManagementDenied(f"database {_short(schema)!r} is listed twice")
         if schema == "*":
             if role == GRANT_NONE:
                 raise UserManagementDenied(
@@ -307,14 +326,14 @@ def _clean_grants(grants, email: str, cap) -> list[dict]:
             if managed is None:
                 managed = {m["name"] for m in introspect.managed_schemas()}
             if schema not in managed:
-                raise UserManagementDenied(introspect.unknown_schema_message(schema))
+                raise UserManagementDenied(introspect.unknown_schema_message(_short(schema)))
         if role != GRANT_NONE and ROLE_RANK[Role(role)] > cap_rank:
-            where = "All databases" if schema == "*" else repr(schema)
+            where = "All databases" if schema == "*" else repr(_short(schema))
             raise UserManagementDenied(
                 f"{role} on {where} is above {email}'s global role ({Role(cap).value}); it could never take effect. "
                 "Change their role first.")
         seen[schema] = role
-    return [{"schema": s, "role": seen[s]} for s in sorted(seen)]
+    return _canonical(seen)
 
 
 def _write_grants(actor: User, target: User, after: list[dict], via: str) -> bool:
@@ -323,12 +342,20 @@ def _write_grants(actor: User, target: User, after: list[dict], via: str) -> boo
     Returns False when nothing changes (no write, no audit). Otherwise audits `access.changed` and closes the
     target's live sockets once committed, so the new access applies at once.
     """
-    before = _stored_grants(target)
-    if before == after:
+    old = _stored_map(target)
+    new = {g["schema"]: g["role"] for g in after}
+    if old == new:
         return False
-    SchemaGrant.objects.filter(user_id=target.pk).delete()
-    SchemaGrant.objects.bulk_create([SchemaGrant(user=target, schema=g["schema"], role=g["role"]) for g in after])
-    record(actor, "access.changed", target=target.email, details={"before": before, "after": after, "via": via})
+    gone = [s for s in old if s not in new]
+    if gone:
+        SchemaGrant.objects.filter(user_id=target.pk, schema__in=gone).delete()
+    for schema, role in new.items():
+        if schema in old and old[schema] != role:
+            SchemaGrant.objects.filter(user_id=target.pk, schema=schema).update(role=role)
+    SchemaGrant.objects.bulk_create(
+        [SchemaGrant(user=target, schema=s, role=r) for s, r in new.items() if s not in old])
+    record(actor, "access.changed", target=target.email,
+           details={"before": _canonical(old), "after": _canonical(new), "via": via})
     _close_sockets_on_commit(target)
     return True
 
@@ -343,8 +370,12 @@ def set_user_access(actor: User, target: User, grants: list[dict], *, via: str =
     _require_admin(actor)
     _check_via(via)
     with transaction.atomic():
-        _lock_for_change(target)  # the cap is the role as committed, not a stale copy
-        _write_grants(actor, target, _clean_grants(grants, target.email, target.role), via)
+        admins = _lock_for_change(target)  # the cap is the role as committed, not a stale copy
+        if not any(a.pk == actor.pk for a in admins):  # the actor lost admin since the request began
+            raise NotAdmin("only admins can manage users")
+        cleaned = _clean_grants(grants, target.email, target.role)
+        if target.role != Role.ADMIN:  # [] for an admin is accepted and changes nothing
+            _write_grants(actor, target, cleaned, via)
     return user_access(target)
 
 
@@ -389,6 +420,12 @@ def change_role(actor: User, target: User, new_role: str) -> User:
         raised = _raise_star_grant(target, old_role, target.role)
         if raised:
             details["access_star_raised"] = raised
+        if target.role == Role.ADMIN:
+            # admins reach every database without grants; clear them so a later demotion starts with none
+            cleared = _stored_grants(target)
+            if cleared:
+                SchemaGrant.objects.filter(user_id=target.pk).delete()
+                details["access_cleared"] = cleared
         record(actor, "user.role_changed", target=target.email, details=details)
     return target
 

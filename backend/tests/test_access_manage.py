@@ -244,8 +244,101 @@ def test_promotion_raises_star_grant_only_when_it_matched_the_old_role(admin):
     change_role(admin, viewer, "viewer")
     assert grants_of(viewer) == [("*", "editor"), ("crm", "viewer")]
 
-    # to admin: admin is never a grant
+    # to admin: admin is never a grant, and the old grants are cleared (see the admin-promotion test)
     up = make("up@example.com", Role.APPROVER)
     SchemaGrant.objects.create(user=up, schema="*", role="approver")
     change_role(admin, up, "admin")
-    assert grants_of(up) == [("*", "approver")]
+    assert grants_of(up) == []
+
+
+def test_resending_get_output_is_a_no_op_whatever_the_collation(client, admin, managed, monkeypatch,
+                                                                   django_capture_on_commit_callbacks):
+    from django.db import connection
+
+    with connection.cursor() as cur:  # a server whose default collation is not C (rolled back with the test)
+        cur.execute('ALTER TABLE accounts_schemagrant ALTER COLUMN schema TYPE varchar(63) COLLATE "en-x-icu"')
+    managed[:] = ["master", "Zeta", "alpha", "crm_eu", "crmeu", "B-side", "b_side"]
+    closed = []
+    monkeypatch.setattr(events, "close_user_sockets", closed.append)
+    target = make("t@example.com", Role.EDITOR)
+    sent = [{"schema": n, "role": "viewer"} for n in managed] + [{"schema": "*", "role": "editor"}]
+    client.force_login(admin)
+    with django_capture_on_commit_callbacks(execute=True):
+        assert put(client, target.pk, {"grants": sent}).status_code == 200
+    assert closed == [target.pk]
+    got = client.get(f"/api/users/{target.pk}/access").json()["grants"]
+    assert got[0] == {"schema": "*", "role": "editor"}
+    assert [g["schema"] for g in got[1:]] == sorted(managed)  # code-point order, not the database's collation
+    ids = sorted(SchemaGrant.objects.filter(user=target).values_list("pk", flat=True))
+    for body in (got, list(reversed(got))):
+        with django_capture_on_commit_callbacks(execute=True):
+            assert put(client, target.pk, {"grants": body}).status_code == 200
+    assert closed == [target.pk]
+    assert AuditLog.objects.filter(action="access.changed").count() == 1
+    assert sorted(SchemaGrant.objects.filter(user=target).values_list("pk", flat=True)) == ids  # no row churn
+    # a real change keeps the untouched rows and records only one entry
+    with django_capture_on_commit_callbacks(execute=True):
+        assert put(client, target.pk, {"grants": got[:-1]}).status_code == 200
+    assert AuditLog.objects.filter(action="access.changed").count() == 2
+    assert set(SchemaGrant.objects.filter(user=target).values_list("pk", flat=True)) < set(ids)
+
+
+def test_promotion_to_admin_clears_grants_and_demotion_does_not_revive_them(client, admin):
+    target = make("t@example.com", Role.APPROVER)
+    SchemaGrant.objects.create(user=target, schema="*", role="approver")
+    SchemaGrant.objects.create(user=target, schema="crm", role="viewer")
+    change_role(admin, target, "admin")
+    assert grants_of(target) == []
+    details = AuditLog.objects.get(action="user.role_changed", target="t@example.com").details
+    assert details["access_cleared"] == [{"schema": "*", "role": "approver"}, {"schema": "crm", "role": "viewer"}]
+    assert user_access(target) == {"grants": [], "cap": "admin"}
+    change_role(admin, target, "editor")
+    assert grants_of(target) == [] and user_access(target) == {"grants": [], "cap": "editor"}
+    from accounts import access
+    assert access.readable_schemas(target) == []
+
+    plain = make("p@example.com", Role.VIEWER)
+    change_role(admin, plain, "admin")
+    assert "access_cleared" not in AuditLog.objects.get(action="user.role_changed", target="p@example.com").details
+
+
+def test_admin_target_stale_rows_hidden_and_empty_put_is_a_no_op(client, admin):
+    boss = make("boss@example.com", Role.ADMIN)
+    SchemaGrant.objects.create(user=boss, schema="crm", role="viewer")  # left over from before the ruling
+    assert user_access(boss) == {"grants": [], "cap": "admin"}
+    client.force_login(admin)
+    users = {u["email"]: u for u in client.get("/api/users").json()["users"]}
+    assert users["boss@example.com"]["access"] == {"all": True, "schemas": []}
+    res = put(client, boss.pk, {"grants": []})
+    assert res.status_code == 200 and res.json() == {"grants": [], "cap": "admin"}
+    assert not AuditLog.objects.filter(action="access.changed").exists()
+    assert grants_of(boss) == [("crm", "viewer")]  # clears nothing
+    assert put(client, boss.pk, {"grants": [{"schema": "*", "role": "viewer"}]}).status_code == 400
+
+
+def test_actor_demoted_before_the_lock_cannot_write(admin, monkeypatch):
+    target = make("t@example.com", Role.EDITOR)
+    stale_copy = User.objects.get(pk=admin.pk)
+    User.objects.filter(pk=admin.pk).update(role=Role.VIEWER)  # demoted after the request loaded the actor
+    with pytest.raises(NotAdmin):
+        set_user_access(stale_copy, target, [{"schema": "crm", "role": "editor"}])
+    assert grants_of(target) == []
+
+
+def test_unknown_database_name_is_truncated_in_the_error(admin):
+    target = make("t@example.com", Role.EDITOR)
+    with pytest.raises(UserManagementDenied) as exc:
+        set_user_access(admin, target, [{"schema": "x" * 5000, "role": "viewer"}])
+    assert len(str(exc.value)) < 120 and "…" in str(exc.value)
+
+
+def test_promotion_over_two_levels_and_without_a_star_grant(admin):
+    v = make("v@example.com", Role.VIEWER)
+    SchemaGrant.objects.create(user=v, schema="*", role="viewer")
+    change_role(admin, v, "approver")
+    assert grants_of(v) == [("*", "approver")]
+    none = make("none@example.com", Role.VIEWER)
+    SchemaGrant.objects.create(user=none, schema="crm", role="viewer")
+    change_role(admin, none, "editor")
+    assert grants_of(none) == [("crm", "viewer")]
+    assert "access_star_raised" not in AuditLog.objects.get(action="user.role_changed", target="none@example.com").details
