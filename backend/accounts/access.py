@@ -122,6 +122,15 @@ def readable_schemas(user) -> list[str]:
     return [m["name"] for m in introspect.managed_schemas() if _effective(user, m["name"], grants) is not None]
 
 
+def readable_managed(user) -> list[dict]:
+    """`introspect.managed_schemas()` (`{"name", "tables", "comment"}`) cut to the databases the user can read,
+    master first: what the `schemas` view and MCP `list_schemas` return. Others are left out entirely."""
+    if not _active(user):
+        return []
+    grants = _grants(user) if not _is_admin(user) else {}
+    return [m for m in introspect.managed_schemas() if _effective(user, m["name"], grants) is not None]
+
+
 def effective_schemas(user) -> list[dict]:
     """Each managed database the user can read, with their level there: `[{"name", "role"}]`, master first.
 

@@ -404,12 +404,34 @@ def propose_config_change(user, operations: list, prompt: str = "", *, source: s
     return propose_change(user, operations, prompt, source=source, conversation_id=conversation_id)
 
 
+UNKNOWN_HINT = " Call list_schemas to see the databases."
+
+
+def _reach(user, schema, level: str = "viewer", *, hint: str = UNKNOWN_HINT) -> str:
+    """`access.require` for a tool's `schema` argument, first thing in the tool.
+
+    A database the user cannot reach fails with the very text of a database that does not exist (plus `hint`,
+    the tool's usual one); a readable database below `level` fails with the role refusal.
+    """
+    from accounts import access
+
+    try:
+        return access.require(user, schema, level)
+    except introspect.UnknownSchema as exc:
+        raise ToolFailure(f"{exc}{hint}") from exc
+    except access.AccessDenied as exc:
+        raise ToolFailure(str(exc)) from exc
+
+
 def list_schemas(user) -> dict:
-    """The databases (Postgres schemas) that can be read and changed, `master` first."""
-    return {"schemas": introspect.managed_schemas()}
+    """The databases (Postgres schemas) this user can read, `master` first; others are left out entirely."""
+    from accounts import access
+
+    return {"schemas": access.readable_managed(user)}
 
 
 def list_tables(user, schema: str = "master") -> dict:
+    _reach(user, schema)
     try:
         return {"tables": introspect.list_tables(schema), "views": introspect.list_views(schema),
                 "enums": introspect.list_enums(schema)}
@@ -418,6 +440,7 @@ def list_tables(user, schema: str = "master") -> dict:
 
 
 def describe_table(user, table: str, schema: str = "master") -> dict:
+    _reach(user, schema)
     try:
         d = introspect.describe_table(table, schema)
     except introspect.UnknownSchema as exc:
@@ -428,6 +451,7 @@ def describe_table(user, table: str, schema: str = "master") -> dict:
 
 
 def run_query(user, sql: str, limit: int | None = None, schema: str = "master") -> dict:
+    _reach(user, schema, hint="")   # query's unknown-schema text has never carried the hint
     limits = get_config()["limits"]
     cap = limits["maxQueryRows"]
     try:
@@ -442,6 +466,7 @@ def read_rows(user, table: str, schema: str = "master", offset: int = 0, limit: 
     """One page of one table. `truncated` says whether rows remain after this page."""
     from schema import rows as rows_mod
 
+    _reach(user, schema)
     if filters is not None and not isinstance(filters, dict):
         raise ToolFailure("filters must be an object of {column: text to look for}, for example {\"name_en\": \"buri\"}.")
     start = offset if isinstance(offset, int) and not isinstance(offset, bool) and offset > 0 else 0
@@ -471,6 +496,7 @@ def _read_failure(exc, table: str, schema: str):
 def profile_column(user, table: str, column: str, schema: str = "master") -> dict:
     from schema import rows as rows_mod
 
+    _reach(user, schema)
     try:
         return rows_mod.profile(table, column, schema=schema)
     except (introspect.UnknownSchema, rows_mod.RowsError) as exc:
@@ -480,6 +506,7 @@ def profile_column(user, table: str, column: str, schema: str = "master") -> dic
 def lookup_options(user, table: str, q: str = "", limit: int | None = None, schema: str = "master") -> dict:
     from schema import rows as rows_mod
 
+    _reach(user, schema)
     try:
         out = rows_mod.options(table, q=q if isinstance(q, str) else "", limit=clamp(limit, 100, rows_mod.MAX_PAGE), schema=schema)
     except (introspect.UnknownSchema, rows_mod.RowsError) as exc:
@@ -540,14 +567,18 @@ def export_schema(user, schema: str = "master", include_data: bool = False, *, m
     from schema.dump_model import ExportError
     from schema.export import open_export
 
+    schema = schema if isinstance(schema, str) else ""
+    _reach(user, schema)   # first: a database the user cannot reach answers like a missing one
     if include_data and not user.can_edit:
         raise ToolFailure("exporting data needs the editor role. Call export_schema without include_data for the structure only.")
+    if include_data:
+        _reach(user, schema, "editor")
     limits = get_config()["limits"]
     cap = int(limits["maxInlineExportBytes"])
     if max_bytes is not None:
         cap = max(0, min(cap, int(max_bytes)))
     try:
-        ex = open_export(schema if isinstance(schema, str) else "", data=bool(include_data), cap=limits["maxExportRows"])
+        ex = open_export(schema, data=bool(include_data), cap=limits["maxExportRows"])
     except ExportError as exc:
         hint = " Call list_schemas to see the databases." if str(exc).lower().startswith("unknown schema") else ""
         raise ToolFailure(f"{exc}{hint}") from exc
@@ -652,8 +683,8 @@ def create_backup(user, schema: str = "master", label: str = "manual") -> dict:
     from config.siconfig import get_config
     from schema import backup
 
+    _reach(user, schema, "approver")
     try:
-        introspect.require_managed(schema)
         path = backup.backup_schema(schema, label, get_config()["backups"]["retentionDays"])
     except introspect.UnknownSchema as exc:
         raise ToolFailure(f"{exc} Call list_schemas to see the databases.") from exc
@@ -667,9 +698,18 @@ def create_backup(user, schema: str = "master", label: str = "manual") -> dict:
 def list_backups(user, schema: str | None = None) -> dict:
     from schema import backup
 
+    from accounts import access
+
     if schema is not None and not isinstance(schema, str):
         raise ToolFailure("schema must be a database name, for example \"master\".")
-    return {"backups": backup.list_backups(schema or None)}
+    if schema:
+        try:
+            access.require(user, schema, "approver")
+        except introspect.UnknownSchema:
+            pass   # missing, hidden or dropped: the filtered list answers (empty, except a dropped one for admins)
+        except access.AccessDenied as exc:
+            raise ToolFailure(str(exc)) from exc
+    return {"backups": backup.list_backups(user, schema or None)}
 
 
 def reopen_duplicate(user, group_id: int) -> dict:
@@ -770,13 +810,6 @@ def _sheet_source(sheet, headers: list, rows: list) -> dict:
     return Source(name=name, headers=names, rows=[[r[i] for i in keep] for r in cells], notes=notes, truncated=False)
 
 
-def _managed(schema) -> str:
-    try:
-        return introspect.require_managed(schema if isinstance(schema, str) else "")
-    except introspect.UnknownSchema as exc:
-        raise ToolFailure(f"{exc} Call list_schemas to see the databases.") from exc
-
-
 def match_data(user, schema: str = "master", headers: list | None = None, rows: list | None = None, sheet: str = "data", row_match: bool = True,
                max_rows: int | None = None) -> dict:
     """Profile and match one sheet the caller already has, with the local Profiler, Matcher and recipes.
@@ -785,7 +818,7 @@ def match_data(user, schema: str = "master", headers: list | None = None, rows: 
     from intake import match as matcher
     from intake.profile import profile as profile_source
 
-    _managed(schema)
+    _reach(user, schema if isinstance(schema, str) else "")
     if not isinstance(headers, list) or not headers:
         raise ToolFailure("headers must be a non-empty list of the sheet's column names, in order.")
     if len(headers) > MATCH_MAX_COLUMNS:
@@ -827,7 +860,7 @@ def get_import_recipe(user, schema: str = "master", headers: list | None = None,
     from intake import match as matcher
     from intake.reader import name_headers
 
-    _managed(schema)
+    _reach(user, schema if isinstance(schema, str) else "")
     groups = []
     if headers is not None:
         groups.append(headers)

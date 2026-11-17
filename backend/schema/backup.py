@@ -69,12 +69,21 @@ def describe(path: Path) -> dict | None:
             "created_at": created}
 
 
-def list_backups(schema: str | None = None) -> list[dict]:
-    """The backups in BACKUP_DIR, newest first, optionally only one schema's. A missing folder is an empty list."""
+def list_backups(user, schema: str | None = None) -> list[dict]:
+    """The backups in BACKUP_DIR that `user` may see, newest first, optionally only one schema's.
+
+    Only backups of databases where the user is approver are listed (admins: all, including databases dropped
+    since); a backup of a database they cannot reach is left out as if it were not there. A missing folder is an
+    empty list.
+    """
+    from accounts import access
+
     folder = Path(settings.BACKUP_DIR)
     if not folder.is_dir():
         return []
     found = [d for p in folder.iterdir() if (d := describe(p)) is not None and (schema is None or d["schema"] == schema)]
+    allowed = {name: access.can(user, name, "approver") for name in {d["schema"] for d in found}}
+    found = [d for d in found if allowed[d["schema"]]]
     return sorted(found, key=lambda d: (d["created_at"], d["file"]), reverse=True)
 
 
