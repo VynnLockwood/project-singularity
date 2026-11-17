@@ -74,8 +74,8 @@ def test_cancel_rechecks_status_under_lock(ctx, monkeypatch):  # finding 3 (the 
     ed, _ = ctx
     lid = loads.begin(ed, "customer", ["code"])["load_id"]
     real = loads._mine
-    def stale(user, load_id):
-        load = real(user, load_id)
+    def stale(user, load_id, *level):
+        load = real(user, load_id, *level)
         StagedLoad.objects.filter(pk=load_id).update(status="finished")   # finish commits after our read
         return load
     monkeypatch.setattr(loads, "_mine", stale)

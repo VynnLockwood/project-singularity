@@ -3,7 +3,7 @@ from django.http import HttpResponse, JsonResponse
 from accounts.api import endpoint, error
 from schema import introspect
 from search.embedder import SearchError
-from schema.http import schema_param, unknown_schema_is_400
+from schema.http import schema_for, unknown_schema_is_400
 
 from . import memory, suggest
 from .models import QueryExample
@@ -21,7 +21,7 @@ STATUS = {"rate_limited": 429, "not_configured": 503, "provider_error": 502, "ba
 def _inputs(request):
     """(schema, comments, sql_context, api_key) from the JSON body; SuggestError(bad_request) when wrong."""
     body = request.json
-    schema = schema_param(request, body)
+    schema = schema_for(request, "viewer", body)   # a database the user cannot reach reads like a missing one
     introspect.require_managed(schema)
     comments, ctx, key = suggest.clean_inputs(body.get("comments"), body.get("sqlContext", ""), body.get("apiKey", ""))
     return schema, comments, ctx, key
@@ -72,7 +72,7 @@ def learn(request):
 @endpoint("GET", min_role="approver")
 @unknown_schema_is_400
 def examples(request):
-    schema = schema_param(request)
+    schema = schema_for(request, "approver")
     rows = QueryExample.objects.filter(schema=schema).select_related("created_by").order_by("-last_used", "-created_at")[:200]
     return JsonResponse({"examples": [{
         "id": e.pk, "comments": e.comments, "sql": e.sql, "status": e.status, "useCount": e.use_count,
@@ -81,6 +81,14 @@ def examples(request):
 
 
 @endpoint("DELETE", min_role="approver")
+@unknown_schema_is_400
 def example_detail(request, example_id):
-    deleted, _ = QueryExample.objects.filter(pk=example_id).delete()
-    return HttpResponse(status=204) if deleted else error("not found", 404)
+    from accounts import access
+
+    ex = QueryExample.objects.filter(pk=example_id).first()
+    if ex is None or not access.can(request.user, ex.schema, "viewer"):
+        return error("not found", 404)   # one in a database the user cannot reach is not there for them
+    if not access.can(request.user, ex.schema, "approver"):
+        access.require(request.user, ex.schema, "approver")   # readable: the role refusal (403)
+    ex.delete()
+    return HttpResponse(status=204)

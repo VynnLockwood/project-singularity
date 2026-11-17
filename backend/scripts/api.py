@@ -63,9 +63,9 @@ def scripts(request):
         except storage.ScriptError as exc:
             return error(str(exc), 413 if "larger than" in str(exc) else 400)
         return JsonResponse({"script_id": script.pk, "sha256": script.sha256, "size": script.size}, status=201)
-    qs = Script.objects.exclude(kind="import")    # an import run's Critic scripts belong to that run
-    if not request.user.can_approve:
-        qs = qs.filter(owner=request.user)
+    # own scripts; an approver also sees others' scripts validated for a database where they are approver
+    # (filtered in the query, before the cut). An import run's Critic scripts belong to that run.
+    qs = service.visible(request.user)
     return JsonResponse({"scripts": [_summary(s) for s in qs[:50]]})
 
 
@@ -99,6 +99,7 @@ def validate_view(request, script_id):
 
 
 @endpoint("POST", min_role="editor")
+@unknown_schema_is_400
 def submit_view(request, script_id):
     try:
         change = service.submit(request.user, script_id, str(request.json.get("note", ""))[:2000])
@@ -108,11 +109,14 @@ def submit_view(request, script_id):
 
 
 @endpoint("GET")
+@unknown_schema_is_400
 def script_detail(request, script_id):
     s = Script.objects.filter(pk=script_id).exclude(kind="import").first()
-    if s is None:
+    if service.hidden_from(request.user, s):   # missing, or someone else's in a database not known or not reachable
         return error("not found", 404)
-    if s.owner_id != request.user.pk and not request.user.can_approve:
+    try:
+        service.check_reach(request.user, s)
+    except PermissionError:
         return error("forbidden", 403)
     return JsonResponse(_summary(s))
 

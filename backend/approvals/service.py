@@ -357,7 +357,7 @@ def approve(user, change_id: int) -> Change:
                     path = backup_schema(name, f"change-{change.pk}", cfg["backups"]["retentionDays"])
                 except BackupError as exc:
                     return _fail(change, user, f"backup failed, nothing was changed: {exc}")
-                record(user, "backup.created", target=path.name)
+                record(user, "backup.created", target=path.name, details={"schema": name})
 
         # a revert or a script load may touch as many rows as the script inserted, so they use the script cap
         max_rows = cfg["limits"]["maxRowsPerDataOp"]
@@ -404,7 +404,7 @@ def _approve_sql(change: Change, user, cfg) -> Change:
         path = backup_schema(change.schema, f"change-{change.pk}", cfg["backups"]["retentionDays"])
     except BackupError as exc:
         return _fail(change, user, f"backup failed, nothing was changed: {exc}")
-    record(user, "backup.created", target=path.name)
+    record(user, "backup.created", target=path.name, details={"schema": change.schema})
     try:
         rawsql.run_in_transaction(_raw_statements(change), change.schema, expected=change.diff)
     except rawsql.RawSqlChanged as exc:

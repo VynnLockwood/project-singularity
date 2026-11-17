@@ -51,14 +51,24 @@ def _carry(report: dict | None) -> dict:
 
 
 def start(user, script_id: int, mapping: dict | None, schema: str | None = None) -> dict:
+    """Queue a check. The same access as `service.validate`: a script the user may not see does not exist, and a
+    chosen `schema` needs editor there (the one the file names is checked by the child, before it reads it)."""
+    from accounts import access
+
+    from . import service
+
     if not user.can_edit:
         raise Forbidden("your role cannot manage scripts")
     with transaction.atomic():
         script = Script.objects.select_for_update().filter(pk=script_id).first()
-        if script is None:
-            raise ScriptError(f"script #{script_id} does not exist")
-        if script.owner_id != user.pk and not user.can_approve:
-            raise Forbidden("this script belongs to someone else")
+        if service.hidden_from(user, script):
+            raise ScriptError(service.NOT_FOUND.format(script_id))
+        try:
+            service.check_reach(user, script)
+        except PermissionError as exc:
+            raise Forbidden(str(exc)) from None
+        if schema is not None:
+            access.require(user, schema, "editor")
         if script.kind == "import":
             raise ScriptError(f"script #{script.pk} belongs to an import; check and submit it from the Import tab")
         if script.status in (Script.Status.SUBMITTED, Script.Status.EXPIRED):
@@ -72,7 +82,7 @@ def start(user, script_id: int, mapping: dict | None, schema: str | None = None)
         if live >= MAX_RUNNING:
             raise Busy("Two other checks are running. Wait for one to finish, then try again.")
         script.report = {"state": "running", "phase": "queued", "heartbeat": _now(),
-                         "job": {"mapping": mapping, "schema": schema}, **_carry(current)}
+                         "job": {"mapping": mapping, "schema": schema, "user": user.pk}, **_carry(current)}
         script.save(update_fields=["report"])
     try:
         proc = subprocess.Popen([sys.executable, "manage.py", "validate_script", str(script_id)],
@@ -106,6 +116,11 @@ def run(script_id: int, beat_seconds: float = BEAT_SECONDS) -> None:
     if script is None:
         return
     job = (script.report or {}).get("job") or {}
+    from accounts.models import User
+
+    # the person who asked for the check (their access decides which database may be read), else the owner
+    user = User.objects.filter(pk=job.get("user")).first() if isinstance(job.get("user"), int) else None
+    user = user or script.owner
     stop = threading.Event()
 
     def beater():
@@ -124,7 +139,8 @@ def run(script_id: int, beat_seconds: float = BEAT_SECONDS) -> None:
     t = threading.Thread(target=beater, daemon=True)
     t.start()
     try:
-        report = validate_mod.validate(script, job.get("mapping"), job.get("schema") or None, progress=progress)
+        report = validate_mod.validate(script, job.get("mapping"), job.get("schema") or None, progress=progress,
+                                       user=user)
         stop.set()
         t.join()
         report["state"] = "done"

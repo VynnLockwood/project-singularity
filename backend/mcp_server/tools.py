@@ -603,10 +603,14 @@ def _dup(fn):
     """Run a duplicates call, turning its errors into ones the AI can act on."""
     from duplicates import service as dup
 
+    from accounts import access
+
     try:
         return fn(dup)
     except introspect.UnknownSchema as exc:
         raise ToolFailure(f"{exc} Call list_schemas to see the databases.") from exc
+    except access.AccessDenied as exc:
+        raise ToolFailure(str(exc)) from exc
     except dup.DuplicateError as exc:
         text = str(exc).rstrip(".")
         if text.lower().startswith("unknown schema"):
@@ -627,23 +631,24 @@ def find_duplicates(user, table: str, schema: str = "master", fields: list | Non
 
     if fields is not None and (not isinstance(fields, list) or not all(isinstance(f, str) for f in fields)):
         raise ToolFailure("fields must be a list of column names, for example [\"name\"]. Leave it out to use every text column.")
+    _reach(user, schema if isinstance(schema, str) else "", "editor")   # before the table is looked at
     result = _dup(lambda dup: dup.scan(str(table), user, fields=fields, threshold=threshold, schema=schema))
     record(user, "duplicates.scanned", target=result["table"], details=result)
-    groups = _dup(lambda dup: dup.list_groups(schema=schema, table=result["table"], status="open"))
+    groups = _dup(lambda dup: dup.list_groups(schema=schema, table=result["table"], status="open", user=user))
     return {**result, "groups_found": groups[:20], "truncated": result["truncated"] or len(groups) > 20}
 
 
 def list_duplicates(user, table: str | None = None, schema: str = "master", status: str | None = "open",
                     limit: int | None = None) -> dict:
     cap = clamp(limit, 20, 100)
-    groups = _dup(lambda dup: dup.list_groups(schema=schema, table=table or None, status=status or None))
+    groups = _dup(lambda dup: dup.list_groups(schema=schema, table=table or None, status=status or None, user=user))
     return {"groups": groups[:cap], "truncated": len(groups) > cap}
 
 
 def get_duplicate(user, group_id: int) -> dict:
     from duplicates import service as dup
 
-    g = _dup(lambda d: d.get_group(group_id))
+    g = _dup(lambda d: d.get_group(group_id, user))
     try:
         return dup.detail(g)
     except Exception as exc:  # the table was dropped or changed shape since the scan
@@ -658,7 +663,7 @@ def merge_duplicates(user, group_id: int, survivor_id: int, *, source: str = "mc
 
     if not isinstance(survivor_id, int) or isinstance(survivor_id, bool):
         raise ToolFailure("survivor_id must be the id of the record to keep (one of the group's memberIds).")
-    g = _dup(lambda d: d.get_group(group_id))
+    g = _dup(lambda d: d.get_group(group_id, user, "editor"))
     if dup.state(g) == "dismissed":
         raise ToolFailure(
             f"group #{g.pk} was dismissed as not duplicates, so it cannot be merged. If that was a mistake, the "
@@ -675,7 +680,7 @@ def merge_duplicates(user, group_id: int, survivor_id: int, *, source: str = "mc
 
 
 def dismiss_duplicate(user, group_id: int) -> dict:
-    return _dup(lambda d: d.dismiss(d.get_group(group_id), user))
+    return _dup(lambda d: d.dismiss(d.get_group(group_id, user, "editor"), user))
 
 
 def create_backup(user, schema: str = "master", label: str = "manual") -> dict:
@@ -690,7 +695,7 @@ def create_backup(user, schema: str = "master", label: str = "manual") -> dict:
         raise ToolFailure(f"{exc} Call list_schemas to see the databases.") from exc
     except backup.BackupError as exc:
         raise ToolFailure(f"backup failed, nothing was kept: {exc}") from exc
-    record(user, "backup.created", target=path.name)
+    record(user, "backup.created", target=path.name, details={"schema": schema})
     d = backup.describe(path)
     return {k: d[k] for k in ("file", "schema", "bytes", "created_at")}
 
@@ -712,7 +717,7 @@ def list_backups(user, schema: str | None = None) -> dict:
 
 
 def reopen_duplicate(user, group_id: int) -> dict:
-    return _dup(lambda d: d.reopen(d.get_group(group_id), user))
+    return _dup(lambda d: d.reopen(d.get_group(group_id, user, "editor"), user))
 
 
 def _next_step(user, change: Change) -> str:
@@ -751,8 +756,10 @@ def search_schema(user, query: str, limit: int | None = None, schema: str = "mas
     from search import service as search_service
     from search.embedder import SearchError
 
-    try:
-        return search_service.search(query, limit, None if schema == "*" else schema)  # "*" = every schema
+    if schema != "*":
+        _reach(user, schema, hint="")   # the tool's unknown-schema text has never carried the hint
+    try:   # "*" = every database the user can read, filtered before the top-k cut
+        return search_service.search(query, limit, None if schema == "*" else schema, user=user)
     except (SearchError, introspect.UnknownSchema) as exc:
         raise ToolFailure(str(exc)) from exc
 
@@ -760,6 +767,7 @@ def search_schema(user, query: str, limit: int | None = None, schema: str = "mas
 def suggest_query(user, schema: str, comments: list[str], sql_context: str = "") -> dict:
     from iquery import suggest as iq
 
+    _reach(user, schema, hint="")   # the tool's unknown-schema text has never carried the hint
     try:
         introspect.require_managed(schema)
         clean, ctx, _ = iq.clean_inputs(comments, sql_context)
@@ -938,7 +946,8 @@ def get_audit_log(user, action: str | None = None, actor: str | None = None, lim
     from audit.models import as_dict, entries
 
     items, more = entries(action=action if isinstance(action, str) else None,
-                          actor=actor if isinstance(actor, str) else None, limit=clamp(limit, 50, 200))
+                          actor=actor if isinstance(actor, str) else None, limit=clamp(limit, 50, 200),
+                          viewer=user)   # only entries about databases the user is approver on (or none)
     return {"entries": [as_dict(a) for a in items], "truncated": more}
 
 
@@ -968,12 +977,10 @@ def list_pending(user) -> dict:
 
 def submit_script(user, name: str, content: str, mapping: dict | None = None, schema: str | None = None) -> dict:
     """Upload + validate inline (<= maxInlineScriptBytes). Larger scripts: upload via API/UI, pass script_id."""
+    from accounts import access
     from config.siconfig import get_config
-    try:
-        if schema is not None:
-            introspect.require_managed(schema)  # before uploading anything
-    except introspect.UnknownSchema as exc:
-        raise ToolFailure(f"{exc} Call list_schemas to see the databases.") from exc
+    if schema is not None:
+        _reach(user, schema, "editor")  # before uploading anything
     data = content.encode("utf-8")
     if len(data) > get_config()["limits"]["maxInlineScriptBytes"]:
         raise ToolFailure(
@@ -982,7 +989,7 @@ def submit_script(user, name: str, content: str, mapping: dict | None = None, sc
     try:
         script = script_service.upload(user, name, data)
         report = script_service.validate(user, script.pk, mapping, schema)
-    except (storage.ScriptError, introspect.UnknownSchema) as exc:
+    except (storage.ScriptError, introspect.UnknownSchema, access.AccessDenied) as exc:
         raise ToolFailure(str(exc)) from exc
     out = {"script_id": script.pk, "report": _trim_report(report)}
     if report.get("ok"):
@@ -990,24 +997,32 @@ def submit_script(user, name: str, content: str, mapping: dict | None = None, sc
             change = script_service.submit(user, script.pk)
             out["change_id"] = change.pk
             out["next"] = _next_step(user, change)
-        except storage.ScriptError as exc:
+        except (storage.ScriptError, introspect.UnknownSchema, access.AccessDenied) as exc:
             out["submit_error"] = str(exc)
     return out
 
 
 def validate_script(user, script_id: int, mapping: dict | None = None, schema: str | None = None) -> dict:
+    from accounts import access
+
     try:
         report = script_service.validate(user, script_id, mapping, schema)
-    except (storage.ScriptError, introspect.UnknownSchema, PermissionError) as exc:
+    except (storage.ScriptError, introspect.UnknownSchema, PermissionError, access.AccessDenied) as exc:
         raise ToolFailure(str(exc)) from exc
     return {"script_id": script_id, "report": _trim_report(report)}
 
 
 def get_script(user, script_id: int) -> dict:
+    """Own scripts; someone else's only for an approver on the database it was validated for (like the web)."""
+    from accounts import access
     from scripts.models import Script
     s = Script.objects.filter(pk=script_id).exclude(kind="import").first()   # import runs' scripts: web only
-    if s is None:
+    if script_service.hidden_from(user, s):
         raise ToolFailure(f"script #{script_id} does not exist")
+    try:
+        script_service.check_reach(user, s)
+    except (PermissionError, access.AccessDenied) as exc:
+        raise ToolFailure(str(exc)) from exc
     return {"id": s.pk, "name": s.name, "size": s.size, "status": s.status,
             "change_id": s.change_id, "report": _trim_report(s.report or {}) if s.report else None}
 
@@ -1016,10 +1031,11 @@ _trim_report = script_service.trim_report
 
 
 def _load_call(fn, *args, **kwargs):
+    from accounts import access
     from scripts import loads
     try:
         return fn(*args, **kwargs)
-    except (loads.LoadError, storage.ScriptError, introspect.UnknownSchema) as exc:
+    except (loads.LoadError, storage.ScriptError, introspect.UnknownSchema, access.AccessDenied) as exc:
         raise ToolFailure(str(exc)) from exc
     except PermissionError as exc:
         raise ToolFailure(str(exc)) from exc

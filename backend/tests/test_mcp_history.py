@@ -71,7 +71,9 @@ def test_audit_log_is_for_approvers():
 def test_audit_log_filters_and_caps():
     ap, ed = user(Role.APPROVER), user(Role.EDITOR)
     for i in range(60):
-        record(ap if i % 2 else ed, "change.applied" if i % 3 else "schema.export", target=f"#{i}", details={"i": i})
+        # entries name their database: one that cannot be told is for admins only (per-database access)
+        record(ap if i % 2 else ed, "change.applied" if i % 3 else "schema.export", target=f"#{i}",
+               details={"i": i, "schema": "master"})
     out = tools.get_audit_log(ap)
     assert len(out["entries"]) == 50 and out["truncated"] is True
     assert set(out["entries"][0]) == {"id", "at", "actor", "action", "target", "details"}

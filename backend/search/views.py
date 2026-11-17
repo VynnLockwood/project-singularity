@@ -17,7 +17,8 @@ def search(request):
         return error("k must be a number")
     try:
         # absent schema = master like everywhere; explicit `*` = all schemas
-        return JsonResponse(service.search(request.GET.get("q", ""), top_k, schema_param(request, allow_all=True)))
+        return JsonResponse(service.search(request.GET.get("q", ""), top_k, schema_param(request, allow_all=True),
+                                           user=request.user))
     except SearchError as exc:
         return error(str(exc), 400 if "required" in str(exc) else 503)
 

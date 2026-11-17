@@ -151,5 +151,9 @@ def test_validate_script_of_someone_elses_script_is_a_clean_tool_failure(server)
     owner = server["users"][Role.EDITOR]
     other = User.objects.create(username="ed2@example.com", email="ed2@example.com", role=Role.EDITOR)
     s = storage.save(owner, "a.sql", b"CREATE TABLE a (id integer);\n")
+    with pytest.raises(tools.ToolFailure, match=f"script #{s.pk} does not exist"):   # no database known yet
+        tools.validate_script(other, s.pk)
+    s.report = {"validated_schema": "master"}
+    s.save(update_fields=["report"])
     with pytest.raises(tools.ToolFailure, match="belongs to someone else"):
         tools.validate_script(other, s.pk)

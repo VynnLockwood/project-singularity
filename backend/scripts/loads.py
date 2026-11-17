@@ -62,18 +62,30 @@ def _remove_file(load: StagedLoad) -> None:
         load.path = ""
 
 
-def _mine(user, load_id) -> StagedLoad:
-    """The load, or LoadError saying it does not exist (also for someone else's load)."""
+def _mine(user, load_id, level: str = "viewer") -> StagedLoad:
+    """The load, or LoadError saying it does not exist: also for someone else's load (unless the user is a global
+    approver) and for a load in a database the user cannot reach (their own included). Readable but without the
+    level asked for (approver for someone else's load, editor to change one) raises `access.AccessDenied`."""
+    from accounts import access
+
     load = StagedLoad.objects.filter(pk=load_id).first() if isinstance(load_id, int) else None
-    if load is None or (load.owner_id != user.pk and not user.can_approve):
+    if (load is None or (load.owner_id != user.pk and not user.can_approve)
+            or not access.can(user, load.schema, "viewer")):
         raise LoadError(f"load #{load_id} does not exist")
+    if load.owner_id != user.pk and not access.can(user, load.schema, "approver"):
+        access.require(user, load.schema, "approver")   # readable here, so this raises the role refusal
+    if not access.can(user, load.schema, level):
+        access.require(user, load.schema, level)
     return load
 
 
 def begin(user, table: str, columns: list[str], schema: str = "master", refs: list[dict] | None = None) -> dict:
     if user is None or user.rank < EDITOR:
         raise PermissionError("Starting a load needs the editor role.")
+    from accounts import access
+
     refs = refs or []
+    access.require(user, schema, "editor")   # unreachable reads like missing; before the database is read
     introspect.require_managed(schema)
     state = introspect.snapshot(schema)
     if table not in state:
@@ -129,7 +141,7 @@ def begin(user, table: str, columns: list[str], schema: str = "master", refs: li
     except BaseException:
         os.unlink(os.path.join(storage.loads_dir(), name))
         raise
-    record(user, "load.begin", f"{schema}.{table}", {"load_id": load.pk, "columns": columns})
+    record(user, "load.begin", f"{schema}.{table}", {"schema": schema, "load_id": load.pk, "columns": columns})
     return {"load_id": load.pk, "table": table, "schema": schema, "columns": columns, "next_seq": 1,
             "limits": _limits(load)}
 
@@ -144,7 +156,7 @@ def get(user, load_id: int) -> dict:
 
 def cancel(user, load_id: int) -> dict:
     from django.db import transaction
-    load = _mine(user, load_id)
+    load = _mine(user, load_id, "editor")
     with transaction.atomic():
         load = StagedLoad.objects.select_for_update().get(pk=load.pk)    # waits for a finish in progress
         if load.status == StagedLoad.Status.FINISHED:
@@ -154,7 +166,8 @@ def cancel(user, load_id: int) -> dict:
             load.status = StagedLoad.Status.CANCELLED
             gone, load.path = _full(load), ""
             load.save(update_fields=["status", "path"])
-            record(user, "load.cancel", f"{load.schema}.{load.table}", {"load_id": load.pk, "rows": load.rows})
+            record(user, "load.cancel", f"{load.schema}.{load.table}",
+                   {"schema": load.schema, "load_id": load.pk, "rows": load.rows})
     _unlink(gone)
     return {"load_id": load.pk, "status": load.status}
 
@@ -193,7 +206,7 @@ def append(user, load_id: int, seq: int, csv_text: str) -> dict:
 
     if not isinstance(seq, int) or isinstance(seq, bool) or not isinstance(csv_text, str):
         raise LoadError("seq must be a whole number and csv a string")
-    _mine(user, load_id)
+    _mine(user, load_id, "editor")
     cfg = _cfg()
     data = csv_text.encode("utf-8")
     if len(data) > cfg["maxLoadChunkBytes"]:
@@ -269,7 +282,7 @@ def finish(user, load_id: int, note: str = "") -> dict:
     from . import service
     from .models import Script
 
-    _mine(user, load_id)
+    _mine(user, load_id, "editor")
     if user.rank < EDITOR:
         raise PermissionError("Finishing a load needs the editor role.")
     gone = None
@@ -315,7 +328,7 @@ def finish(user, load_id: int, note: str = "") -> dict:
         gone, load.path = _full(load), ""
         load.save()
         record(user, "load.finish", f"{load.schema}.{load.table}",
-               {"load_id": load.pk, "rows": load.rows, "change_id": change.pk})
+               {"schema": load.schema, "load_id": load.pk, "rows": load.rows, "change_id": change.pk})
         result = {"ok": True, "load_id": load.pk, "script_id": script.pk, "change_id": change.pk,
                   "report": _row_report(report)}
     _unlink(gone)

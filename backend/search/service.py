@@ -15,10 +15,20 @@ VECTOR_WEIGHT = 0.75   # ranking = meaning (vector) + name similarity, so names 
 EXACT_BOOST = 0.5      # the query is exactly this table's/column's name: it goes first, whatever the model says
 
 
-def search(query: str, top_k: int | None = None, schema: str | None = None) -> dict:
-    """Semantic search; `schema` limits it to one managed schema (None = all of them)."""
+def search(query: str, top_k: int | None = None, schema: str | None = None, user=None) -> dict:
+    """Semantic search; `schema` limits it to one managed schema (None = all of them).
+
+    With `user`, only the databases they can read are searched: one `schema` they cannot reach fails like one
+    that does not exist, and None means every database they can read (the filter is in the query, before the
+    top-k cut, so hidden databases neither show up nor take places). Without `user` nothing is filtered (the
+    indexer and internal callers that have already checked the database).
+    """
+    from accounts import access
+
     query = (query or "").strip()
     if schema is not None:
+        if user is not None:
+            access.require(user, schema)
         introspect.require_managed(schema)
     if not query:
         raise embedder.SearchError("query is required")
@@ -37,6 +47,8 @@ def search(query: str, top_k: int | None = None, schema: str | None = None) -> d
         output_field=FloatField(),
     )
     base = SchemaEmbedding.objects.all() if schema is None else SchemaEmbedding.objects.filter(schema=schema)
+    if schema is None and user is not None:
+        base = base.filter(schema__in=access.readable_schemas(user))
     rows = (base
             .annotate(name_lower=Lower(own_name), cos=cos, sim=sim)
             .annotate(score=score).order_by("-score")[:k])
