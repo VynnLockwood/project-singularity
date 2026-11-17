@@ -13,12 +13,12 @@ def _err(exc: storage.ScriptError) -> JsonResponse:
     return error(str(exc), 400)
 
 
-def _summary(s: Script) -> dict:
+def _summary(s: Script, user) -> dict:
     return {
         "id": s.pk, "name": s.name, "sha256": s.sha256, "size": s.size,
         "status": s.status, "change_id": s.change_id,
         "created_at": s.created_at.isoformat(), "expires_at": s.expires_at.isoformat(),
-        "report": (jobs.STOPPED if jobs.is_stale(s.report) else s.report) or None,
+        "report": (jobs.STOPPED if jobs.is_stale(s.report) else service.report_for(user, s)) or None,
     }
 
 
@@ -66,7 +66,7 @@ def scripts(request):
     # own scripts; an approver also sees others' scripts validated for a database where they are approver
     # (filtered in the query, before the cut). An import run's Critic scripts belong to that run.
     qs = service.visible(request.user)
-    return JsonResponse({"scripts": [_summary(s) for s in qs[:50]]})
+    return JsonResponse({"scripts": [_summary(s, request.user) for s in qs[:50]]})
 
 
 @endpoint("GET", min_role="editor")
@@ -120,7 +120,7 @@ def script_detail(request, script_id):
         service.check_reach(request.user, s)
     except PermissionError:
         return error("forbidden", 403)
-    return JsonResponse(_summary(s))
+    return JsonResponse(_summary(s, request.user))
 
 
 def _upload_view(methods, fn):

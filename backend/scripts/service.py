@@ -32,7 +32,9 @@ SOMEONE_ELSE = "this script belongs to someone else"
 
 # every place a script's stored report names a database: the one it passed for, the one the last check used,
 # the one the file names, and the one a queued or running check was asked for
-REPORT_DATABASE_KEYS = (("validated_schema",), ("schema",), ("detected_schema",), ("job", "schema"))
+# (`detected_schema`, the name the file itself gives, is not one of them: when the owner could reach it, `schema`
+# already holds it; when they could not, it decides nothing, and others get it redacted, see `report_for`)
+REPORT_DATABASE_KEYS = (("validated_schema",), ("schema",), ("job", "schema"))
 
 
 def _at(report, path):
@@ -57,14 +59,33 @@ def script_databases(script: Script) -> set[str] | None:
             continue
         if not isinstance(v, str) or not v:
             return None
-        if path == ("detected_schema",) and v not in _managed():
-            continue   # a name in the file that is no database here (e.g. public) names none of ours
         out.add(v)
     return out
 
 
-def _managed() -> set[str]:
-    return {m["name"] for m in introspect.managed_schemas()}
+def _approver_dbs(user) -> list[str]:
+    """The existing databases where `user` is approver (admins: all of them)."""
+    from accounts import access
+    from accounts.models import Role
+
+    return [e["name"] for e in access.effective_schemas(user) if e["role"] in (Role.APPROVER, Role.ADMIN)]
+
+
+def report_for(user, script: Script, report: dict | None = None) -> dict | None:
+    """The report as `user` may see it. Someone else's report loses `detected_schema` (the database the file
+    names) unless it is an existing database where the viewer is approver: a hidden one and one that does not
+    exist read the same (null). Owners and admins see it as stored."""
+    from accounts.models import Role
+
+    report = script.report if report is None else report
+    if not isinstance(report, dict) or script.owner_id == user.pk or (user.is_active and user.role == Role.ADMIN):
+        return report
+    if "detected_schema" not in report:
+        return report
+    named = report["detected_schema"]
+    if isinstance(named, str) and named in _approver_dbs(user):
+        return report
+    return {**report, "detected_schema": None}
 
 
 def hidden_from(user, script: Script | None) -> bool:
@@ -100,7 +121,6 @@ def visible(user):
     Filtered in the query, like `hidden_from` and `check_reach` decide one script."""
     from django.db.models import Q
 
-    from accounts import access
     from accounts.models import Role
 
     qs = Script.objects.exclude(kind="import")
@@ -108,14 +128,11 @@ def visible(user):
         return qs
     if not user.can_approve:
         return qs.filter(owner=user)
-    dbs = [e["name"] for e in access.effective_schemas(user) if e["role"] in (Role.APPROVER, Role.ADMIN)]
+    dbs = _approver_dbs(user)
     others = Q(report__validated_schema__in=dbs)
     for path in REPORT_DATABASE_KEYS[1:]:
         key = "report__" + "__".join(path)
-        ok = Q(**{f"{key}__isnull": True}) | Q(**{key: None}) | Q(**{f"{key}__in": dbs})
-        if path == ("detected_schema",):   # a name in the file that is no database here names none of ours
-            ok |= ~Q(**{f"{key}__in": sorted(_managed())})
-        others &= ok
+        others &= Q(**{f"{key}__isnull": True}) | Q(**{key: None}) | Q(**{f"{key}__in": dbs})
     return qs.filter(Q(owner=user) | others)
 
 

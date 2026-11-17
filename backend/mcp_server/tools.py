@@ -1024,7 +1024,8 @@ def get_script(user, script_id: int) -> dict:
     except (PermissionError, access.AccessDenied, introspect.UnknownSchema) as exc:
         raise ToolFailure(str(exc)) from exc
     return {"id": s.pk, "name": s.name, "size": s.size, "status": s.status,
-            "change_id": s.change_id, "report": _trim_report(s.report or {}) if s.report else None}
+            "change_id": s.change_id,
+            "report": _trim_report(script_service.report_for(user, s) or {}) if s.report else None}
 
 
 _trim_report = script_service.trim_report

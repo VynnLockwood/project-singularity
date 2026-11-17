@@ -5,6 +5,7 @@ the databases the user can reach inside the query (before any top-k or limit), a
 user cannot reach answers exactly like an id that does not exist.
 """
 import json
+import re
 from datetime import timedelta
 
 import pytest
@@ -602,17 +603,53 @@ def test_submit_of_someone_elses_script_needs_the_same_reach_as_reading_it(dbs, 
     assert Script.objects.get(pk=s.pk).status == Script.Status.VALIDATED
 
 
-def test_a_file_named_database_hidden_from_the_viewer_hides_the_script(dbs, other, master_approver):
-    """The file names crm; it was checked for master (crm unreachable for the owner, or chosen): others who
-    cannot reach crm do not see it, but a name that is no database here (public) hides nothing."""
-    crm_named = make_script(other, "master")
-    crm_named.report = {**crm_named.report, "detected_schema": HIDDEN}
-    crm_named.save(update_fields=["report"])
-    public = make_script(other, "master")
-    public.report = {**public.report, "detected_schema": "public"}
-    public.save(update_fields=["report"])
-    c = client(master_approver)
-    listed = [x["id"] for x in c.get("/api/scripts").json()["scripts"]]
-    assert public.pk in listed and crm_named.pk not in listed
-    assert c.get(f"/api/scripts/{public.pk}").status_code == 200
-    assert c.get(f"/api/scripts/{crm_named.pk}").status_code == 404
+@pytest.fixture(params=list(SETUPS))
+def master_only_approver(request, dbs):
+    u = make_user(Role.APPROVER)
+    SETUPS[request.param](u)
+    return u
+
+
+def _script_naming(owner, name):
+    s = make_script(owner, "master")
+    s.report = {**s.report, "detected_schema": name}
+    s.save(update_fields=["report"])
+    return s
+
+
+def _viewer_sees(viewer, s):
+    """Everything another person gets for one script: the list entry, the by-id answer and MCP get_script."""
+    c = client(viewer)
+    listed = [x for x in c.get("/api/scripts").json()["scripts"] if x["id"] == s.pk]
+    detail = c.get(f"/api/scripts/{s.pk}")
+    return json.dumps([listed, detail.status_code, detail.json(), _mcp_answer(lambda: tools.get_script(viewer, s.pk), s.pk)])
+
+
+def test_file_named_database_hidden_or_missing_answers_identically(master_only_approver, other):
+    """A name in the file is no oracle: an existing database the viewer cannot reach and one that does not
+    exist give the same list entry, by-id answer and MCP answer (the name itself is not shown to them)."""
+    hidden = _viewer_sees(master_only_approver, _script_naming(other, HIDDEN))
+    missing = _viewer_sees(master_only_approver, _script_naming(other, MISSING))
+    norm = lambda text: re.sub(r'"(id|script_id|sha256|created_at|expires_at)": ("[^"]*"|\d+)', "", text)  # noqa: E731
+    assert norm(hidden) == norm(missing)
+    assert HIDDEN not in hidden and MISSING not in missing
+    assert '"detected_schema": null' in hidden
+
+
+def test_file_named_database_shown_to_an_approver_on_it(dbs, other, master_approver):
+    grant(master_approver, HIDDEN, Role.APPROVER)
+    seen = _viewer_sees(master_approver, _script_naming(other, HIDDEN))
+    assert f'"detected_schema": "{HIDDEN}"' in seen
+    own = client(other).get(f"/api/scripts/{_script_naming(other, MISSING).pk}").json()
+    assert own["report"]["detected_schema"] == MISSING   # the owner sees their own report as it is
+
+
+@pytest.mark.parametrize("odd", ["", 7, ["crm"]])
+def test_odd_stored_names_list_and_by_id_agree(dbs, other, master_approver, odd):
+    for key in ("detected_schema", "schema"):
+        s = make_script(other, "master")
+        s.report = {**s.report, key: odd}
+        s.save(update_fields=["report"])
+        c = client(master_approver)
+        listed = s.pk in [x["id"] for x in c.get("/api/scripts").json()["scripts"]]
+        assert listed == (c.get(f"/api/scripts/{s.pk}").status_code == 200), (key, odd)
