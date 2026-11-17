@@ -165,9 +165,113 @@ def test_affected_schemas_for_each_database_op():
     assert a([{"op": "move_table", "table": "t", "from_schema": "master", "to_schema": "crm"}]) == {"master", "crm"}
     assert a([{"op": "add_column", "table": "t", "column": {"name": "x", "type": "text"}}]) == {"master"}
     assert a([{"op": "add_column", "table": "t"}], default="crm") == {"crm"}
-    assert a([{"op": "insert_rows", "schema": "finance", "table": "t", "rows": []}]) == {"finance"}
     assert a([{"op": "insert_rows", "table": "t", "rows": []},
               {"op": "drop_schema", "schema": "old", "reason": "x"}], default="crm") == {"crm", "old"}
+
+
+@hidden
+def test_affected_schemas_ordinary_op_schema_key_cannot_hide_the_target():
+    a = access.affected_schemas
+    assert a([{"op": "insert_rows", "schema": "finance", "table": "t", "rows": []}], default="crm") == {"crm", "finance"}
+    assert a([{"op": "insert_rows", "table": "t", "rows": []}], default="crm") == {"crm"}
+    assert access.affected_existing([{"op": "insert_rows", "schema": "finance", "table": "t"}],
+                                    default="crm") == {"crm", "finance"}
+
+
+@hidden
+def test_affected_existing_and_created_names():
+    ops = [{"op": "create_schema", "name": "new1"},
+           {"op": "rename_schema", "schema": "crm", "new_name": "sales"},
+           {"op": "drop_schema", "schema": "old", "reason": "x"},
+           {"op": "move_table", "table": "t", "from_schema": "master", "to_schema": "finance"}]
+    assert access.affected_existing(ops) == {"crm", "old", "master", "finance"}
+    assert access.created_names(ops) == {"new1", "sales"}
+    assert access.affected_schemas(ops) == {"new1", "sales", "crm", "old", "master", "finance"}
+    # a change that only creates a database acts on no existing one
+    assert access.affected_existing([{"op": "create_schema", "name": "n"}]) == set()
+    assert access.created_names([{"op": "add_column", "table": "t"}]) == set()
+    from gate.operations import DATABASE_OPS
+    assert set(access._EXISTING_FIELDS) == DATABASE_OPS  # a new database op must be taught here
+
+
+@hidden
+def test_affected_schemas_odd_input_fails_closed():
+    a = access.affected_schemas
+    assert a([]) == {"master"}
+    assert a([], default="crm") == {"crm"}
+    assert a(None, default="crm") == {"crm"}
+    assert a([{"op": "teleport_table", "schema": "x"}], default="crm") == {"crm", "x"}
+    assert a([{"op": ["drop_schema"], "schema": "x"}], default="crm") == {"crm", "x"}  # unhashable kind
+    assert a([{"op": "add_column", "schema": ["finance"]}], default="crm") == {"crm"}  # list-valued schema
+    assert a([{"op": "rename_schema", "schema": "crm"}]) == {"crm"}  # missing new_name
+    assert access.created_names([{"op": "rename_schema", "schema": "crm"}]) == set()
+    assert a(["not a dict"], default="crm") == {"crm"}
+
+
+@hidden
+def test_is_config_ops():
+    from approvals.config_ops import CONFIG_OPS
+
+    for kind in CONFIG_OPS:
+        assert access.is_config_ops([{"op": kind}])
+    assert access.is_config_ops([{"op": "set_setting", "key": "k", "value": 1},
+                                 {"op": "set_user_role", "email": "a@b.c", "role": "viewer"}])
+    assert not access.is_config_ops([])
+    assert not access.is_config_ops([{"op": "set_setting"}, {"op": "add_column", "table": "t"}])
+    assert not access.is_config_ops([{"op": "create_schema", "name": "x"}])
+    assert not access.is_config_ops([{"op": ["set_setting"]}])
+    assert not access.is_config_ops("set_setting")
+
+
+@hidden
+def test_misspelt_level_raises_value_error_in_can_and_require():
+    u = user(Role.APPROVER)
+    grant(u, access.ALL, Role.APPROVER)
+    with pytest.raises(ValueError):
+        access.can(u, "master", "editr")
+    with pytest.raises(ValueError):
+        access.require(u, "master", "editr")
+    with pytest.raises(ValueError):
+        access.can(user(Role.ADMIN), "master", "admn")
+
+
+@hidden
+def test_unknown_schema_text_is_shared():
+    assert introspect.unknown_schema_message("crm") == "Unknown schema 'crm'."
+    u = user(Role.EDITOR)
+    with pytest.raises(introspect.UnknownSchema) as hidden_err:
+        access.require(u, "crm")
+    with pytest.raises(introspect.UnknownSchema) as missing_err:
+        introspect.require_managed("crm_missing")
+    assert str(hidden_err.value) == introspect.unknown_schema_message("crm")
+    assert str(missing_err.value) == introspect.unknown_schema_message("crm_missing")
+
+
+@hidden
+def test_specific_none_denies_despite_star():
+    u = user(Role.APPROVER)
+    grant(u, access.ALL, Role.EDITOR)
+    grant(u, "crm", access.NONE)
+    assert access.effective_role(u, "crm") is None
+    assert not access.can(u, "crm", Role.VIEWER)
+    assert access.effective_role(u, "finance") == Role.EDITOR
+    assert access.readable_schemas(u) == ["master", "finance"]
+    with pytest.raises(introspect.UnknownSchema) as e:
+        access.require(u, "crm")
+    assert str(e.value) == "Unknown schema 'crm'."
+
+
+@hidden
+def test_star_none_is_rejected_by_constraint():
+    from django.db import IntegrityError, transaction
+
+    u = user(Role.EDITOR)
+    with pytest.raises(IntegrityError), transaction.atomic():
+        grant(u, access.ALL, access.NONE)
+    with pytest.raises(IntegrityError), transaction.atomic():
+        grant(u, "crm", Role.ADMIN)
+    grant(u, "crm", access.NONE)  # a specific deny is allowed
+    assert SchemaGrant.objects.get(user=u).role == "none"
 
 
 @hidden

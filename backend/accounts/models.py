@@ -44,6 +44,8 @@ class User(AbstractUser):
 
 
 GRANT_ROLES = (Role.VIEWER, Role.EDITOR, Role.APPROVER)  # admin is global, never a grant
+GRANT_NONE = "none"  # a deny on one database under a `*` grant; never on `*` itself (no row means none there)
+GRANT_CHOICES = [(r.value, r.label) for r in GRANT_ROLES] + [(GRANT_NONE, "None")]
 
 
 class SchemaGrant(models.Model):
@@ -54,15 +56,16 @@ class SchemaGrant(models.Model):
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="schema_grants")
     schema = models.CharField(max_length=63)  # a managed database name, or "*" (all, including later ones)
-    role = models.CharField(max_length=16, choices=[(r.value, r.label) for r in GRANT_ROLES])
+    role = models.CharField(max_length=16, choices=GRANT_CHOICES)  # GRANT_NONE only for a specific database
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["user_id", "schema"]
         constraints = [
             models.UniqueConstraint(fields=["user", "schema"], name="accounts_schemagrant_user_schema_unique"),
-            models.CheckConstraint(condition=models.Q(role__in=[r.value for r in GRANT_ROLES]),
-                                   name="accounts_schemagrant_role_valid"),
+            models.CheckConstraint(
+                condition=models.Q(role__in=[c for c, _ in GRANT_CHOICES]) & ~models.Q(schema="*", role=GRANT_NONE),
+                name="accounts_schemagrant_role_valid"),
         ]
 
     def __str__(self) -> str:

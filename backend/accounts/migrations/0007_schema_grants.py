@@ -2,6 +2,7 @@
 
 Deploy changes nobody's reach: each non-admin user (active or not) gets a grant on all databases at their
 current global role. Admins need no grant. Going back drops the table and with it every grant.
+A grant's role is viewer/editor/approver, or "none" (a deny on one database; never on `*`).
 """
 
 import django.db.models.deletion
@@ -52,6 +53,7 @@ class Migration(migrations.Migration):
                             ("viewer", "Viewer"),
                             ("editor", "Editor"),
                             ("approver", "Approver"),
+                            ("none", "None"),
                         ],
                         max_length=16,
                     ),
@@ -75,7 +77,8 @@ class Migration(migrations.Migration):
                     ),
                     models.CheckConstraint(
                         condition=models.Q(
-                            ("role__in", ["viewer", "editor", "approver"])
+                            ("role__in", ["viewer", "editor", "approver", "none"]),
+                            models.Q(("role", "none"), ("schema", "*"), _negated=True),
                         ),
                         name="accounts_schemagrant_role_valid",
                     ),

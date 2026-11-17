@@ -4,7 +4,8 @@ A database is a managed Postgres schema. A non-admin's level on database S is th
 `*` grant, else none; it is capped by the global role, and an inactive user has none. Admins reach every
 database, present and future, without grants. A database the user cannot reach answers exactly like one
 that does not exist (`introspect.UnknownSchema`, same text); `AccessDenied` is only for a database the
-user can read but where they lack the level asked for.
+user can read but where they lack the level asked for. A specific grant with role `NONE` ("none") denies
+that one database even under a `*` grant; `*` itself never holds "none" (no `*` row means none there).
 """
 from __future__ import annotations
 
@@ -12,16 +13,22 @@ from collections.abc import Iterable
 
 from schema import introspect
 
-from .models import ROLE_RANK, Role, SchemaGrant
+from .models import GRANT_NONE, ROLE_RANK, Role, SchemaGrant
 
 ALL = "*"
+NONE = GRANT_NONE
 
-# ops that act on databases themselves and name them in their own fields (gate.operations.DATABASE_OPS)
-_DATABASE_OP_FIELDS = {
-    "create_schema": ("name",),
-    "rename_schema": ("schema", "new_name"),
+# ops that act on databases themselves and name them in their own fields (gate.operations.DATABASE_OPS):
+# the fields naming databases that must exist, and those naming databases the op creates
+_EXISTING_FIELDS = {
+    "create_schema": (),
+    "rename_schema": ("schema",),
     "drop_schema": ("schema",),
     "move_table": ("from_schema", "to_schema"),
+}
+_CREATED_FIELDS = {
+    "create_schema": ("name",),
+    "rename_schema": ("new_name",),
 }
 
 
@@ -47,6 +54,14 @@ def _rank(role) -> int | None:
         return None
 
 
+def _level_rank(level) -> int:
+    """The rank of a level asked for; a misspelt level is a programming error, not a refusal."""
+    rank = _rank(level)
+    if rank is None:
+        raise ValueError(f"unknown level {level!r}")
+    return rank
+
+
 def _active(user) -> bool:
     return bool(user is not None and getattr(user, "is_authenticated", False) and getattr(user, "is_active", False))
 
@@ -68,8 +83,8 @@ def _effective(user, schema, grants: dict[str, str]) -> str | None:
     if _is_admin(user):
         return Role.ADMIN
     cap = _rank(getattr(user, "role", None))
-    granted = grants.get(schema, grants.get(ALL))
-    level = _rank(granted) if granted is not None else None
+    granted = grants[schema] if schema in grants else grants.get(ALL)  # a specific grant (even "none") wins
+    level = _rank(granted) if granted is not None and granted != NONE else None
     if cap is None or level is None:
         return None
     return Role(granted) if level <= cap else Role(user.role)
@@ -85,13 +100,17 @@ def effective_role(user, schema: str) -> str | None:
 
 
 def _meets(role: str | None, level: str) -> bool:
-    need = _rank(level)
+    need = _level_rank(level)
     have = _rank(role) if role is not None else None
-    return need is not None and have is not None and have >= need
+    return have is not None and have >= need
 
 
 def can(user, schema: str, level: str) -> bool:
-    """True when the user's effective level on `schema` is at least `level` (existence is not checked)."""
+    """True when the user's effective level on `schema` is at least `level` (existence is not checked).
+
+    Raises ValueError for a misspelt level, like `require`.
+    """
+    _level_rank(level)
     return _meets(effective_role(user, schema), level)
 
 
@@ -105,7 +124,7 @@ def readable_schemas(user) -> list[str]:
 
 def _unknown(schema) -> introspect.UnknownSchema:
     # exactly what introspect.require_managed raises for a database that does not exist
-    return introspect.UnknownSchema(f"Unknown schema {schema!r}.")
+    return introspect.UnknownSchema(introspect.unknown_schema_message(schema))
 
 
 def require(user, schema: str, level: str = Role.VIEWER) -> str:
@@ -114,8 +133,7 @@ def require(user, schema: str, level: str = Role.VIEWER) -> str:
     No effective level, or not a managed database: `introspect.UnknownSchema` (hidden equals missing).
     Readable but below `level`: `AccessDenied`.
     """
-    if _rank(level) is None:
-        raise ValueError(f"unknown level {level!r}")
+    _level_rank(level)
     role = effective_role(user, schema)
     if role is None:
         raise _unknown(schema)
@@ -127,21 +145,66 @@ def require(user, schema: str, level: str = Role.VIEWER) -> str:
     return schema
 
 
+def _names(op: dict, fields) -> set[str]:
+    return {op[f] for f in fields if isinstance(op.get(f), str) and op[f]}
+
+
+def _split(operations, default: str) -> tuple[set[str], set[str]]:
+    """(databases that must already exist, names the ops create) for a list of change operations."""
+    existing: set[str] = set()
+    created: set[str] = set()
+    for op in operations if isinstance(operations, (list, tuple)) else ():
+        if not isinstance(op, dict):
+            existing.add(default)
+            continue
+        kind = op.get("op")
+        kind = kind if isinstance(kind, str) else None
+        if kind in _EXISTING_FIELDS:
+            existing |= _names(op, _EXISTING_FIELDS[kind])
+            created |= _names(op, _CREATED_FIELDS.get(kind, ()))
+        else:
+            # ordinary (and unknown) ops act on the change's database; an op-level `schema` can only add one
+            existing.add(default)
+            existing |= _names(op, ("schema",))
+    return existing, created
+
+
 def affected_schemas(operations: Iterable[dict], default: str = "master") -> set[str]:
-    """The databases a change's operations act on.
+    """Every database name a change's operations touch: `affected_existing` | `created_names`.
 
     Database ops name theirs (`create_schema` its `name`, `rename_schema` both names, `drop_schema` its
-    `schema`, `move_table` both sides); every other op acts on its `schema` or on `default`. Never empty:
+    `schema`, `move_table` both sides). Every other op, unknown kinds included, acts on `default` plus its
+    own `schema` key if it has one (an op-level key can widen the set, never hide `default`). Never empty:
     a change that names nothing acts on `default`.
+
+    Config ops (`set_user_role`, `set_setting`, `update_rule`, ... see `is_config_ops`) are NOT database
+    ops: passed here they count as ordinary ops and give `{default}`. Callers must route config changes
+    away first (they are decided by global role, never by grants).
     """
-    out: set[str] = set()
-    for op in operations or ():
-        if not isinstance(op, dict):
-            continue
-        fields = _DATABASE_OP_FIELDS.get(op.get("op"))
-        if fields is not None:
-            out.update(op[f] for f in fields if isinstance(op.get(f), str) and op.get(f))
-        else:
-            s = op.get("schema")
-            out.add(s if isinstance(s, str) and s else default)
-    return out or {default}
+    existing, created = _split(operations, default)
+    return (existing | created) or {default}
+
+
+def affected_existing(operations: Iterable[dict], default: str = "master") -> set[str]:
+    """The databases the ops act on that must already exist: `rename_schema.schema`, `drop_schema.schema`,
+    `move_table.from_schema/to_schema`, and `default` (plus any op `schema`) for every other op.
+
+    A change made only of `create_schema` ops gives the empty set (it acts on no existing database).
+    An empty or malformed list gives `{default}`. Config ops: see `affected_schemas`.
+    """
+    existing, created = _split(operations, default)
+    return existing if (existing or created) else {default}
+
+
+def created_names(operations: Iterable[dict]) -> set[str]:
+    """The database names the ops bring into being: `create_schema.name` and `rename_schema.new_name`."""
+    return _split(operations, "master")[1]
+
+
+def is_config_ops(operations) -> bool:
+    """True when every op is a configuration op (`approvals.config_ops.CONFIG_OPS`): decided by global role."""
+    from approvals.config_ops import CONFIG_OPS  # lazy: config_ops imports accounts.services
+
+    return (isinstance(operations, (list, tuple)) and bool(operations)
+            and all(isinstance(o, dict) and isinstance(o.get("op"), str) and o["op"] in CONFIG_OPS
+                    for o in operations))
