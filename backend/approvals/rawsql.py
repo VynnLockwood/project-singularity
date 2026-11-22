@@ -140,12 +140,16 @@ class _Fenced(Visitor):
 
 
 def _fenced_in_bodies(node) -> str | None:
-    """The first fenced setting any SET / RESET / set_config() changes, DO and function bodies included, read from
+    """The first fenced setting any SET / RESET / set_config() changes (or `set_config` named in any position),
+    DO and function bodies included, read from
     the parsed statements (so comments and U& escapes cannot hide it). The text check below stays as a fallback
     for bodies the parser cannot read."""
     from schema import isolation
 
-    for name in isolation.scan(node).settings:
+    scan = isolation.scan(node)
+    if "set_config" in scan.names:      # named anywhere: a call, an aggregate's SFUNC, an operator's FUNCTION, ...
+        return "settings through set_config"
+    for name in scan.settings:
         if name in _FENCED_SETTINGS or name in ("all", "set_config"):
             return name
     return None

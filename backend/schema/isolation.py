@@ -59,9 +59,11 @@ _BY_OID = frozenset({"acldefault", "makeaclitem", "obj_description", "col_descri
                      "amvalidate", "plpgsql_validator", "postgresql_fdw_validator"})
 _BY_OID_PREFIX = ("binary_upgrade_", "brin_", "lo_", "dblink", "_pg_", "fmgr_")
 _BY_OID_SUFFIX = ("sel", "joinsel", "_validator")
-# pg_catalog functions (outside pg_*) with an oid / oidvector / reg* argument or result: they turn object ids into
-# names (`regclassout`, `oidvectortypes`, `format_type`), resolve names (`regclassin`) or act on objects by id.
-# Generated from pg_proc (Postgres 16) minus the harmless oid comparisons/aggregates in _OID_SAFE;
+# pg_catalog functions (outside pg_*) with an oid / oidvector / reg* (regconfig and regdictionary included)
+# argument, OUT argument or result: they turn object ids into names (`regclassout`, `oidvectortypes`,
+# `format_type`), resolve names (`regclassin`) or act on objects by id. Generated from pg_proc (Postgres 16)
+# minus the harmless oid comparisons/aggregates in _OID_SAFE; text search functions are allowed through
+# _TS_CONFIG when their configuration/dictionary argument is a checked constant (or left out);
 # tests/test_access_isolation.py::test_risky_function_list_covers_the_server keeps it in step with the server.
 _BY_TYPE = frozenset("""
     acldefault aclexplode amvalidate anycompatiblemultirange_in anycompatiblerange_in anymultirange_in
@@ -83,27 +85,34 @@ _BY_TYPE = frozenset("""
     has_schema_privilege has_sequence_privilege has_server_privilege has_table_privilege
     has_tablespace_privilege has_type_privilege hashoidvector hashoidvectorextended iclikejoinsel iclikesel
     icnlikejoinsel icnlikesel icregexeqjoinsel icregexeqsel icregexnejoinsel icregexnesel inet_gist_consistent
-    interval_in interval_recv likejoinsel likesel lo_creat lo_create lo_export lo_from_bytea lo_get lo_import
-    lo_open lo_put lo_unlink makeaclitem matchingjoinsel matchingsel multirange_gist_consistent multirange_in
-    multirange_recv multirangesel nameconcatoid neqjoinsel neqsel networkjoinsel networksel nextval nlikejoinsel
-    nlikesel numeric_in numeric_recv obj_description oidrecv oidsend oidvectoreq oidvectorge oidvectorgt
-    oidvectorin oidvectorle oidvectorlt oidvectorne oidvectorout oidvectorrecv oidvectorsend oidvectortypes
-    plpgsql_validator positionjoinsel positionsel postgresql_fdw_validator prefixjoinsel prefixsel
-    range_gist_consistent range_in range_recv rangesel record_in record_recv regclass regclassin regclassout
-    regclassrecv regclasssend regcollationin regcollationout regcollationrecv regcollationsend regexeqjoinsel
-    regexeqsel regexnejoinsel regexnesel regnamespacein regnamespaceout regnamespacerecv regnamespacesend
-    regoperatorin regoperatorout regoperatorrecv regoperatorsend regoperin regoperout regoperrecv regopersend
-    regprocedurein regprocedureout regprocedurerecv regproceduresend regprocin regprocout regprocrecv
-    regprocsend regrolein regroleout regrolerecv regrolesend regtypein regtypeout regtyperecv regtypesend
-    row_security_active satisfies_hash_partition scalargejoinsel scalargesel scalargtjoinsel scalargtsel
-    scalarlejoinsel scalarlesel scalarltjoinsel scalarltsel setval shobj_description table_to_xml
-    table_to_xml_and_xmlschema table_to_xmlschema time_in time_recv timestamp_in timestamp_recv timestamptz_in
-    timestamptz_recv timetz_in timetz_recv to_regclass to_regcollation to_regnamespace to_regoper to_regoperator
-    to_regproc to_regprocedure to_regrole to_regtype ts_parse ts_token_type tsmatchjoinsel tsmatchsel varbit_in
-    varbit_recv varcharin varcharrecv
+    interval_in interval_recv json_to_tsvector jsonb_to_tsvector likejoinsel likesel lo_creat lo_create
+    lo_export lo_from_bytea lo_get lo_import lo_open lo_put lo_unlink makeaclitem matchingjoinsel matchingsel
+    multirange_gist_consistent multirange_in multirange_recv multirangesel nameconcatoid neqjoinsel neqsel
+    networkjoinsel networksel nextval nlikejoinsel nlikesel numeric_in numeric_recv obj_description oidrecv
+    oidsend oidvectoreq oidvectorge oidvectorgt oidvectorin oidvectorle oidvectorlt oidvectorne oidvectorout
+    oidvectorrecv oidvectorsend oidvectortypes phraseto_tsquery plainto_tsquery plpgsql_validator
+    positionjoinsel positionsel postgresql_fdw_validator prefixjoinsel prefixsel range_gist_consistent range_in
+    range_recv rangesel record_in record_recv regclass regclassin regclassout regclassrecv regclasssend
+    regcollationin regcollationout regcollationrecv regcollationsend regconfigin regconfigout regconfigrecv
+    regconfigsend regdictionaryin regdictionaryout regdictionaryrecv regdictionarysend regexeqjoinsel regexeqsel
+    regexnejoinsel regexnesel regnamespacein regnamespaceout regnamespacerecv regnamespacesend regoperatorin
+    regoperatorout regoperatorrecv regoperatorsend regoperin regoperout regoperrecv regopersend regprocedurein
+    regprocedureout regprocedurerecv regproceduresend regprocin regprocout regprocrecv regprocsend regrolein
+    regroleout regrolerecv regrolesend regtypein regtypeout regtyperecv regtypesend row_security_active
+    satisfies_hash_partition scalargejoinsel scalargesel scalargtjoinsel scalargtsel scalarlejoinsel scalarlesel
+    scalarltjoinsel scalarltsel setval shobj_description table_to_xml table_to_xml_and_xmlschema
+    table_to_xmlschema time_in time_recv timestamp_in timestamp_recv timestamptz_in timestamptz_recv timetz_in
+    timetz_recv to_regclass to_regcollation to_regnamespace to_regoper to_regoperator to_regproc to_regprocedure
+    to_regrole to_regtype to_tsquery to_tsvector ts_debug ts_headline ts_lexize ts_parse ts_token_type
+    tsmatchjoinsel tsmatchsel varbit_in varbit_recv varcharin varcharrecv websearch_to_tsquery
 """.split())
 _OID_SAFE = frozenset({"max", "min", "int8", "oid", "oideq", "oidne", "oidlt", "oidle", "oidgt", "oidge",
-                       "oidlarger", "oidsmaller", "hashoid", "hashoidextended", "btoidcmp", "oidin", "oidout"})
+                       "oidlarger", "oidsmaller", "hashoid", "hashoidextended", "btoidcmp", "oidin", "oidout",
+                       "get_current_ts_config"})
+# text search functions: the number of arguments from which the first one is a configuration (or dictionary) name
+_TS_CONFIG = {"to_tsvector": 2, "to_tsquery": 2, "plainto_tsquery": 2, "phraseto_tsquery": 2,
+              "websearch_to_tsquery": 2, "json_to_tsvector": 3, "jsonb_to_tsvector": 3, "ts_headline": 3,
+              "ts_debug": 2, "ts_lexize": 1}
 _BY_TYPE_PATTERN = re.compile(r"^(reg\w*(in|out|recv|send)|oidvector\w*)$")
 # settings that change identity, the run's limits or where unqualified names resolve: never set from SQL that is
 # checked here (a body could otherwise point search_path at another database)
@@ -128,14 +137,19 @@ _THREE_PART = {enums.ObjectType.OBJECT_COLUMN, enums.ObjectType.OBJECT_TRIGGER, 
 _NAME_ATTRS = ("funcname", "defnames", "domainname", "conversion_name", "opclassname", "opfamilyname", "collname",
                "objname", "typeName", "name", "opclass", "collation", "dictname", "cfgname")
 
-# statement kinds whose names are understood here; any other kind is Unclear
+# statement kinds whose names are understood here; any other kind is Unclear (refused for non-admins). Every
+# function these can name is either a FuncCall (expressions: checked like any call) or a field checked by a handler
+# (CreateTrigStmt.funcname, CreateFunctionStmt/AlterFunctionStmt SUPPORT). Kinds that name functions in other
+# ways (CREATE AGGREGATE/OPERATOR/TYPE/TEXT SEARCH ... = DefineStmt, CREATE CAST, TRANSFORM, CONVERSION,
+# OPERATOR CLASS/FAMILY, EVENT TRIGGER, LANGUAGE, FOREIGN DATA WRAPPER/SERVER, ACCESS METHOD, STATISTICS, ...)
+# are deliberately not listed. tests/test_access_isolation.py::test_statement_kinds_table pins this set.
 KNOWN_STATEMENTS = frozenset({
     "SelectStmt", "InsertStmt", "UpdateStmt", "DeleteStmt", "MergeStmt", "CreateStmt", "AlterTableStmt",
     "IndexStmt", "ViewStmt", "CreateTableAsStmt", "CreateSeqStmt", "AlterSeqStmt", "DropStmt", "TruncateStmt",
     "CommentStmt", "RenameStmt", "AlterObjectSchemaStmt", "AlterOwnerStmt", "GrantStmt",
     "AlterDefaultPrivilegesStmt", "CreateFunctionStmt", "AlterFunctionStmt", "DoStmt", "CallStmt",
     "CreateTrigStmt", "CreateEnumStmt", "AlterEnumStmt", "CompositeTypeStmt", "CreateDomainStmt",
-    "AlterDomainStmt", "DefineStmt", "CreatePolicyStmt", "AlterPolicyStmt", "CreateStatsStmt", "AlterStatsStmt",
+    "AlterDomainStmt", "CreatePolicyStmt", "AlterPolicyStmt",
     "RuleStmt", "VariableSetStmt", "ReindexStmt", "ClusterStmt", "VacuumStmt", "RefreshMatViewStmt", "LockStmt",
     "ExplainStmt", "ConstraintsSetStmt", "TransactionStmt",
 })
@@ -150,6 +164,8 @@ class Scan:
     unclear: list[str] = field(default_factory=list)
     unparsable: bool = False
     settings: list[str] = field(default_factory=list)                 # every SET / RESET name, bodies included
+    names: set[str] = field(default_factory=set)                      # every identifier (not string constants)
+    operators: set[tuple[str | None, str]] = field(default_factory=set)  # (schema or None, symbol) of A_Expr
     relations: set[tuple[str | None, str]] = field(default_factory=set)  # (schema or None, name) of every RangeVar
 
 
@@ -187,6 +203,31 @@ def _const_text(node) -> str | None:
 
 def _is_const(node) -> bool:
     return isinstance(node, ast.A_Const)
+
+
+def risky_function(name: str) -> bool:
+    """A function a non-admin may not call by name: it runs SQL text, changes settings, or turns names or object ids
+    into catalog information (see the lists above). Name-taking functions checked on their arguments are not."""
+    name = name.lower()
+    return (name == "set_config" or name in _RUNS_SQL or name.endswith(_RUNS_SQL_SUFFIX) or name in _BY_OID
+            or name.startswith(_BY_OID_PREFIX) or name.endswith(_BY_OID_SUFFIX)
+            or (name.startswith("pg_") and name not in PG_OK)
+            or (name in _BY_TYPE and not name.startswith("has_")) or bool(_BY_TYPE_PATTERN.match(name)))
+
+
+def closure_risky_function(name: str) -> bool:
+    """A function that may not be called where its arguments are not visible here (a view's rule, a trigger, an
+    operator): `risky_function`, plus the name-taking ones, whose arguments are checked only in a call we parse.
+    Text search functions are fine there: the configuration they use is followed as its own dependency."""
+    name = name.lower()
+    if name in _TS_CONFIG:
+        return False
+    return risky_function(name) or name in _NAME_FIRST or name in _SCHEMA_FIRST or (
+        name.startswith("has_") and name.endswith("_privilege"))
+
+
+def _function_refusal(name: str) -> str:
+    return f"{name}() is not allowed: it can show or read objects outside the databases you can reach"
 
 
 class _Collector:
@@ -248,6 +289,10 @@ class _Collector:
             return
         if not isinstance(node, ast.Node):
             return
+        if isinstance(node, ast.A_Const):           # a string constant is data, not a name
+            return
+        if isinstance(node, ast.String):
+            self.scan.names.add(node.sval.lower())
         handler = getattr(self, "on_" + type(node).__name__, None)
         if handler is not None:
             handler(node)
@@ -296,11 +341,9 @@ class _Collector:
         if base in _NAME_FIRST or base in _SCHEMA_FIRST:   # before the type rule: their name argument is checked
             if args:
                 self.literal(args[0], is_schema=base in _SCHEMA_FIRST)
-        elif (base in _RUNS_SQL or base.endswith(_RUNS_SQL_SUFFIX) or base in _BY_OID
-                or base.startswith(_BY_OID_PREFIX) or base.endswith(_BY_OID_SUFFIX)
-                or (base.startswith("pg_") and base not in PG_OK)
-                or (base in _BY_TYPE and not base.startswith("has_")) or _BY_TYPE_PATTERN.match(base)):
-            self.unclear(f"{base}() is not allowed: it can show or read objects outside the databases you can reach")
+        elif base in _TS_CONFIG:
+            if len(args) >= _TS_CONFIG[base]:          # the form whose first argument is a configuration/dictionary
+                self.literal(args[0])
         elif base.startswith("has_") and base.endswith("_privilege"):
             if not all(_is_const(a) for a in args):
                 self.unclear(f"{base}() with a name given as an expression cannot be checked")
@@ -312,6 +355,20 @@ class _Collector:
                     text = _const_text(a)
                     if text is not None and "." in text:
                         self.literal(a)
+        elif risky_function(base):
+            self.unclear(_function_refusal(base))
+
+    def on_CreateTrigStmt(self, n):  # noqa: N802
+        parts = _strings(n.funcname) or []
+        if parts and (closure_risky_function(parts[-1].lower())):
+            self.unclear(_function_refusal(parts[-1].lower()))
+
+    def support(self, options) -> None:
+        if _option(options, "support") is not None:
+            self.unclear("a SUPPORT function cannot be checked")
+
+    def on_AlterFunctionStmt(self, n):  # noqa: N802
+        self.support(n.actions)
 
     def on_VariableSetStmt(self, n):  # noqa: N802
         """SET / RESET anywhere (top level, DO and function bodies, `CREATE/ALTER FUNCTION ... SET`). The name is
@@ -334,6 +391,9 @@ class _Collector:
 
     def on_A_Expr(self, n):  # noqa: N802
         self.qualified(n.name)           # OPERATOR(crm.+)
+        parts = _strings(n.name)
+        if parts:
+            self.scan.operators.add((parts[-2] if len(parts) >= 2 else None, parts[-1]))
 
     def on_DropStmt(self, n):  # noqa: N802
         for o in n.objects or ():
@@ -377,6 +437,7 @@ class _Collector:
         self.body(n, _option(n.args, "language") or "plpgsql", _option(n.args, "as"))
 
     def on_CreateFunctionStmt(self, n):  # noqa: N802
+        self.support(n.options)
         if n.sql_body is None:
             self.body(n, _option(n.options, "language") or "sql", _option(n.options, "as"))
 
@@ -523,11 +584,12 @@ def check_text(body: str, allowed, *, is_admin: bool) -> None:
         raise QueryError(problem)
 
 
-VIEW_REFUSAL = ("it reads a view or table whose data comes from outside the databases you can reach (or that "
-                "cannot be checked)")
+VIEW_REFUSAL = ("it uses a view, table or operator whose data comes from outside the databases you can reach (or "
+                "that cannot be checked)")
 
 # every relation a relation's data can come from: view/matview rules (pg_rewrite -> pg_depend), inheritance and
-# partitions both ways; with the schema of each, its kind, and the schemas of functions the rules call
+# partitions both ways; then everything those rules depend on (functions, operators and the functions behind
+# them, types, casts and their functions, text search configurations and dictionaries, collations)
 _CLOSURE_SQL = """
 WITH RECURSIVE r(oid) AS (
     SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -539,40 +601,110 @@ WITH RECURSIVE r(oid) AS (
         UNION SELECT i.inhrelid FROM pg_inherits i WHERE i.inhparent = r.oid
         UNION SELECT i.inhparent FROM pg_inherits i WHERE i.inhrelid = r.oid
     ) x(oid)
+), deps AS (
+    SELECT DISTINCT d.refclassid, d.refobjid FROM r JOIN pg_rewrite w ON w.ev_class = r.oid
+        JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = w.oid
 )
-SELECT n.nspname AS schema, c.relkind::text AS kind FROM r JOIN pg_class c ON c.oid = r.oid
+SELECT 'relation' AS what, n.nspname AS schema, c.relkind::text AS name FROM r JOIN pg_class c ON c.oid = r.oid
     JOIN pg_namespace n ON n.oid = c.relnamespace
-UNION
-SELECT pn.nspname, 'function' FROM r JOIN pg_rewrite w ON w.ev_class = r.oid
-    JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = w.oid AND d.refclassid = 'pg_proc'::regclass
-    JOIN pg_proc p ON p.oid = d.refobjid JOIN pg_namespace pn ON pn.oid = p.pronamespace
+UNION ALL
+SELECT 'function', n.nspname, p.proname FROM deps JOIN pg_proc p ON deps.refclassid = 'pg_proc'::regclass
+    AND p.oid = deps.refobjid JOIN pg_namespace n ON n.oid = p.pronamespace
+UNION ALL
+SELECT 'operator', n.nspname, o.oprname FROM deps JOIN pg_operator o ON deps.refclassid = 'pg_operator'::regclass
+    AND o.oid = deps.refobjid JOIN pg_namespace n ON n.oid = o.oprnamespace
+UNION ALL
+SELECT 'function', n.nspname, p.proname FROM deps JOIN pg_operator o ON deps.refclassid = 'pg_operator'::regclass
+    AND o.oid = deps.refobjid JOIN pg_proc p ON p.oid = o.oprcode JOIN pg_namespace n ON n.oid = p.pronamespace
+UNION ALL
+SELECT 'type', n.nspname, t.typname FROM deps JOIN pg_type t ON deps.refclassid = 'pg_type'::regclass
+    AND t.oid = deps.refobjid JOIN pg_namespace n ON n.oid = t.typnamespace
+UNION ALL
+SELECT 'function', n.nspname, p.proname FROM deps JOIN pg_cast k ON deps.refclassid = 'pg_cast'::regclass
+    AND k.oid = deps.refobjid JOIN pg_proc p ON p.oid = k.castfunc JOIN pg_namespace n ON n.oid = p.pronamespace
+UNION ALL
+SELECT 'other', n.nspname, '' FROM deps JOIN pg_ts_config x ON deps.refclassid = 'pg_ts_config'::regclass
+    AND x.oid = deps.refobjid JOIN pg_namespace n ON n.oid = x.cfgnamespace
+UNION ALL
+SELECT 'other', n.nspname, '' FROM deps JOIN pg_ts_dict x ON deps.refclassid = 'pg_ts_dict'::regclass
+    AND x.oid = deps.refobjid JOIN pg_namespace n ON n.oid = x.dictnamespace
+UNION ALL
+SELECT 'other', n.nspname, '' FROM deps JOIN pg_collation x ON deps.refclassid = 'pg_collation'::regclass
+    AND x.oid = deps.refobjid JOIN pg_namespace n ON n.oid = x.collnamespace
+UNION ALL
+SELECT 'unknown', '', deps.refclassid::regclass::text FROM deps
+    WHERE deps.refclassid NOT IN ('pg_class'::regclass, 'pg_proc'::regclass, 'pg_operator'::regclass,
+        'pg_type'::regclass, 'pg_cast'::regclass, 'pg_ts_config'::regclass, 'pg_ts_dict'::regclass,
+        'pg_collation'::regclass)
 """
 
+# operators a statement uses by symbol, in the schemas it can resolve them in, with the function behind each
+_OPERATOR_SQL = """
+SELECT n.nspname AS schema, p.proname AS function, pn.nspname AS function_schema
+FROM pg_operator o JOIN pg_namespace n ON n.oid = o.oprnamespace
+    JOIN pg_proc p ON p.oid = o.oprcode JOIN pg_namespace pn ON pn.oid = p.pronamespace
+WHERE o.oprname = %(symbol)s AND n.nspname = ANY(%(schemas)s)
+"""
 
-def closure_problem(relations, default_schema: str, allowed) -> str | None:
-    """VIEW_REFUSAL when a named relation (unqualified ones resolve in `default_schema`) is, or is built on, data
-    outside `allowed`: a view or materialized view over another database, an inheritance parent or child or
-    partition there, a foreign table, or a rule calling a function there. Raw SQL and view queries are not planned
-    here, so this is what stops a readable view from laundering a hidden table.
+_NAME_TYPES = REG_TYPES | {"oidvector"}
 
-    Only names in `allowed` databases are looked up (callers refuse other names first), so the answer never depends
-    on whether a hidden database exists. The text names nothing."""
+
+def _closure_row_problem(row, allowed: set[str]) -> bool:
+    what, schema, name = row["what"], row["schema"], row["name"]
+    if what == "relation":
+        return name == "f" or schema not in allowed            # a foreign table cannot be checked
+    if what == "function":
+        return schema not in allowed | {"pg_catalog"} or closure_risky_function(name)
+    if what == "type":
+        return schema not in allowed | SYSTEM or (schema == "pg_catalog" and name in _NAME_TYPES)
+    if what in ("operator", "other"):
+        return schema not in allowed | {"pg_catalog"}
+    return True                                                 # a dependency of a kind not followed here
+
+
+def objects_problem(conn, scan_: Scan, default_schema: str, allowed) -> str | None:
+    """VIEW_REFUSAL when what a statement names is, or is built on, something outside `allowed`, checked in the
+    catalog on `conn`:
+
+    - each named relation (unqualified ones resolve in `default_schema`) and everything its data can come from: a
+      view or materialized view over another database, an inheritance relative or partition there, a foreign
+      table, or a rule using a function, operator (and the function behind it), type, cast, text search
+      configuration or collation of another database, or a risky catalog function (`closure_risky_function`);
+    - each user-defined operator used (in the database it is qualified with, else the default one): one whose
+      function is in another database or risky (an operator can hide `format_type` or `ts_rewrite`). Built-in
+      pg_catalog operators are not looked up; an operator qualified with another database was refused by name.
+
+    Only objects in `allowed` databases (plus pg_catalog for operators) are looked up, and callers refuse other
+    names first, so the answer never depends on whether a hidden database exists. The text names nothing. A
+    function in an allowed database is not followed into its body (the accepted gap)."""
+    allowed = set(allowed)
+    for sch, name in sorted({(sch or default_schema, name) for sch, name in scan_.relations},
+                            key=lambda x: (x[0] or "", x[1])):
+        if sch not in allowed:
+            continue
+        for row in conn.execute(_CLOSURE_SQL, {"schema": sch, "name": name}):
+            if _closure_row_problem(row, allowed):
+                return VIEW_REFUSAL
+    for sch, symbol in sorted(scan_.operators, key=lambda x: (x[0] or "", x[1])):
+        # built-in (pg_catalog) operators are comparisons and arithmetic: only user-defined ones can hide a function
+        schemas = [sch] if sch else [default_schema]
+        if schemas == ["pg_catalog"] or not set(schemas) <= allowed:
+            continue
+        for row in conn.execute(_OPERATOR_SQL, {"symbol": symbol, "schemas": schemas}):
+            if (row["function_schema"] not in allowed | {"pg_catalog"}
+                    or closure_risky_function(row["function"])):
+                return VIEW_REFUSAL
+    return None
+
+
+def closure_problem(scan_: Scan, default_schema: str, allowed) -> str | None:
+    """`objects_problem` on a fresh read-only connection (raw SQL and view queries are not planned here)."""
     from .conn import ro_connection
 
-    allowed = set(allowed)
-    targets = sorted({(sch or default_schema, name) for sch, name in relations
-                      if (sch or default_schema) in allowed})
-    if not targets:
+    if not scan_.relations and not scan_.operators:
         return None
     with ro_connection() as conn:
-        for sch, name in targets:
-            for row in conn.execute(_CLOSURE_SQL, {"schema": sch, "name": name}):
-                if row["kind"] == "f":
-                    return VIEW_REFUSAL
-                ok = allowed | {"pg_catalog"} if row["kind"] == "function" else allowed
-                if row["schema"] not in ok:
-                    return VIEW_REFUSAL
-    return None
+        return objects_problem(conn, scan_, default_schema, allowed)
 
 
 def _level_schemas(user, level: str) -> set[str]:
@@ -591,9 +723,11 @@ def reach_problem(user, sql_or_node, level: str = "editor", *, schema: str = "ma
     """
     from accounts import access
 
+    s = scan(sql_or_node)
+    if "set_config" in s.names:           # for everyone, in any position (a call, an aggregate's SFUNC, ...)
+        return "invalid", "set_config is not allowed: the role, the limits and where names resolve are fixed"
     if access.is_admin(user):
         return None
-    s = scan(sql_or_node)
     for name in sorted(s.schemas - SYSTEM):
         try:
             access.require(user, name, level)
@@ -605,7 +739,7 @@ def reach_problem(user, sql_or_node, level: str = "editor", *, schema: str = "ma
         return "invalid", f"{s.unclear[0]}; only an admin can propose it"
     if s.catalog:
         return "invalid", CATALOG_REFUSAL
-    problem = closure_problem(s.relations, schema, _level_schemas(user, level))
+    problem = closure_problem(s, schema, _level_schemas(user, level))
     if problem:
         return "invalid", problem
     return None
@@ -639,7 +773,8 @@ def plan_problem(plan, allowed) -> str | None:
                 return CATALOG_REFUSAL if schema in SYSTEM or (schema or "").startswith("pg_") else PLAN_REFUSAL
         elif node.get("Node Type") in ("Foreign Scan", "Custom Scan"):
             return PLAN_REFUSAL                    # a scan without a named relation: cannot be checked
-        if "Function Name" in node and node.get("Schema") not in set(allowed) | {"pg_catalog"}:
+        if "Function Name" in node and (node.get("Schema") not in set(allowed) | {"pg_catalog"}
+                                        or closure_risky_function(node["Function Name"])):
             return PLAN_REFUSAL
     return None
 
@@ -649,6 +784,10 @@ def check_plan(conn, body: str, allowed, *, is_admin: bool) -> None:
     plan is outside `allowed`. Admins reach everything: nothing is planned for them."""
     if is_admin:
         return
+    # the planner expands views but not what their rules call (operators, functions, types): follow those first
+    default = conn.execute("SELECT current_schema() AS s").fetchone()["s"]
+    if objects_problem(conn, scan(body), default, set(allowed)):
+        raise QueryError(PLAN_REFUSAL)
     row = conn.execute("EXPLAIN (VERBOSE, FORMAT JSON) " + body).fetchone()
     value = next(iter(row.values())) if isinstance(row, dict) else row[0]
     plan = json.loads(value) if isinstance(value, str) else value
