@@ -59,6 +59,57 @@ _BY_OID = frozenset({"acldefault", "makeaclitem", "obj_description", "col_descri
                      "amvalidate", "plpgsql_validator", "postgresql_fdw_validator"})
 _BY_OID_PREFIX = ("binary_upgrade_", "brin_", "lo_", "dblink", "_pg_", "fmgr_")
 _BY_OID_SUFFIX = ("sel", "joinsel", "_validator")
+# pg_catalog functions (outside pg_*) with an oid / oidvector / reg* argument or result: they turn object ids into
+# names (`regclassout`, `oidvectortypes`, `format_type`), resolve names (`regclassin`) or act on objects by id.
+# Generated from pg_proc (Postgres 16) minus the harmless oid comparisons/aggregates in _OID_SAFE;
+# tests/test_access_isolation.py::test_risky_function_list_covers_the_server keeps it in step with the server.
+_BY_TYPE = frozenset("""
+    acldefault aclexplode amvalidate anycompatiblemultirange_in anycompatiblerange_in anymultirange_in
+    anyrange_in areajoinsel areasel array_in array_recv arraycontjoinsel arraycontsel
+    binary_upgrade_set_missing_value binary_upgrade_set_next_array_pg_type_oid
+    binary_upgrade_set_next_heap_pg_class_oid binary_upgrade_set_next_heap_relfilenode
+    binary_upgrade_set_next_index_pg_class_oid binary_upgrade_set_next_index_relfilenode
+    binary_upgrade_set_next_multirange_array_pg_type_oid binary_upgrade_set_next_multirange_pg_type_oid
+    binary_upgrade_set_next_pg_authid_oid binary_upgrade_set_next_pg_enum_oid
+    binary_upgrade_set_next_pg_tablespace_oid binary_upgrade_set_next_pg_type_oid
+    binary_upgrade_set_next_toast_pg_class_oid binary_upgrade_set_next_toast_relfilenode bit_in bit_recv
+    bpcharin bpcharrecv brin_desummarize_range brin_summarize_new_values brin_summarize_range btequalimage
+    btoidvectorcmp btvarstrequalimage col_description contjoinsel contsel currval domain_in domain_recv enum_in
+    enum_recv eqjoinsel eqsel fmgr_c_validator fmgr_internal_validator fmgr_sql_validator format_type
+    gin_clean_pending_list gist_box_consistent gist_box_distance gist_circle_consistent gist_circle_distance
+    gist_point_consistent gist_point_distance gist_poly_consistent gist_poly_distance gtsquery_consistent
+    gtsvector_consistent has_any_column_privilege has_column_privilege has_database_privilege
+    has_foreign_data_wrapper_privilege has_function_privilege has_language_privilege has_parameter_privilege
+    has_schema_privilege has_sequence_privilege has_server_privilege has_table_privilege
+    has_tablespace_privilege has_type_privilege hashoidvector hashoidvectorextended iclikejoinsel iclikesel
+    icnlikejoinsel icnlikesel icregexeqjoinsel icregexeqsel icregexnejoinsel icregexnesel inet_gist_consistent
+    interval_in interval_recv likejoinsel likesel lo_creat lo_create lo_export lo_from_bytea lo_get lo_import
+    lo_open lo_put lo_unlink makeaclitem matchingjoinsel matchingsel multirange_gist_consistent multirange_in
+    multirange_recv multirangesel nameconcatoid neqjoinsel neqsel networkjoinsel networksel nextval nlikejoinsel
+    nlikesel numeric_in numeric_recv obj_description oidrecv oidsend oidvectoreq oidvectorge oidvectorgt
+    oidvectorin oidvectorle oidvectorlt oidvectorne oidvectorout oidvectorrecv oidvectorsend oidvectortypes
+    plpgsql_validator positionjoinsel positionsel postgresql_fdw_validator prefixjoinsel prefixsel
+    range_gist_consistent range_in range_recv rangesel record_in record_recv regclass regclassin regclassout
+    regclassrecv regclasssend regcollationin regcollationout regcollationrecv regcollationsend regexeqjoinsel
+    regexeqsel regexnejoinsel regexnesel regnamespacein regnamespaceout regnamespacerecv regnamespacesend
+    regoperatorin regoperatorout regoperatorrecv regoperatorsend regoperin regoperout regoperrecv regopersend
+    regprocedurein regprocedureout regprocedurerecv regproceduresend regprocin regprocout regprocrecv
+    regprocsend regrolein regroleout regrolerecv regrolesend regtypein regtypeout regtyperecv regtypesend
+    row_security_active satisfies_hash_partition scalargejoinsel scalargesel scalargtjoinsel scalargtsel
+    scalarlejoinsel scalarlesel scalarltjoinsel scalarltsel setval shobj_description table_to_xml
+    table_to_xml_and_xmlschema table_to_xmlschema time_in time_recv timestamp_in timestamp_recv timestamptz_in
+    timestamptz_recv timetz_in timetz_recv to_regclass to_regcollation to_regnamespace to_regoper to_regoperator
+    to_regproc to_regprocedure to_regrole to_regtype ts_parse ts_token_type tsmatchjoinsel tsmatchsel varbit_in
+    varbit_recv varcharin varcharrecv
+""".split())
+_OID_SAFE = frozenset({"max", "min", "int8", "oid", "oideq", "oidne", "oidlt", "oidle", "oidgt", "oidge",
+                       "oidlarger", "oidsmaller", "hashoid", "hashoidextended", "btoidcmp", "oidin", "oidout"})
+_BY_TYPE_PATTERN = re.compile(r"^(reg\w*(in|out|recv|send)|oidvector\w*)$")
+# settings that change identity, the run's limits or where unqualified names resolve: never set from SQL that is
+# checked here (a body could otherwise point search_path at another database)
+FENCED_SETTINGS = frozenset({"role", "session_authorization", "statement_timeout", "lock_timeout",
+                             "idle_in_transaction_session_timeout", "transaction_timeout", "search_path",
+                             "default_transaction_read_only", "transaction_read_only"})
 # pg_* functions that show nothing of any database (every other pg_* function is refused for non-admins)
 PG_OK = frozenset({"pg_sleep", "pg_sleep_for", "pg_sleep_until", "pg_typeof", "pg_column_size", "pg_size_pretty",
                    "pg_size_bytes", "pg_backend_pid", "pg_client_encoding", "pg_input_is_valid",
@@ -98,6 +149,8 @@ class Scan:
     catalog: bool = False            # reads a system catalog relation
     unclear: list[str] = field(default_factory=list)
     unparsable: bool = False
+    settings: list[str] = field(default_factory=list)                 # every SET / RESET name, bodies included
+    relations: set[tuple[str | None, str]] = field(default_factory=set)  # (schema or None, name) of every RangeVar
 
 
 _IDENT = re.compile(r'\s*("(?:[^"]|"")+"|[^".\s()]+)\s*')
@@ -211,6 +264,7 @@ class _Collector:
     # ---- nodes
     def on_RangeVar(self, n):  # noqa: N802
         self.add(n.schemaname)
+        self.scan.relations.add((n.schemaname, n.relname))
         if n.schemaname in SYSTEM or (n.schemaname or "").startswith("pg_") \
                 or (n.schemaname is None and n.relname.startswith("pg_")):
             self.scan.catalog = True
@@ -237,13 +291,16 @@ class _Collector:
             self.add(parts[-2])
         base = parts[-1].lower() if parts else ""
         args = n.args or ()
-        if (base in _RUNS_SQL or base.endswith(_RUNS_SQL_SUFFIX) or base in _BY_OID
-                or base.startswith(_BY_OID_PREFIX) or base.endswith(_BY_OID_SUFFIX)
-                or (base.startswith("pg_") and base not in PG_OK)):
-            self.unclear(f"{base}() is not allowed: it can show or read objects outside the databases you can reach")
-        elif base in _NAME_FIRST or base in _SCHEMA_FIRST:
+        if base == "set_config":
+            self.scan.settings.append(_const_text(args[0]).lower() if args and _const_text(args[0]) else "set_config")
+        if base in _NAME_FIRST or base in _SCHEMA_FIRST:   # before the type rule: their name argument is checked
             if args:
                 self.literal(args[0], is_schema=base in _SCHEMA_FIRST)
+        elif (base in _RUNS_SQL or base.endswith(_RUNS_SQL_SUFFIX) or base in _BY_OID
+                or base.startswith(_BY_OID_PREFIX) or base.endswith(_BY_OID_SUFFIX)
+                or (base.startswith("pg_") and base not in PG_OK)
+                or (base in _BY_TYPE and not base.startswith("has_")) or _BY_TYPE_PATTERN.match(base)):
+            self.unclear(f"{base}() is not allowed: it can show or read objects outside the databases you can reach")
         elif base.startswith("has_") and base.endswith("_privilege"):
             if not all(_is_const(a) for a in args):
                 self.unclear(f"{base}() with a name given as an expression cannot be checked")
@@ -255,6 +312,17 @@ class _Collector:
                     text = _const_text(a)
                     if text is not None and "." in text:
                         self.literal(a)
+
+    def on_VariableSetStmt(self, n):  # noqa: N802
+        """SET / RESET anywhere (top level, DO and function bodies, `CREATE/ALTER FUNCTION ... SET`). The name is
+        the parser's (comments and U& escapes already decoded). A fenced setting cannot be checked."""
+        name = (n.name or "").lower()
+        if n.kind == enums.VariableSetKind.VAR_RESET_ALL:
+            name = "all"
+        self.scan.settings.append(name)
+        if name in FENCED_SETTINGS or name == "all":
+            label = "every setting (RESET ALL)" if name == "all" else name
+            self.unclear(f"changing {label} is not allowed: the role, the limits and where names resolve are fixed")
 
     def on_ColumnRef(self, n):  # noqa: N802
         fields = n.fields or ()
@@ -455,9 +523,68 @@ def check_text(body: str, allowed, *, is_admin: bool) -> None:
         raise QueryError(problem)
 
 
-def reach_problem(user, sql_or_node, level: str = "editor") -> tuple[str, str] | None:
-    """For SQL that will run as the read/write role (raw SQL, view queries): `(code, message)` when it names a
-    database where `user` lacks `level`, reads the catalogs, or cannot be checked; None when fine. Admins: None.
+VIEW_REFUSAL = ("it reads a view or table whose data comes from outside the databases you can reach (or that "
+                "cannot be checked)")
+
+# every relation a relation's data can come from: view/matview rules (pg_rewrite -> pg_depend), inheritance and
+# partitions both ways; with the schema of each, its kind, and the schemas of functions the rules call
+_CLOSURE_SQL = """
+WITH RECURSIVE r(oid) AS (
+    SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = %(schema)s AND c.relname = %(name)s
+  UNION
+    SELECT x.oid FROM r, LATERAL (
+        SELECT d.refobjid FROM pg_rewrite w JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass
+            AND d.objid = w.oid AND d.refclassid = 'pg_class'::regclass WHERE w.ev_class = r.oid
+        UNION SELECT i.inhrelid FROM pg_inherits i WHERE i.inhparent = r.oid
+        UNION SELECT i.inhparent FROM pg_inherits i WHERE i.inhrelid = r.oid
+    ) x(oid)
+)
+SELECT n.nspname AS schema, c.relkind::text AS kind FROM r JOIN pg_class c ON c.oid = r.oid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+UNION
+SELECT pn.nspname, 'function' FROM r JOIN pg_rewrite w ON w.ev_class = r.oid
+    JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = w.oid AND d.refclassid = 'pg_proc'::regclass
+    JOIN pg_proc p ON p.oid = d.refobjid JOIN pg_namespace pn ON pn.oid = p.pronamespace
+"""
+
+
+def closure_problem(relations, default_schema: str, allowed) -> str | None:
+    """VIEW_REFUSAL when a named relation (unqualified ones resolve in `default_schema`) is, or is built on, data
+    outside `allowed`: a view or materialized view over another database, an inheritance parent or child or
+    partition there, a foreign table, or a rule calling a function there. Raw SQL and view queries are not planned
+    here, so this is what stops a readable view from laundering a hidden table.
+
+    Only names in `allowed` databases are looked up (callers refuse other names first), so the answer never depends
+    on whether a hidden database exists. The text names nothing."""
+    from .conn import ro_connection
+
+    allowed = set(allowed)
+    targets = sorted({(sch or default_schema, name) for sch, name in relations
+                      if (sch or default_schema) in allowed})
+    if not targets:
+        return None
+    with ro_connection() as conn:
+        for sch, name in targets:
+            for row in conn.execute(_CLOSURE_SQL, {"schema": sch, "name": name}):
+                if row["kind"] == "f":
+                    return VIEW_REFUSAL
+                ok = allowed | {"pg_catalog"} if row["kind"] == "function" else allowed
+                if row["schema"] not in ok:
+                    return VIEW_REFUSAL
+    return None
+
+
+def _level_schemas(user, level: str) -> set[str]:
+    from accounts import access
+
+    return {e["name"] for e in access.effective_schemas(user) if access.can(user, e["name"], level)}
+
+
+def reach_problem(user, sql_or_node, level: str = "editor", *, schema: str = "master") -> tuple[str, str] | None:
+    """For SQL that will run as the read/write role (raw SQL, view queries) with `search_path` = `schema`:
+    `(code, message)` when it names a database where `user` lacks `level`, reads the catalogs, cannot be checked,
+    or reads a relation whose data comes from elsewhere (`closure_problem`); None when fine. Admins: None.
 
     code "invalid" with the unknown-database text for a database they cannot reach (hidden equals missing: the
     same text whether it exists or not), "forbidden" with the role text for one they can read but not at `level`.
@@ -478,6 +605,9 @@ def reach_problem(user, sql_or_node, level: str = "editor") -> tuple[str, str] |
         return "invalid", f"{s.unclear[0]}; only an admin can propose it"
     if s.catalog:
         return "invalid", CATALOG_REFUSAL
+    problem = closure_problem(s.relations, schema, _level_schemas(user, level))
+    if problem:
+        return "invalid", problem
     return None
 
 

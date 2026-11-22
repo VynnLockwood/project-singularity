@@ -979,6 +979,8 @@ def _critic(run: ImportRun, sources: list, profiles: list, plan: dict) -> dict:
         return report
     previous = (run.report or {}).get("scriptId")
     report["scriptId"] = script.pk
+    # no `user`: the run's database was reach-checked when it started, and the ops (view queries included) are
+    # checked against the owner again when the script is submitted (approvals.service.propose -> _view_reach)
     rep = validate_mod.validate(script, s_plan["mapping"], run.schema)
     if previous and previous != script.pk:
         _drop_script(previous)

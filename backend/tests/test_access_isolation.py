@@ -438,3 +438,127 @@ def test_catalog_names_leak():
     assert isolation.catalog_names_leak("SELECT * FROM information_schema.columns")
     assert isolation.catalog_names_leak("SELECT (")
     assert not isolation.catalog_names_leak("SELECT pg_catalog.lower(name), 1::pg_catalog.int4 FROM t")
+
+
+# ---- fix round 1: settings in bodies, reg* output functions, views that launder data ----------------------------
+
+SETTINGS_TRICKS = [
+    "DO $$ BEGIN SET/**/search_path = crm; RAISE EXCEPTION 'leak: %', (SELECT string_agg(name, ',') FROM t); END $$",
+    'DO $$ BEGIN SET U&"\\0073earch_path" = crm; INSERT INTO master.t SELECT * FROM t; END $$',
+    'DO $$ BEGIN SET "search_path" = crm; INSERT INTO master.t SELECT * FROM t; END $$',
+    "DO $$ BEGIN SET LOCAL search_path TO crm; INSERT INTO master.t SELECT * FROM t; END $$",
+    "DO $$ BEGIN PERFORM set_config('search_path', 'crm', true); INSERT INTO master.t SELECT * FROM t; END $$",
+    "DO $$ BEGIN RESET ALL; END $$",
+    "CREATE FUNCTION master.f() RETURNS void LANGUAGE plpgsql AS $$ BEGIN SET/**/search_path = crm; "
+    "INSERT INTO master.t SELECT * FROM t; END $$",
+    "CREATE FUNCTION master.f() RETURNS void LANGUAGE sql AS 'SET search_path = crm; INSERT INTO master.t SELECT * FROM t'",
+    "CREATE FUNCTION master.f() RETURNS bigint LANGUAGE sql SET search_path = crm AS 'select count(*) from t'",
+    "ALTER FUNCTION master.f() SET search_path = crm",
+    "SET/**/search_path = crm",
+    "SELECT set_config('search_path', 'crm', true)",
+]
+
+
+@pytest.mark.parametrize("sql", SETTINGS_TRICKS)
+def test_search_path_changes_in_bodies_refused_before_dry_run(editor, no_dry_run, sql):
+    msg = sql_refusal(editor, sql)
+    assert "Secret" not in msg and no_dry_run == [] and Change.objects.count() == 0
+
+
+@pytest.mark.parametrize("sql", [s for s in SETTINGS_TRICKS if "set_config" not in s and "RESET" not in s])
+def test_search_path_changes_in_bodies_refused_for_admins_too(admin, no_dry_run, sql):
+    # the fence on settings is for everyone (rawsql.parse_statements reads them from the parsed bodies)
+    msg = sql_refusal(admin, sql)
+    assert "search_path" in msg and no_dry_run == []
+
+
+REG_OUTPUT = [
+    "SELECT regclassout(o::oid)::text FROM generate_series(1, 30000) o",
+    "SELECT regnamespaceout(o::oid)::text FROM generate_series(1, 30000) o",
+    "SELECT regtypeout(o::oid)::text FROM generate_series(1, 30000) o",
+    "SELECT regprocout(o::oid)::text FROM generate_series(1, 30000) o",
+    "SELECT regclassin('crm.t')",
+    "SELECT oidvectortypes('23 25'::oidvector)",
+    "SELECT format_type(o::oid, NULL) FROM generate_series(1, 30000) o",
+]
+
+
+@pytest.mark.parametrize("sql", REG_OUTPUT)
+def test_reg_output_functions_refused_for_non_admin(viewer, admin, sql):
+    msg = refused(viewer, sql)
+    assert "crm" not in msg.replace("'crm.t'", "") and "only_crm" not in msg
+    run(admin, sql)                                     # admins are not checked
+
+
+@pytest.mark.parametrize("sql", REG_OUTPUT)
+def test_reg_output_functions_refused_in_raw_sql(editor, no_dry_run, sql):
+    msg = sql_refusal(editor, f"DO $$ BEGIN RAISE NOTICE '%', ({sql} LIMIT 1); END $$")
+    assert "only_crm" not in msg and no_dry_run == []
+
+
+def test_common_functions_still_work(viewer):
+    r = run(viewer, "SELECT max(code), min(code), count(*), string_agg(name, ',' ORDER BY name), json_agg(code), "
+                    "coalesce(NULL, 1), to_char(date '2026-01-02', 'YYYY'), length(name), upper(lower(name)), "
+                    "row_number() OVER () FROM t GROUP BY name ORDER BY 1")
+    assert len(r["rows"]) == 2
+    assert run(viewer, "SELECT to_tsvector('english', name) IS NOT NULL, jsonb_build_object('a', 1), "
+                       "date_trunc('day', now()) IS NOT NULL, round(1.25, 1), abs(-1), md5('x') FROM t")["rows"]
+
+
+def test_risky_function_list_covers_the_server(dbs):
+    """Every pg_catalog function (outside pg_*) taking or returning oid/oidvector/reg* is refused, unless it is a
+    harmless oid comparison/aggregate. Fails after a Postgres upgrade adds one: add it to isolation._BY_TYPE."""
+    with dbconn.ro_connection() as c:
+        names = {r["proname"] for r in c.execute(
+            "WITH t AS (SELECT unnest(ARRAY['oid','oidvector','regclass','regnamespace','regproc','regprocedure',"
+            "'regoper','regoperator','regtype','regrole','regcollation']::regtype[])::oid AS t) "
+            "SELECT DISTINCT proname FROM pg_proc p WHERE pronamespace IN ('pg_catalog'::regnamespace, "
+            "'information_schema'::regnamespace) AND proname !~ '^_?pg_' AND (EXISTS (SELECT 1 FROM "
+            "unnest(p.proargtypes::oid[]) a WHERE a IN (SELECT t FROM t)) OR p.prorettype IN (SELECT t FROM t))")}
+    missing = {n for n in names - isolation._OID_SAFE
+               if n not in isolation._BY_TYPE and not isolation._BY_TYPE_PATTERN.match(n)}
+    assert missing == set()
+
+
+@pytest.fixture
+def laundering_view(dbs):
+    build("CREATE VIEW master.v_crm AS SELECT * FROM crm.t", "CREATE VIEW master.v_m AS SELECT * FROM master.t")
+
+
+@pytest.mark.parametrize("sql", [
+    "DO $$ BEGIN RAISE EXCEPTION '%', (SELECT string_agg(name, ',') FROM master.v_crm); END $$",
+    "SELECT (SELECT name FROM v_crm LIMIT 1)::int",
+    "INSERT INTO master.t SELECT * FROM v_crm",
+    "CREATE VIEW master.v2 AS SELECT * FROM v_crm",
+])
+def test_raw_sql_view_over_hidden_table_refused(editor, laundering_view, no_dry_run, sql):
+    msg = sql_refusal(editor, sql)
+    assert msg.endswith(isolation.VIEW_REFUSAL) and "Secret" not in msg and "crm." not in msg.replace("v_crm", "")
+    assert no_dry_run == []
+
+
+def test_raw_sql_view_inside_own_database_still_works(editor, laundering_view, no_dry_run):
+    ch = service.propose_sql(editor, "INSERT INTO master.t SELECT * FROM v_m", REASON)
+    assert ch.status == Change.Status.PENDING and no_dry_run == ["master"]
+
+
+def test_raw_sql_view_over_hidden_table_admin_works(admin, laundering_view, no_dry_run):
+    assert service.propose_sql(admin, "INSERT INTO master.t SELECT * FROM v_crm", REASON).status == Change.Status.PENDING
+
+
+def test_raw_sql_inheritance_child_in_hidden_database_refused(editor, no_dry_run):
+    build("CREATE TABLE master.parent (code text)", "CREATE TABLE crm.child () INHERITS (master.parent)",
+          "INSERT INTO crm.child VALUES ('secret')")
+    msg = sql_refusal(editor, "DO $$ BEGIN RAISE EXCEPTION '%', (SELECT string_agg(code, ',') FROM parent); END $$")
+    assert msg.endswith(isolation.VIEW_REFUSAL) and "secret" not in msg and no_dry_run == []
+
+
+def test_view_op_over_laundering_view_refused(editor, laundering_view):
+    with pytest.raises(service.ChangeError) as e:
+        service.propose(editor, [{"op": "create_view", "name": "v3", "query": "SELECT * FROM v_crm"}], source="mcp")
+    assert e.value.message.endswith(isolation.VIEW_REFUSAL)
+
+
+def test_query_path_unchanged_for_laundering_view(viewer, laundering_view):
+    assert refused(viewer, "SELECT * FROM v_crm") == isolation.PLAN_REFUSAL
+    assert run(viewer, "SELECT count(*) FROM v_m")["rows"] == [[2]]

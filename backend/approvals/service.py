@@ -212,7 +212,7 @@ def propose(user, raw_ops, *, source: str, prompt: str = "", conversation_id: in
         return propose_config(user, raw_ops, source=source, prompt=prompt, conversation_id=conversation_id, reverts=reverts)
     if not user.can_edit:
         raise ChangeError("forbidden", "your role cannot propose changes")
-    _view_reach(user, raw_ops)
+    _view_reach(user, raw_ops, schema if isinstance(schema, str) else "master")
     limits = get_config()["limits"]
     if _is_database(raw_ops):
         schema = "master"  # database ops have no target schema of their own
@@ -272,7 +272,7 @@ def propose_sql(user, sql: str, reason: str, *, schema: str = "master", source: 
     limits = cfg["limits"]
     try:
         statements = rawsql.parse_statements(sql, max_bytes=limits["maxSqlBytes"], max_statements=limits["maxSqlStatements"])
-        _sql_reach(user, statements)   # before the dry run: nothing of another database is touched (ChangeError)
+        _sql_reach(user, statements, schema)   # before the dry run: nothing of another database is touched (ChangeError)
         diff = rawsql.dry_run(statements, schema)
         violations = [{"rule": "rawSql", "severity": "warn", "message": RAW_SQL_WARNING, "op_index": None, "suggestion": None},
                       *rawsql.warnings_for(statements, schema)]
@@ -294,25 +294,26 @@ def propose_sql(user, sql: str, reason: str, *, schema: str = "master", source: 
     return change
 
 
-def _refuse_reach(user, items) -> None:
-    """ChangeError for the first `(where, sql-or-node)` the proposer may not run (`isolation.reach_problem`)."""
+def _refuse_reach(user, items, schema: str) -> None:
+    """ChangeError for the first `(where, sql-or-node)` the proposer may not run in `schema`
+    (`isolation.reach_problem`)."""
     from schema import isolation
 
     for where, sql_or_node in items:
-        problem = isolation.reach_problem(user, sql_or_node, "editor")
+        problem = isolation.reach_problem(user, sql_or_node, "editor", schema=schema)
         if problem:
             raise ChangeError(problem[0], f"{where}: {problem[1]}")
 
 
-def _sql_reach(user, statements) -> None:
-    _refuse_reach(user, ((f"statement {st.number}", st.node) for st in statements))
+def _sql_reach(user, statements, schema: str) -> None:
+    _refuse_reach(user, ((f"statement {st.number}", st.node) for st in statements), schema)
 
 
-def _view_reach(user, ops) -> None:
+def _view_reach(user, ops, schema: str) -> None:
     """A view's query is SQL too: it may name, or read, only databases where the proposer is editor."""
     from schema import isolation
 
-    _refuse_reach(user, isolation.view_queries(ops))
+    _refuse_reach(user, isolation.view_queries(ops), schema)
 
 
 def _script_row_source(change: Change):

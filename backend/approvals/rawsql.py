@@ -39,7 +39,7 @@ class Statement:
 # settings a script must not touch: identity, the run's own timeouts and search path, read-only mode
 _FENCED_SETTINGS = ("role", "session_authorization", "statement_timeout", "lock_timeout",
                     "idle_in_transaction_session_timeout", "transaction_timeout", "search_path",
-                    "default_transaction_read_only")
+                    "default_transaction_read_only", "transaction_read_only")
 _BODY_REFUSAL = re.compile(
     r"set_config|pg_notify|\bsingularity\s*\.|\bsession\s+authorization\b"
     r"|\b(?:set|reset)\s+(?:local\s+|session\s+)?\"?(?:" + "|".join(_FENCED_SETTINGS) + r")\b"
@@ -139,6 +139,18 @@ class _Fenced(Visitor):
             self.why = f"changing {node.name or 'settings (RESET ALL)'}: the role and this run's limits are fixed"
 
 
+def _fenced_in_bodies(node) -> str | None:
+    """The first fenced setting any SET / RESET / set_config() changes, DO and function bodies included, read from
+    the parsed statements (so comments and U& escapes cannot hide it). The text check below stays as a fallback
+    for bodies the parser cannot read."""
+    from schema import isolation
+
+    for name in isolation.scan(node).settings:
+        if name in _FENCED_SETTINGS or name in ("all", "set_config"):
+            return name
+    return None
+
+
 def parse_statements(sql: str, *, max_bytes: int, max_statements: int) -> list[Statement]:
     """Split `sql` into checked statements. Raises RawSqlError with a message the AI can act on."""
     raw = sql.encode()
@@ -168,6 +180,10 @@ def parse_statements(sql: str, *, max_bytes: int, max_statements: int) -> list[S
         v(node)
         if v.why:
             raise RawSqlError(f"statement {n}: {v.why} is not allowed in raw SQL")
+        fenced = _fenced_in_bodies(node)
+        if fenced:
+            raise RawSqlError(f"statement {n}: changing {fenced} (also inside a DO block or function) is not allowed "
+                              "in raw SQL: the role, this run's limits and its search path are fixed")
         body = _body_text(node)
         if body and _BODY_REFUSAL.search(body):
             raise RawSqlError(f"statement {n}: this block or function changes the role, a fenced setting, "
