@@ -694,3 +694,150 @@ def test_approval_checks_the_proposers_reach_again(editor, dbs):
     out = service.approve(approver, ch.pk)
     assert out.status == Change.Status.STALE and "Secret" not in (out.error or "")
     assert run(make_user(Role.ADMIN, "a2@x.com"), "SELECT count(*) FROM master.t")["rows"] == [[2]]
+
+
+# ---- fix round 3: plpgsql targets and every statement kind, text-named objects, trigger arguments -------------
+
+PLPGSQL_PROBES = [
+    "DO $$ DECLARE a int[] := '{{}}'; BEGIN a[(SELECT ascii(name) FROM {db}.t LIMIT 1)] := 1; "
+    "RAISE EXCEPTION 'leak %', array_lower(a, 1); END $$",
+    "CREATE FUNCTION master.f() RETURNS int LANGUAGE plpgsql AS $$ DECLARE a int[] := '{{}}'; BEGIN "
+    "a[(SELECT ascii(name) FROM {db}.t LIMIT 1)] := 1; RETURN array_lower(a, 1); END $$",
+    "DO $$ BEGIN FOR i IN (SELECT count(*) FROM {db}.t)..10 BY 1 LOOP NULL; END LOOP; END $$",
+    "DO $$ BEGIN RAISE NOTICE 'x' USING HINT = (SELECT name FROM {db}.t LIMIT 1); END $$",
+    "DO $$ BEGIN CASE (SELECT name FROM {db}.t LIMIT 1) WHEN 'a' THEN NULL; ELSE NULL; END CASE; END $$",
+    "DO $$ BEGIN LOOP EXIT WHEN (SELECT count(*) FROM {db}.t) > 0; END LOOP; END $$",
+    "DO $$ DECLARE n text; BEGIN FOREACH n IN ARRAY (SELECT array_agg(name) FROM {db}.t) LOOP NULL; END LOOP; END $$",
+    "DO $$ BEGIN ASSERT (SELECT count(*) FROM {db}.t) = 0, 'x'; END $$",
+    "DO $$ DECLARE c CURSOR (k text) FOR SELECT k; BEGIN OPEN c((SELECT name FROM {db}.t LIMIT 1)); END $$",
+    "DO $$ DECLARE r record; BEGIN SELECT 1 AS f INTO r; r.f := (SELECT count(*) FROM {db}.t); END $$",
+]
+
+
+@pytest.mark.parametrize("sql", PLPGSQL_PROBES)
+def test_plpgsql_expressions_everywhere_are_checked(editor, no_dry_run, sql):
+    hidden = sql_refusal(editor, sql.format(db="crm"))
+    missing = sql_refusal(editor, sql.format(db="nope"))
+    assert "Unknown schema 'crm'." in hidden and same_text(hidden, missing)
+    assert "leak" not in hidden and no_dry_run == []
+
+
+def test_plpgsql_node_kinds_are_all_reviewed():
+    """A body using every plpgsql statement kind (but dynamic SQL) parses into reviewed node kinds only and scans
+    clean; a node kind nobody reviewed makes the body unclear."""
+    import pathlib
+
+    import pglast
+
+    text = (pathlib.Path(__file__).parent / "data" / "plpgsql_all_kinds.sql").read_text()
+    kinds = set()
+
+    def walk(x):
+        if isinstance(x, dict):
+            for k, v in x.items():
+                if k.startswith("PLpgSQL_"):
+                    kinds.add(k)
+                walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v)
+
+    walk(pglast.parse_plpgsql(text))
+    assert kinds <= isolation.PLPGSQL_NODES and len(kinds) >= 35
+    assert isolation.scan(text).unclear == []
+    c = isolation._Collector(isolation.Scan())
+    c.plpgsql({"PLpgSQL_stmt_something_new": {"x": 1}})
+    assert c.scan.unclear
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT pg_input_is_valid('{db}.only_crm', 'regclass')",
+    "SELECT pg_input_is_valid('hidden_a', '{db}.e')",
+    "SELECT pg_input_error_info('zzz', '{db}.e')",
+    "SELECT currtid2('{db}.t', '(0,1)')",
+])
+def test_functions_taking_object_names_as_text_refused(viewer, sql):
+    hidden, missing = refused(viewer, sql.format(db="crm")), refused(viewer, sql.format(db="nope"))
+    assert same_text(hidden, missing) and "does not exist" not in hidden
+
+
+def _catalog_names(sql):
+    with dbconn.ro_connection() as c:
+        return {r["proname"] for r in c.execute(sql)}
+
+
+def test_text_argument_functions_are_all_reviewed(dbs):
+    """Every catalog function taking text/name/cstring/regtype is refused, argument-checked, or reviewed as never
+    reading the argument as an object name. Fails after an upgrade adds one: review it."""
+    names = _catalog_names(
+        "SELECT DISTINCT proname FROM pg_proc p WHERE pronamespace = 'pg_catalog'::regnamespace "
+        "AND prokind IN ('f', 'a', 'w') AND EXISTS (SELECT 1 FROM unnest(p.proargtypes::oid[]) a "
+        "WHERE a IN ('text'::regtype, 'name'::regtype, 'cstring'::regtype, 'regtype'::regtype))")
+    left = {n for n in names if not isolation.closure_risky_function(n) and n not in isolation._TS_CONFIG}
+    assert left - isolation.TEXT_ARGS_REVIEWED == set()
+    assert {"pg_input_is_valid", "pg_input_error_info", "currtid2"} & isolation.TEXT_ARGS_REVIEWED == set()
+
+
+def test_allowed_pg_functions_take_no_object_names(dbs):
+    """PG_OK functions take numbers, values of any type or durations; a name argument only where it is checked."""
+    with dbconn.ro_connection() as c:
+        rows = c.execute("SELECT proname, proargtypes::regtype[]::text[] AS args FROM pg_proc "
+                         "WHERE pronamespace = 'pg_catalog'::regnamespace AND proname = ANY(%s)",
+                         [sorted(isolation.PG_OK)]).fetchall()
+    plain = {"integer", "bigint", "smallint", "double precision", '"any"', "anyelement", "interval",
+             "timestamp with time zone", "numeric"}
+    for r in rows:
+        if r["proname"] in isolation._NAME_FIRST or r["proname"] in isolation.TEXT_ARGS_REVIEWED:
+            continue
+        assert set(r["args"]) <= plain, r
+
+
+@pytest.mark.parametrize("cfg", ["{db}.cfg"])
+def test_trigger_arguments_and_catalog_trigger_functions_checked(editor, no_dry_run, cfg):
+    sql = ("CREATE TABLE master.ts1 (name text, tsv tsvector); CREATE TRIGGER tg BEFORE INSERT ON master.ts1 "
+           "FOR EACH ROW EXECUTE FUNCTION tsvector_update_trigger(tsv, '{cfg}', name); "
+           "INSERT INTO master.ts1(name) VALUES ('a')")
+    hidden = sql_refusal(editor, sql.format(cfg=cfg.format(db="crm")))
+    missing = sql_refusal(editor, sql.format(cfg=cfg.format(db="nope")))
+    assert same_text(hidden, missing) and "does not exist" not in hidden
+    msg = sql_refusal(editor, sql.format(cfg="simple"))           # the catalog trigger itself is not checkable
+    assert "tsvector_update_trigger" in msg and no_dry_run == []
+
+
+def test_safe_catalog_trigger_and_master_trigger_still_work(editor, no_dry_run):
+    ch = service.propose_sql(editor, "CREATE TRIGGER tg BEFORE UPDATE ON master.t FOR EACH ROW "
+                                     "EXECUTE FUNCTION suppress_redundant_updates_trigger()", REASON)
+    assert ch.status == Change.Status.PENDING
+    msg = sql_refusal(editor, "CREATE TRIGGER tg2 BEFORE UPDATE ON master.t FOR EACH ROW "
+                              "EXECUTE FUNCTION master.tf('crm.x')")
+    assert "Unknown schema 'crm'." in msg
+
+
+def test_operators_in_any_and_order_by_using_are_names(viewer):
+    assert refused(viewer, "SELECT 1 WHERE 1 OPERATOR(crm.=) ANY (SELECT 1)") == "Unknown schema 'crm'."
+    assert refused(viewer, "SELECT code FROM t ORDER BY code USING OPERATOR(crm.<)") == "Unknown schema 'crm'."
+
+
+def test_approval_needs_the_proposer_still_on_the_target_database(editor, dbs):
+    ch = service.propose_sql(editor, "UPDATE t SET name = 'z'", REASON)
+    SchemaGrant.objects.filter(user=editor).delete()
+    approver = make_user(Role.APPROVER, master=Role.APPROVER)
+    out = service.approve(approver, ch.pk)
+    assert out.status == Change.Status.STALE
+    assert run(make_user(Role.ADMIN, "a3@x.com"), "SELECT count(*) FROM t WHERE name = 'z'")["rows"] == [[0]]
+
+
+@pytest.mark.parametrize("sql", [
+    "CREATE OPERATOR CLASS master.oc FOR TYPE int USING btree AS OPERATOR 1 <",
+    "CREATE CONVERSION master.cv FOR 'UTF8' TO 'LATIN1' FROM utf8_to_iso8859_1",
+    "CREATE EVENT TRIGGER et ON ddl_command_start EXECUTE FUNCTION master.f()",
+    "CREATE LANGUAGE plperl",
+    "CREATE FOREIGN DATA WRAPPER w HANDLER master.h",
+    "CREATE TRANSFORM FOR int LANGUAGE sql (FROM SQL WITH FUNCTION master.f(internal))",
+    "CREATE ACCESS METHOD am TYPE TABLE HANDLER heap_tableam_handler",
+    "CREATE TEXT SEARCH DICTIONARY master.d (TEMPLATE = simple)",
+    "CREATE COLLATION master.c (locale = 'C')",
+])
+def test_statement_families_naming_functions_refused_end_to_end(editor, no_dry_run, sql):
+    sql_refusal(editor, sql)
+    assert no_dry_run == []

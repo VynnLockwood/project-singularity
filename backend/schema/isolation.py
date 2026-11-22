@@ -56,7 +56,8 @@ _RUNS_SQL_SUFFIX = ("_to_xml", "_to_xmlschema", "_to_xml_and_xmlschema")   # tab
 # functions that turn object ids into names or describe objects by id (pg_proc: reg*/oid arguments)
 _BY_OID = frozenset({"acldefault", "makeaclitem", "obj_description", "col_description", "shobj_description",
                      "format_type", "row_security_active", "satisfies_hash_partition", "gin_clean_pending_list",
-                     "amvalidate", "plpgsql_validator", "postgresql_fdw_validator"})
+                     "amvalidate", "plpgsql_validator", "postgresql_fdw_validator",
+                     "currtid", "currtid2"})    # currtid2('<relation>', tid) reads a relation named in text
 _BY_OID_PREFIX = ("binary_upgrade_", "brin_", "lo_", "dblink", "_pg_", "fmgr_")
 _BY_OID_SUFFIX = ("sel", "joinsel", "_validator")
 # pg_catalog functions (outside pg_*) with an oid / oidvector / reg* (regconfig and regdictionary included)
@@ -114,6 +115,59 @@ _TS_CONFIG = {"to_tsvector": 2, "to_tsquery": 2, "plainto_tsquery": 2, "phraseto
               "websearch_to_tsquery": 2, "json_to_tsvector": 3, "jsonb_to_tsvector": 3, "ts_headline": 3,
               "ts_debug": 2, "ts_lexize": 1}
 _BY_TYPE_PATTERN = re.compile(r"^(reg\w*(in|out|recv|send)|oidvector\w*)$")
+# pg_catalog functions that take text / name / cstring / regtype arguments and are allowed: reviewed (PG 16), none
+# reads such an argument as the name of a relation, schema, type or other database object (pg_input_is_valid,
+# currtid2 and the name-taking ones above are not here). A new one after an upgrade fails
+# tests/test_access_isolation.py::test_text_argument_functions_are_all_reviewed until it is reviewed.
+TEXT_ARGS_REVIEWED = frozenset("""
+    aclitemin any_in anyarray_in anycompatible_in anycompatiblearray_in anycompatiblenonarray_in anyelement_in
+    anyenum_in anynonarray_in anytextcat array_to_string ascii big5_to_euc_tw big5_to_mic big5_to_utf8
+    bit_length boolin box_in bpchar bpchariclike bpcharicnlike bpcharicregexeq bpcharicregexne bpcharlike
+    bpcharnlike bpcharregexeq bpcharregexne btnamecmp btnametextcmp btrim bttext_pattern_cmp bttextcmp
+    bttextnamecmp byteain cash_in char char_length character_length charin cidin cidr_in circle_in concat_ws
+    convert convert_from convert_to cstring_in cstring_out cstring_send current_setting date_add date_in
+    date_part date_subtract date_trunc daterange decode encode euc_cn_to_mic euc_cn_to_utf8
+    euc_jis_2004_to_shift_jis_2004 euc_jis_2004_to_utf8 euc_jp_to_mic euc_jp_to_sjis euc_jp_to_utf8
+    euc_kr_to_mic euc_kr_to_utf8 euc_tw_to_big5 euc_tw_to_mic euc_tw_to_utf8 event_trigger_in extract
+    fdw_handler_in float4in float8in format gb18030_to_utf8 gbk_to_utf8 generate_series gin_cmp_prefix
+    gin_cmp_tslexeme gin_compare_jsonb gtsvectorin hashname hashnameextended hashtext hashtextextended
+    index_am_handler_in inet_in initcap int2in int2vectorin int4in int4range int8in int8range internal_in
+    is_normalized iso8859_1_to_utf8 iso8859_to_utf8 iso_to_koi8r iso_to_mic iso_to_win1251 iso_to_win866
+    johab_to_utf8 json_in json_object_field json_object_field_text jsonb_delete jsonb_exists jsonb_in
+    jsonb_object_field jsonb_object_field_text jsonb_set_lax jsonpath_in koi8r_to_iso koi8r_to_mic koi8r_to_utf8
+    koi8r_to_win1251 koi8r_to_win866 koi8u_to_utf8 language_handler_in latin1_to_mic latin2_to_mic
+    latin2_to_win1250 latin3_to_mic latin4_to_mic left length like like_escape line_in lower lpad lseg_in ltrim
+    macaddr8_in macaddr_in make_timestamptz max md5 mic_to_big5 mic_to_euc_cn mic_to_euc_jp mic_to_euc_kr
+    mic_to_euc_tw mic_to_iso mic_to_koi8r mic_to_latin1 mic_to_latin2 mic_to_latin3 mic_to_latin4 mic_to_sjis
+    mic_to_win1250 mic_to_win1251 mic_to_win866 min name nameeq nameeqtext namege namegetext namegt namegttext
+    nameiclike nameicnlike nameicregexeq nameicregexne namein namele nameletext namelike namelt namelttext
+    namene namenetext namenlike nameout nameregexeq nameregexne namesend normalize notlike numrange octet_length
+    oidin overlay parse_ident path_in pg_size_bytes point_in poly_in position quote_ident quote_literal
+    quote_nullable regexp_count regexp_instr regexp_like regexp_match regexp_matches regexp_replace
+    regexp_split_to_array regexp_split_to_table regexp_substr repeat replace reverse right rpad rtrim shell_in
+    shift_jis_2004_to_euc_jis_2004 shift_jis_2004_to_utf8 similar_escape similar_to_escape sjis_to_euc_jp
+    sjis_to_mic sjis_to_utf8 split_part starts_with string_agg string_agg_transfn string_to_array
+    string_to_table strpos substr substring table_am_handler_in text text_ge text_gt text_larger text_le text_lt
+    text_pattern_ge text_pattern_gt text_pattern_le text_pattern_lt text_smaller textanycat textcat texteq
+    texteqname textgename textgtname texticlike texticnlike texticregexeq texticregexne textin textlen
+    textlename textlike textltname textne textnename textnlike textout textregexeq textregexne textsend tidin
+    timezone to_ascii to_char to_date to_number to_timestamp translate trigger_in ts_delete ts_match_tq
+    ts_match_tt tsm_handler_in tsqueryin tsrange tstzrange tsvectorin txid_snapshot_in uhc_to_utf8 unistr
+    unknownin upper utf8_to_big5 utf8_to_euc_cn utf8_to_euc_jis_2004 utf8_to_euc_jp utf8_to_euc_kr
+    utf8_to_euc_tw utf8_to_gb18030 utf8_to_gbk utf8_to_iso8859 utf8_to_iso8859_1 utf8_to_johab utf8_to_koi8r
+    utf8_to_koi8u utf8_to_shift_jis_2004 utf8_to_sjis utf8_to_uhc utf8_to_win uuid_in varchar void_in
+    win1250_to_latin2 win1250_to_mic win1251_to_iso win1251_to_koi8r win1251_to_mic win1251_to_win866
+    win866_to_iso win866_to_koi8r win866_to_mic win866_to_win1251 win_to_utf8 xid8in xidin xml xml_in
+    xml_is_well_formed xml_is_well_formed_content xml_is_well_formed_document xmlcomment xmlexists xmlvalidate
+    xpath xpath_exists
+""".split())
+# trigger functions in pg_catalog a non-admin may attach (they take no object names from the trigger's arguments)
+_SAFE_CATALOG_TRIGGERS = frozenset({"suppress_redundant_updates_trigger"})
+_CATALOG_TRIGGERS = frozenset({
+    "ri_fkey_cascade_del", "ri_fkey_cascade_upd", "ri_fkey_check_ins", "ri_fkey_check_upd", "ri_fkey_noaction_del",
+    "ri_fkey_noaction_upd", "ri_fkey_restrict_del", "ri_fkey_restrict_upd", "ri_fkey_setdefault_del",
+    "ri_fkey_setdefault_upd", "ri_fkey_setnull_del", "ri_fkey_setnull_upd", "suppress_redundant_updates_trigger",
+    "tsvector_update_trigger", "tsvector_update_trigger_column", "unique_key_recheck"})
 # settings that change identity, the run's limits or where unqualified names resolve: never set from SQL that is
 # checked here (a body could otherwise point search_path at another database)
 FENCED_SETTINGS = frozenset({"role", "session_authorization", "statement_timeout", "lock_timeout",
@@ -121,8 +175,7 @@ FENCED_SETTINGS = frozenset({"role", "session_authorization", "statement_timeout
                              "default_transaction_read_only", "transaction_read_only"})
 # pg_* functions that show nothing of any database (every other pg_* function is refused for non-admins)
 PG_OK = frozenset({"pg_sleep", "pg_sleep_for", "pg_sleep_until", "pg_typeof", "pg_column_size", "pg_size_pretty",
-                   "pg_size_bytes", "pg_backend_pid", "pg_client_encoding", "pg_input_is_valid",
-                   "pg_input_error_info", "pg_get_serial_sequence", "pg_sequence_last_value",
+                   "pg_size_bytes", "pg_backend_pid", "pg_client_encoding", "pg_get_serial_sequence", "pg_sequence_last_value",
                    "pg_advisory_xact_lock", "pg_advisory_xact_lock_shared", "pg_try_advisory_xact_lock",
                    "pg_try_advisory_xact_lock_shared"})
 # functions whose first argument is a relation/type/function name (text resolved at run time)
@@ -361,9 +414,23 @@ class _Collector:
             self.unclear(_function_refusal(base))
 
     def on_CreateTrigStmt(self, n):  # noqa: N802
+        """The trigger function gets the function rule; a catalog trigger function (tsvector_update_trigger takes a
+        configuration name as an argument) is refused unless known safe; dotted arguments are checked as names."""
         parts = _strings(n.funcname) or []
-        if parts and (closure_risky_function(parts[-1].lower())):
-            self.unclear(_function_refusal(parts[-1].lower()))
+        base = parts[-1].lower() if parts else ""
+        if base and closure_risky_function(base):
+            self.unclear(_function_refusal(base))
+        elif (base in _CATALOG_TRIGGERS and (len(parts) == 1 or parts[-2] == "pg_catalog")
+              and base not in _SAFE_CATALOG_TRIGGERS):
+            self.unclear(f"the catalog trigger function {base}() cannot be checked")
+        for a in n.args or ():
+            if isinstance(a, ast.String) and "." in a.sval:
+                try:
+                    names = _literal_name(a.sval)
+                except Unclear:
+                    continue                          # not a name: plain data for the function
+                if len(names) >= 2:
+                    self.add(names[-2])
 
     def support(self, options) -> None:
         if _option(options, "support") is not None:
@@ -390,6 +457,18 @@ class _Collector:
         need = 2 if star else 3          # schema.table.* / schema.table.column
         if len(parts) >= need:
             self.add(parts[-need])
+
+    def on_SubLink(self, n):  # noqa: N802
+        parts = _strings(n.operName)          # x OP ANY (subquery)
+        if parts:
+            self.add(parts[-2] if len(parts) >= 2 else None)
+            self.scan.operators.add((parts[-2] if len(parts) >= 2 else None, parts[-1]))
+
+    def on_SortBy(self, n):  # noqa: N802
+        parts = _strings(n.useOp)             # ORDER BY x USING op
+        if parts:
+            self.add(parts[-2] if len(parts) >= 2 else None)
+            self.scan.operators.add((parts[-2] if len(parts) >= 2 else None, parts[-1]))
 
     def on_A_Expr(self, n):  # noqa: N802
         self.qualified(n.name)           # OPERATOR(crm.+)
@@ -470,6 +549,9 @@ class _Collector:
             self.unclear(f"a body in language {language} cannot be checked")
 
     def plpgsql(self, tree) -> None:
+        """Walk libpg_query's plpgsql tree. Every expression in any statement kind is a PLpgSQL_expr (conditions,
+        loop bounds, RAISE parameters and options, CASE selectors, cursor arguments, assignment targets and
+        values, ...): each is parsed and checked. A node kind not in PLPGSQL_NODES cannot be checked."""
         if isinstance(tree, list):
             for x in tree:
                 self.plpgsql(x)
@@ -479,6 +561,8 @@ class _Collector:
         for key, value in tree.items():
             if key in ("PLpgSQL_stmt_dynexecute", "PLpgSQL_stmt_dynfors") or key == "dynquery":
                 self.unclear(_DYNAMIC)
+            elif key.startswith("PLpgSQL_") and key not in PLPGSQL_NODES:
+                self.unclear(f"the plpgsql statement {key.removeprefix('PLpgSQL_')} cannot be checked")
             elif key == "PLpgSQL_expr" and isinstance(value, dict):
                 self.expression(value.get("query") or "", value.get("parseMode", 0))
             elif key == "PLpgSQL_type" and isinstance(value, dict):
@@ -486,17 +570,22 @@ class _Collector:
             self.plpgsql(value)
 
     def expression(self, query: str, mode: int) -> None:
-        if mode in (3, 4, 5):                       # target := expression
-            m = re.match(r"^(.*?)(:=|=)(.*)$", query, re.DOTALL)
-            if m is None:
+        if mode in (3, 4, 5):                       # target := value: both sides are checked
+            split = _split_assignment(query)
+            if split is None:
                 self.unclear("a plpgsql assignment cannot be checked")
                 return
-            query = m.group(3)
+            target, query = split
+            if not _PLAIN_TARGET.match(target):     # a[(SELECT ...)] := ..., r.f[i] := ...
+                self.parsed(f"SELECT {target}", "a plpgsql assignment target")
         sql = query if mode == 0 else f"SELECT NULL::{query}" if mode == 1 else f"SELECT {query}"
+        self.parsed(sql, "a plpgsql expression")
+
+    def parsed(self, sql: str, what: str) -> None:
         try:
             stmts = pglast.parse_sql(sql)
         except pglast.parser.ParseError as exc:
-            self.unclear(f"a plpgsql expression cannot be checked: {exc}")
+            self.unclear(f"{what} cannot be checked: {exc}")
             return
         for raw in stmts:
             self.statement(raw.stmt)
@@ -517,6 +606,47 @@ class _Collector:
         if kind not in KNOWN_STATEMENTS:
             self.unclear(f"{kind.removesuffix('Stmt')} statements cannot be checked for the databases they reach")
         self.walk(node)
+
+
+# every plpgsql node kind libpg_query produces (PG 16), reviewed: their expressions are all PLpgSQL_expr nodes
+# (checked wherever they sit); the others hold variable references, names of conditions or format strings.
+# tests/test_access_isolation.py::test_plpgsql_node_kinds_are_all_reviewed pins it.
+PLPGSQL_NODES = frozenset({
+    "PLpgSQL_function", "PLpgSQL_var", "PLpgSQL_rec", "PLpgSQL_row", "PLpgSQL_recfield", "PLpgSQL_type",
+    "PLpgSQL_expr", "PLpgSQL_stmt_block", "PLpgSQL_exception_block", "PLpgSQL_exception", "PLpgSQL_condition",
+    "PLpgSQL_stmt_assign", "PLpgSQL_stmt_if", "PLpgSQL_if_elsif", "PLpgSQL_stmt_case", "PLpgSQL_case_when",
+    "PLpgSQL_stmt_loop", "PLpgSQL_stmt_while", "PLpgSQL_stmt_fori", "PLpgSQL_stmt_fors", "PLpgSQL_stmt_forc",
+    "PLpgSQL_stmt_foreach_a", "PLpgSQL_stmt_exit", "PLpgSQL_stmt_return", "PLpgSQL_stmt_return_next",
+    "PLpgSQL_stmt_return_query", "PLpgSQL_stmt_raise", "PLpgSQL_raise_option", "PLpgSQL_stmt_assert",
+    "PLpgSQL_stmt_execsql", "PLpgSQL_stmt_getdiag", "PLpgSQL_diag_item", "PLpgSQL_stmt_open",
+    "PLpgSQL_stmt_fetch", "PLpgSQL_stmt_close", "PLpgSQL_stmt_perform", "PLpgSQL_stmt_call",
+    "PLpgSQL_stmt_commit", "PLpgSQL_stmt_rollback",
+})   # PLpgSQL_stmt_dynexecute / _dynfors (and any dynquery) are refused as dynamic SQL
+
+_PLAIN_TARGET = re.compile(r'^\s*("(?:[^"]|"")+"|[A-Za-z_][\w$]*)(\s*\.\s*("(?:[^"]|"")+"|[A-Za-z_][\w$]*))*\s*$')
+
+
+def _split_assignment(text: str) -> tuple[str, str] | None:
+    """`target := value` (or `target = value`) split at the first assignment outside quotes and brackets."""
+    depth, quote, i = 0, None, 0
+    eq = None
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+        elif ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+        elif depth == 0 and text.startswith(":=", i):
+            return text[:i], text[i + 2:]
+        elif depth == 0 and ch == "=" and eq is None:
+            eq = i
+        i += 1
+    return (text[:eq], text[eq + 1:]) if eq is not None else None
 
 
 def _option(options, name: str):

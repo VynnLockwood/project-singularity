@@ -426,7 +426,15 @@ def _approve_sql(change: Change, user, cfg) -> Change:
             return _mark_stale(change, user, "the database changed since this SQL was checked; re-check it")
     except introspect.UnknownSchema:
         return _mark_stale(change, user, f"schema {change.schema!r} no longer exists (it was renamed or dropped); propose the change again")
-    try:   # grants and views may have changed since it was proposed: the proposer's reach is checked again
+    try:   # grants and views may have changed since it was proposed: the proposer's reach is checked again,
+        # the database the SQL runs in included (unqualified names land there)
+        from accounts import access
+
+        if not access.is_admin(change.requester):
+            try:
+                access.require(change.requester, change.schema, "editor")
+            except (introspect.UnknownSchema, access.AccessDenied):
+                raise ChangeError("forbidden", "they no longer have editor on this database") from None
         _sql_reach(change.requester, _raw_statements(change), change.schema)
     except ChangeError as exc:
         return _mark_stale(change, user, f"the proposer can no longer propose this SQL ({exc.message}); "
