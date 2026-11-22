@@ -196,6 +196,8 @@ def _strings(names) -> list[str] | None:
 
 
 def _const_text(node) -> str | None:
+    while isinstance(node, ast.TypeCast):      # 'simple'::regconfig, as pg_get_viewdef writes it
+        node = node.arg
     if isinstance(node, ast.A_Const) and isinstance(node.val, ast.String):
         return node.val.sval
     return None
@@ -638,6 +640,12 @@ SELECT 'unknown', '', deps.refclassid::regclass::text FROM deps
         'pg_collation'::regclass)
 """
 
+# the definitions of the views and materialized views among them: built-in (pinned) catalog functions and types
+# are never recorded in pg_depend, so a rule calling query_to_xml or casting to regclass is found by reading it
+_VIEWDEFS_SQL = _CLOSURE_SQL.split("), deps AS (")[0] + """)
+SELECT pg_get_viewdef(c.oid) AS def FROM r JOIN pg_class c ON c.oid = r.oid WHERE c.relkind IN ('v', 'm')
+"""
+
 # operators a statement uses by symbol, in the schemas it can resolve them in, with the function behind each
 _OPERATOR_SQL = """
 SELECT n.nspname AS schema, p.proname AS function, pn.nspname AS function_schema
@@ -684,6 +692,10 @@ def objects_problem(conn, scan_: Scan, default_schema: str, allowed) -> str | No
             continue
         for row in conn.execute(_CLOSURE_SQL, {"schema": sch, "name": name}):
             if _closure_row_problem(row, allowed):
+                return VIEW_REFUSAL
+        for row in conn.execute(_VIEWDEFS_SQL, {"schema": sch, "name": name}):
+            inner = scan(row["def"] or "")
+            if inner.unclear or inner.catalog or (inner.schemas - SYSTEM - allowed) or "set_config" in inner.names:
                 return VIEW_REFUSAL
     for sch, symbol in sorted(scan_.operators, key=lambda x: (x[0] or "", x[1])):
         # built-in (pg_catalog) operators are comparisons and arithmetic: only user-defined ones can hide a function

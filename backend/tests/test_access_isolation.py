@@ -562,3 +562,135 @@ def test_view_op_over_laundering_view_refused(editor, laundering_view):
 def test_query_path_unchanged_for_laundering_view(viewer, laundering_view):
     assert refused(viewer, "SELECT * FROM v_crm") == isolation.PLAN_REFUSAL
     assert run(viewer, "SELECT count(*) FROM v_m")["rows"] == [[2]]
+
+
+# ---- fix round 2: function names outside calls, operators, rule dependencies -----------------------------------
+
+AGG_SET_CONFIG = ("CREATE AGGREGATE master.agg(text, boolean) (SFUNC = {f}, STYPE = text, INITCOND = 'search_path'); "
+                  "SELECT master.agg('crm', true); SELECT (SELECT string_agg(name, ',') FROM t)::int")
+
+
+@pytest.mark.parametrize("f", ["set_config", "pg_catalog.set_config", '"set_config"', "'set_config'"])
+def test_aggregate_over_set_config_refused_for_everyone(editor, admin, no_dry_run, f):
+    for who in (editor, admin):
+        msg = sql_refusal(who, AGG_SET_CONFIG.format(f=f))
+        assert "Secret" not in msg
+    assert no_dry_run == [] and Change.objects.count() == 0
+
+
+@pytest.mark.parametrize("sql", [
+    "CREATE OPERATOR master.### (LEFTARG = oid, RIGHTARG = int4, FUNCTION = format_type)",
+    "CREATE OPERATOR master.### (LEFTARG = oid, RIGHTARG = bool, FUNCTION = pg_get_viewdef)",
+    "CREATE OPERATOR master.%%% (LEFTARG = tsquery, RIGHTARG = text, FUNCTION = ts_rewrite)",
+    "CREATE AGGREGATE master.a2(int) (SFUNC = int4pl, STYPE = int)",
+    "CREATE CAST (text AS master.t) WITH FUNCTION master.f(text)",
+    "CREATE TYPE master.ty (INPUT = regclassin, OUTPUT = regclassout)",
+    "CREATE TEXT SEARCH CONFIGURATION master.cfg (COPY = simple)",
+    "CREATE STATISTICS master.s ON code, name FROM master.t",
+    "CREATE TRIGGER g BEFORE INSERT ON master.t FOR EACH ROW EXECUTE FUNCTION pg_catalog.format_type()",
+    "CREATE FUNCTION master.f(int) RETURNS int LANGUAGE sql SUPPORT pg_catalog.textlike_support AS 'select 1'",
+])
+def test_function_names_outside_calls_refused_for_non_admin(editor, no_dry_run, sql):
+    sql_refusal(editor, sql)
+    assert no_dry_run == []
+
+
+def test_statement_kinds_table():
+    """Every pglast statement kind either has its names understood here (this pinned list: adding one needs a
+    look at where it can name functions) or is refused for non-admins."""
+    from pglast import ast
+
+    assert isolation.KNOWN_STATEMENTS == {
+        "SelectStmt", "InsertStmt", "UpdateStmt", "DeleteStmt", "MergeStmt", "CreateStmt", "AlterTableStmt",
+        "IndexStmt", "ViewStmt", "CreateTableAsStmt", "CreateSeqStmt", "AlterSeqStmt", "DropStmt", "TruncateStmt",
+        "CommentStmt", "RenameStmt", "AlterObjectSchemaStmt", "AlterOwnerStmt", "GrantStmt",
+        "AlterDefaultPrivilegesStmt", "CreateFunctionStmt", "AlterFunctionStmt", "DoStmt", "CallStmt",
+        "CreateTrigStmt", "CreateEnumStmt", "AlterEnumStmt", "CompositeTypeStmt", "CreateDomainStmt",
+        "AlterDomainStmt", "CreatePolicyStmt", "AlterPolicyStmt", "RuleStmt", "VariableSetStmt", "ReindexStmt",
+        "ClusterStmt", "VacuumStmt", "RefreshMatViewStmt", "LockStmt", "ExplainStmt", "ConstraintsSetStmt",
+        "TransactionStmt"}
+    others = [n for n in dir(ast) if n.endswith("Stmt") and n not in isolation.KNOWN_STATEMENTS]
+    assert {"DefineStmt", "CreateCastStmt", "CreateOpClassStmt", "CreateEventTrigStmt", "CreateStatsStmt"} <= set(others)
+    for name in others:
+        c = isolation._Collector(isolation.Scan())
+        c.statement(getattr(ast, name)())
+        assert c.scan.unclear, name
+
+
+@pytest.fixture
+def risky_objects(dbs):
+    """What an admin may build: an operator over ts_rewrite and views over it, query_to_xml and a crm enum.
+    Operators and functions outlive the per-test wipe of master's tables, so they are dropped afterwards."""
+    yield from _risky_objects()
+
+
+def _risky_objects():
+    build("SET search_path = master",
+          "CREATE OPERATOR master.%%% (LEFTARG = tsquery, RIGHTARG = text, FUNCTION = ts_rewrite)",
+          "CREATE VIEW master.vlaunder AS SELECT 'a'::tsquery %%% 'SELECT ''a''::tsquery, name::tsquery FROM crm.t' AS q",
+          "CREATE VIEW master.vxml AS SELECT query_to_xml('select * from crm.t', true, false, '') AS x",
+          "CREATE TYPE crm.e AS ENUM ('hidden_a', 'hidden_b')",
+          "CREATE VIEW master.venum AS SELECT enum_range(NULL::crm.e)::text AS r",
+          "CREATE FUNCTION master.add2(int, int) RETURNS int LANGUAGE sql IMMUTABLE AS 'select $1 + $2'",
+          "CREATE OPERATOR master.<+> (LEFTARG = int, RIGHTARG = int, FUNCTION = master.add2)",
+          "CREATE VIEW master.vtext AS SELECT code, to_tsvector('simple', name) AS doc, 1 <+> 2 AS three FROM master.t")
+    yield
+    build("DROP VIEW IF EXISTS master.vlaunder, master.vxml, master.venum, master.vtext CASCADE",
+          "DROP OPERATOR IF EXISTS master.%%% (tsquery, text)", "DROP OPERATOR IF EXISTS master.<+> (int, int)",
+          "DROP FUNCTION IF EXISTS master.add2(int, int)")
+
+
+@pytest.mark.parametrize("view", ["vlaunder", "vxml", "venum"])
+def test_query_tool_refuses_views_over_risky_objects(viewer, admin, risky_objects, view):
+    msg = refused(viewer, f"SELECT * FROM {view}")
+    assert msg == isolation.PLAN_REFUSAL
+    assert "Secret" not in msg and "hidden" not in msg
+    try:                                                # admins are not checked (the SQL itself may still fail)
+        run(admin, f"SELECT * FROM {view}")
+    except query.QueryError as exc:
+        assert str(exc) not in (isolation.PLAN_REFUSAL, isolation.CATALOG_REFUSAL)
+
+
+def test_query_tool_refuses_a_risky_operator_used_directly(viewer, risky_objects):
+    msg = refused(viewer, "SELECT 'a'::tsquery %%% 'SELECT ''a''::tsquery, name::tsquery FROM crm.t'")
+    assert msg == isolation.PLAN_REFUSAL
+
+
+@pytest.mark.parametrize("view", ["vlaunder", "vxml", "venum"])
+def test_create_view_and_raw_sql_over_risky_views_refused(editor, risky_objects, no_dry_run, view):
+    with pytest.raises(service.ChangeError) as e:
+        service.propose(editor, [{"op": "create_view", "name": "v9", "query": f"SELECT * FROM {view}"}], source="mcp")
+    assert e.value.message.endswith(isolation.VIEW_REFUSAL)
+    assert sql_refusal(editor, f"INSERT INTO master.t SELECT * FROM {view}").endswith(isolation.VIEW_REFUSAL)
+    assert no_dry_run == []
+
+
+def test_create_view_with_risky_operator_refused(editor, risky_objects):
+    q = "SELECT 'a'::tsquery %%% 'SELECT ''a''::tsquery, name::tsquery FROM crm.t' AS q"
+    with pytest.raises(service.ChangeError) as e:
+        service.propose(editor, [{"op": "create_view", "name": "v8", "query": q}], source="mcp")
+    assert e.value.message.endswith(isolation.VIEW_REFUSAL)
+
+
+def test_master_only_objects_still_work(viewer, editor, risky_objects, no_dry_run):
+    assert run(viewer, "SELECT 1 <+> 2")["rows"] == [[3]]
+    assert run(viewer, "SELECT three FROM vtext ORDER BY code")["rows"] == [[3], [3]]
+    assert run(viewer, "SELECT to_tsvector('simple', name) IS NOT NULL FROM t LIMIT 1")["rows"] == [[True]]
+    assert service.propose_sql(editor, "INSERT INTO master.t SELECT code, doc::text FROM vtext", REASON).status \
+        == Change.Status.PENDING
+
+
+def test_text_search_configuration_is_checked_like_a_name(viewer):
+    assert refused(viewer, "SELECT to_tsvector('crm.cfg', name) FROM t") == "Unknown schema 'crm'."
+    assert refused(viewer, "SELECT ts_lexize('crm.d', 'x')") == "Unknown schema 'crm'."
+    assert "expression" in refused(viewer, "SELECT to_tsvector(name::regconfig, name) FROM t")
+
+
+def test_approval_checks_the_proposers_reach_again(editor, dbs):
+    build("CREATE VIEW master.v_x AS SELECT * FROM master.t")
+    ch = service.propose_sql(editor, "INSERT INTO master.t SELECT * FROM v_x", REASON)
+    build("CREATE OR REPLACE VIEW master.v_x AS SELECT * FROM crm.t")      # an admin changes the view afterwards
+    approver = make_user(Role.APPROVER, master=Role.APPROVER)
+    out = service.approve(approver, ch.pk)
+    assert out.status == Change.Status.STALE and "Secret" not in (out.error or "")
+    assert run(make_user(Role.ADMIN, "a2@x.com"), "SELECT count(*) FROM master.t")["rows"] == [[2]]

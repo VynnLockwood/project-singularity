@@ -426,6 +426,13 @@ def _approve_sql(change: Change, user, cfg) -> Change:
             return _mark_stale(change, user, "the database changed since this SQL was checked; re-check it")
     except introspect.UnknownSchema:
         return _mark_stale(change, user, f"schema {change.schema!r} no longer exists (it was renamed or dropped); propose the change again")
+    try:   # grants and views may have changed since it was proposed: the proposer's reach is checked again
+        _sql_reach(change.requester, _raw_statements(change), change.schema)
+    except ChangeError as exc:
+        return _mark_stale(change, user, f"the proposer can no longer propose this SQL ({exc.message}); "
+                                         "propose it again")
+    except rawsql.RawSqlError:
+        pass   # the run below reports it
     change.decided_by, change.decided_at = user, timezone.now()
     record(user, "change.approved", target=f"#{change.pk}")
     try:
