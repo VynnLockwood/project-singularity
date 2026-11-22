@@ -222,23 +222,28 @@ class Scan:
     relations: set[tuple[str | None, str]] = field(default_factory=set)  # (schema or None, name) of every RangeVar
 
 
-_IDENT = re.compile(r'\s*("(?:[^"]|"")+"|[^".\s()]+)\s*')
+_IDENT = re.compile(r'\s*("(?:[^"]|"")+"|[A-Za-z_\u0080-\uffff][\w$\u0080-\uffff]*)\s*')
 
 
 def _literal_name(text: str) -> list[str]:
-    """`'crm.t'` / `'"Crm"."T"'` / `'crm.f(int)'` -> the dotted parts as Postgres reads them; Unclear if not a name."""
+    """`'crm.t'` / `'"Crm"."T"'` -> the dotted parts as Postgres reads them (1 to 3 identifiers).
+
+    Anything else is Unclear: arrays (`'{crm.t,t}'`), argument lists (`'f(crm.t)'`), operators, lists. Postgres
+    would resolve every name inside those, so a partial reading would let one through unchecked."""
     parts, pos = [], 0
     while True:
         m = _IDENT.match(text, pos)
         if not m:
-            raise Unclear("a name in a string could not be read")
+            raise Unclear("a name in a string must be a plain (optionally qualified) name to be checked")
         p = m.group(1)
         parts.append(p[1:-1].replace('""', '"') if p.startswith('"') else p.lower())
         pos = m.end()
-        if pos >= len(text) or text[pos] == "(":
+        if pos >= len(text):
+            if len(parts) > 3:
+                raise Unclear("a name in a string must be a plain (optionally qualified) name to be checked")
             return parts
         if text[pos] != ".":
-            raise Unclear("a name in a string could not be read")
+            raise Unclear("a name in a string must be a plain (optionally qualified) name to be checked")
         pos += 1
 
 
@@ -289,6 +294,12 @@ class _Collector:
     def __init__(self, scan: Scan):
         self.scan = scan
         self.cast_ok: set[int] = set()
+        self.seen: set[int] = set()       # name lists a typed handler read (the fallback refuses the others)
+
+    def mark(self, names):
+        if isinstance(names, tuple):
+            self.seen.add(id(names))
+        return names
 
     # ---- helpers
     def add(self, name) -> None:
@@ -299,6 +310,7 @@ class _Collector:
         self.scan.unclear.append(why)
 
     def qualified(self, names, offset: int = 2) -> None:
+        self.mark(names)
         parts = _strings(names)
         if parts and len(parts) >= offset:
             self.add(parts[-offset])
@@ -319,7 +331,8 @@ class _Collector:
             self.add(parts[-2])
 
     def obj(self, objtype, obj) -> None:
-        """The target of COMMENT / DROP / ALTER ... OWNER / SET SCHEMA / RENAME (names by object type)."""
+        """The target of COMMENT / DROP / ALTER ... OWNER / SET SCHEMA / RENAME / GRANT (names by object type)."""
+        self.mark(obj)
         if isinstance(obj, ast.String):
             if objtype == enums.ObjectType.OBJECT_SCHEMA:
                 self.add(obj.sval)
@@ -337,10 +350,11 @@ class _Collector:
             self.add(parts[-2])
 
     # ---- walk
-    def walk(self, node) -> None:
+    def walk(self, node, owner: tuple[str, str] | None = None) -> None:
         if isinstance(node, (tuple, list)):
+            self.fallback(node, owner)
             for x in node:
-                self.walk(x)
+                self.walk(x, owner)
             return
         if not isinstance(node, ast.Node):
             return
@@ -353,7 +367,15 @@ class _Collector:
             handler(node)
         self.generic(node)
         for member in node:
-            self.walk(getattr(node, member))
+            self.walk(getattr(node, member), (type(node).__name__, member))
+
+    def fallback(self, value, owner) -> None:
+        """Fail closed: a qualified name list (2+ identifiers) that no typed handler read, in a position not known
+        to hold column names or data, cannot be checked."""
+        if (isinstance(value, tuple) and len(value) >= 2 and all(isinstance(x, ast.String) for x in value)
+                and id(value) not in self.seen and owner not in _NOT_NAMES):
+            where = ".".join(owner) if owner else "a list"
+            self.unclear(f"a qualified name in {where} cannot be checked for the databases it names")
 
     def generic(self, node) -> None:
         for attr in _NAME_ATTRS:
@@ -370,7 +392,7 @@ class _Collector:
             self.scan.catalog = True
 
     def on_TypeName(self, n):  # noqa: N802
-        parts = _strings(n.names) or []
+        parts = _strings(self.mark(n.names)) or []
         if n.pct_type:              # schema.table.column%TYPE
             if len(parts) >= 3:
                 self.add(parts[-3])
@@ -383,10 +405,13 @@ class _Collector:
         parts = _strings(n.typeName.names) if n.typeName is not None else None
         if parts and parts[-1] in REG_TYPES:
             self.cast_ok.add(id(n.typeName))
-            self.literal(n.arg, is_schema=parts[-1] == "regnamespace")
+            if n.typeName.arrayBounds:      # '{crm.t,t}'::regclass[]: every element is resolved
+                self.unclear(f"arrays of {parts[-1]} cannot be checked for the databases they name")
+            else:
+                self.literal(n.arg, is_schema=parts[-1] == "regnamespace")
 
     def on_FuncCall(self, n):  # noqa: N802
-        parts = _strings(n.funcname) or []
+        parts = _strings(self.mark(n.funcname)) or []
         if len(parts) >= 2:
             self.add(parts[-2])
         base = parts[-1].lower() if parts else ""
@@ -416,6 +441,7 @@ class _Collector:
     def on_CreateTrigStmt(self, n):  # noqa: N802
         """The trigger function gets the function rule; a catalog trigger function (tsvector_update_trigger takes a
         configuration name as an argument) is refused unless known safe; dotted arguments are checked as names."""
+        self.mark(n.args)
         parts = _strings(n.funcname) or []
         base = parts[-1].lower() if parts else ""
         if base and closure_risky_function(base):
@@ -449,9 +475,13 @@ class _Collector:
         if name in FENCED_SETTINGS or name == "all":
             label = "every setting (RESET ALL)" if name == "all" else name
             self.unclear(f"changing {label} is not allowed: the role, the limits and where names resolve are fixed")
+        for a in n.args or ():               # default_text_search_config = 'crm.cfg': a value naming an object
+            text = _const_text(a)
+            if text is not None and "." in text:
+                self.literal(a)
 
     def on_ColumnRef(self, n):  # noqa: N802
-        fields = n.fields or ()
+        fields = self.mark(n.fields) or ()
         star = bool(fields) and isinstance(fields[-1], ast.A_Star)
         parts = _strings(fields[:-1] if star else fields) or []
         need = 2 if star else 3          # schema.table.* / schema.table.column
@@ -459,13 +489,13 @@ class _Collector:
             self.add(parts[-need])
 
     def on_SubLink(self, n):  # noqa: N802
-        parts = _strings(n.operName)          # x OP ANY (subquery)
+        parts = _strings(self.mark(n.operName))          # x OP ANY (subquery)
         if parts:
             self.add(parts[-2] if len(parts) >= 2 else None)
             self.scan.operators.add((parts[-2] if len(parts) >= 2 else None, parts[-1]))
 
     def on_SortBy(self, n):  # noqa: N802
-        parts = _strings(n.useOp)             # ORDER BY x USING op
+        parts = _strings(self.mark(n.useOp))             # ORDER BY x USING op
         if parts:
             self.add(parts[-2] if len(parts) >= 2 else None)
             self.scan.operators.add((parts[-2] if len(parts) >= 2 else None, parts[-1]))
@@ -494,15 +524,42 @@ class _Collector:
         self.add(n.newschema)
 
     def on_GrantStmt(self, n):  # noqa: N802
-        if n.objtype == enums.ObjectType.OBJECT_SCHEMA or n.targtype == enums.GrantTargetType.ACL_TARGET_ALL_IN_SCHEMA:
+        """Every object kind a GRANT/REVOKE names: schemas (and ALL ... IN SCHEMA), tables and sequences
+        (RangeVar), functions/procedures/routines (ObjectWithArgs), types and domains (name lists). Database-wide
+        kinds (DATABASE, LANGUAGE, TABLESPACE, FOREIGN ..., LARGE OBJECT, PARAMETER) cannot be checked."""
+        O = enums.ObjectType
+        if n.objtype == O.OBJECT_SCHEMA or n.targtype == enums.GrantTargetType.ACL_TARGET_ALL_IN_SCHEMA:
             for o in n.objects or ():
                 if isinstance(o, ast.String):
                     self.add(o.sval)
+        elif n.objtype in (O.OBJECT_TYPE, O.OBJECT_DOMAIN):
+            for o in n.objects or ():
+                self.obj(n.objtype, o)
+        elif n.objtype not in (O.OBJECT_TABLE, O.OBJECT_SEQUENCE, O.OBJECT_FUNCTION, O.OBJECT_PROCEDURE,
+                               O.OBJECT_ROUTINE):
+            self.unclear("GRANT/REVOKE on this kind of object cannot be checked")
+
+    def on_DefElem(self, n):  # noqa: N802
+        """Options that name objects: OWNED BY schema.table.column, SEQUENCE NAME schema.sequence, IN SCHEMA."""
+        if n.defname == "owned_by":
+            self.qualified(n.arg, 3)
+        elif n.defname == "sequence_name":
+            self.qualified(n.arg)
+
+    def on_Constraint(self, n):  # noqa: N802
+        """EXCLUDE (c WITH crm.=): each element's operator is a name and an operator."""
+        for pair in n.exclusions or ():
+            if isinstance(pair, tuple) and len(pair) == 2:
+                op = self.mark(pair[1])
+                parts = _strings(op)
+                if parts:
+                    self.add(parts[-2] if len(parts) >= 2 else None)
+                    self.scan.operators.add((parts[-2] if len(parts) >= 2 else None, parts[-1]))
 
     def on_AlterDefaultPrivilegesStmt(self, n):  # noqa: N802
         for d in n.options or ():
             if isinstance(d, ast.DefElem) and d.defname == "schemas":
-                for s in _strings(d.arg) or ():
+                for s in _strings(self.mark(d.arg)) or ():
                     self.add(s)
 
     def on_ReindexStmt(self, n):  # noqa: N802
@@ -647,6 +704,19 @@ def _split_assignment(text: str) -> tuple[str, str] | None:
             eq = i
         i += 1
     return (text[:eq], text[eq + 1:]) if eq is not None else None
+
+
+# (node, field) positions whose lists of identifiers are column names, labels or data, never object names: the
+# fallback leaves them alone. Anything else holding a 2+ identifier list that no handler read is refused.
+_NOT_NAMES = frozenset({
+    ("Alias", "colnames"), ("CommonTableExpr", "aliascolnames"), ("AccessPriv", "cols"), ("JoinExpr", "usingClause"),
+    ("Constraint", "keys"), ("Constraint", "fk_attrs"), ("Constraint", "pk_attrs"), ("Constraint", "including"),
+    ("Constraint", "fk_del_set_cols"), ("CreateTrigStmt", "columns"), ("VacuumRelation", "va_cols"),
+    ("CopyStmt", "attlist"), ("CreateEnumStmt", "vals"), ("IntoClause", "colNames"), ("ViewStmt", "aliases"),
+    ("CTESearchClause", "search_col_list"), ("CTECycleClause", "cycle_col_list"), ("IndexStmt", "excludeOpNames"),
+    ("CreateStatsStmt", "exprs"), ("RangeFunction", "coldeflist"), ("PublicationTable", "columns"),
+    ("CreateStmt", "inhRelations"), ("TableLikeClause", "relationOids"),
+})
 
 
 def _option(options, name: str):
