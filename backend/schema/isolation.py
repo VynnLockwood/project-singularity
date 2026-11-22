@@ -110,6 +110,15 @@ _BY_TYPE = frozenset("""
 _OID_SAFE = frozenset({"max", "min", "int8", "oid", "oideq", "oidne", "oidlt", "oidle", "oidgt", "oidge",
                        "oidlarger", "oidsmaller", "hashoid", "hashoidextended", "btoidcmp", "oidin", "oidout",
                        "get_current_ts_config"})
+# catalog functions a non-admin may call that return a reg* type (or an array of one), with that type: a statement
+# using one has its string constants checked as names (`string_names`). Generated from pg_proc (PG 16); the others
+# returning reg* are refused anyway. test_reg_returning_functions_cover_the_server keeps it in step.
+REG_RETURNING = {
+    "get_current_ts_config": "regconfig", "pg_typeof": "regtype", "regclass": "regclass",
+    "to_regclass": "regclass", "to_regcollation": "regcollation", "to_regnamespace": "regnamespace",
+    "to_regoper": "regoper", "to_regoperator": "regoperator", "to_regproc": "regproc",
+    "to_regprocedure": "regprocedure", "to_regrole": "regrole", "to_regtype": "regtype",
+}
 # text search functions: the number of arguments from which the first one is a configuration (or dictionary) name
 _TS_CONFIG = {"to_tsvector": 2, "to_tsquery": 2, "plainto_tsquery": 2, "phraseto_tsquery": 2,
               "websearch_to_tsquery": 2, "json_to_tsvector": 3, "jsonb_to_tsvector": 3, "ts_headline": 3,
@@ -216,6 +225,9 @@ class Scan:
     catalog: bool = False            # reads a system catalog relation
     unclear: list[str] = field(default_factory=list)
     unparsable: bool = False
+    strings: list[str] = field(default_factory=list)                 # every string constant (A_Const)
+    reg_types: set[str] = field(default_factory=set)                 # reg* types the SQL's expressions have
+    functions: set[tuple[str | None, str]] = field(default_factory=set)  # (schema or None, name) of every call
     settings: list[str] = field(default_factory=list)                 # every SET / RESET name, bodies included
     names: set[str] = field(default_factory=set)                      # every identifier (not string constants)
     operators: set[tuple[str | None, str]] = field(default_factory=set)  # (schema or None, symbol) of A_Expr
@@ -358,7 +370,9 @@ class _Collector:
             return
         if not isinstance(node, ast.Node):
             return
-        if isinstance(node, ast.A_Const):           # a string constant is data, not a name
+        if isinstance(node, ast.A_Const):           # a string constant: data, unless a reg* expression is near
+            if isinstance(node.val, ast.String):
+                self.scan.strings.append(node.val.sval)
             return
         if isinstance(node, ast.String):
             self.scan.names.add(node.sval.lower())
@@ -404,6 +418,7 @@ class _Collector:
     def on_TypeCast(self, n):  # noqa: N802
         parts = _strings(n.typeName.names) if n.typeName is not None else None
         if parts and parts[-1] in REG_TYPES:
+            self.scan.reg_types.add(parts[-1])
             self.cast_ok.add(id(n.typeName))
             if n.typeName.arrayBounds:      # '{crm.t,t}'::regclass[]: every element is resolved
                 self.unclear(f"arrays of {parts[-1]} cannot be checked for the databases they name")
@@ -416,6 +431,9 @@ class _Collector:
             self.add(parts[-2])
         base = parts[-1].lower() if parts else ""
         args = n.args or ()
+        self.scan.functions.add((parts[-2] if len(parts) >= 2 else None, base))
+        if base in REG_RETURNING and (len(parts) == 1 or parts[-2] == "pg_catalog"):
+            self.scan.reg_types.add(REG_RETURNING[base])
         if base == "set_config":
             self.scan.settings.append(_const_text(args[0]).lower() if args and _const_text(args[0]) else "set_config")
         if base in _NAME_FIRST or base in _SCHEMA_FIRST:   # before the type rule: their name argument is checked
@@ -726,6 +744,36 @@ def _option(options, name: str):
     return None
 
 
+def string_names(strings, reg_types) -> tuple[set[str], str | None]:
+    """With a reg* expression in the statement, Postgres may turn ANY string constant next to it into that type
+    (`COALESCE('master.t'::regclass, 'crm.t')`, `ARRAY[pg_typeof(1), '16384']`, `x IN ('a', 'crm.e')`), and we
+    cannot tell which. So every string constant must then be a plain, optionally qualified name: its schema is
+    returned as a name (and with a regnamespace expression a single name is a schema too). A number, braces,
+    commas, spaces or anything else cannot be checked: the reason is returned."""
+    names: set[str] = set()
+    if not reg_types:
+        return names, None
+    for text in strings:
+        try:
+            parts = _literal_name(text)
+        except Unclear:
+            return names, ("a statement with a reg* value (regclass, regtype, ...) may only hold string constants "
+                           "that are plain names: Postgres can read any of them as an object name")
+        if len(parts) >= 2:
+            names.add(parts[-2])
+        elif "regnamespace" in reg_types:
+            names.add(parts[0])
+    return names, None
+
+
+def _finish(out: "_Collector") -> Scan:
+    names, why = string_names(out.scan.strings, out.scan.reg_types)
+    out.scan.schemas |= names
+    if why:
+        out.unclear(why)
+    return out.scan
+
+
 def scan(sql_or_node) -> Scan:
     """Names, catalog reads and unclear shapes of SQL text (or of one already parsed statement node).
 
@@ -733,7 +781,7 @@ def scan(sql_or_node) -> Scan:
     out = _Collector(Scan())
     if isinstance(sql_or_node, ast.Node):
         out.statement(sql_or_node)
-        return out.scan
+        return _finish(out)
     try:
         stmts = pglast.parse_sql(sql_or_node)
     except pglast.parser.ParseError as exc:
@@ -742,7 +790,7 @@ def scan(sql_or_node) -> Scan:
         return out.scan
     for raw in stmts:
         out.statement(raw.stmt)
-    return out.scan
+    return _finish(out)
 
 
 def named_schemas(sql: str) -> set[str]:
@@ -856,6 +904,22 @@ WHERE o.oprname = %(symbol)s AND n.nspname = ANY(%(schemas)s)
 
 _NAME_TYPES = REG_TYPES | {"oidvector"}
 
+# reg*-typed columns of a named relation, and reg*-typed results (or OUT arguments) of a named user function: they
+# make string constants next to them readable as names too
+_REG_COLUMNS_SQL = """
+SELECT DISTINCT coalesce(et.typname, t.typname) AS reg FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_type t ON t.oid = a.atttypid
+    LEFT JOIN pg_type et ON et.oid = t.typelem AND t.typlen = -1 AND t.typelem <> 0
+WHERE n.nspname = %(schema)s AND c.relname = %(name)s AND a.attnum > 0 AND NOT a.attisdropped
+    AND coalesce(et.typname, t.typname) = ANY(%(types)s)
+"""
+_REG_FUNCTIONS_SQL = """
+SELECT DISTINCT coalesce(et.typname, t.typname) AS reg FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    JOIN pg_type t ON t.oid = ANY(array_append(coalesce(p.proallargtypes, p.proargtypes::oid[]), p.prorettype))
+    LEFT JOIN pg_type et ON et.oid = t.typelem AND t.typlen = -1 AND t.typelem <> 0
+WHERE n.nspname = %(schema)s AND p.proname = %(name)s AND coalesce(et.typname, t.typname) = ANY(%(types)s)
+"""
+
 
 def _closure_row_problem(row, allowed: set[str]) -> bool:
     what, schema, name = row["what"], row["schema"], row["name"]
@@ -886,6 +950,9 @@ def objects_problem(conn, scan_: Scan, default_schema: str, allowed) -> str | No
     names first, so the answer never depends on whether a hidden database exists. The text names nothing. A
     function in an allowed database is not followed into its body (the accepted gap)."""
     allowed = set(allowed)
+    problem = _reg_strings_problem(conn, scan_, default_schema, allowed)
+    if problem:
+        return problem
     for sch, name in sorted({(sch or default_schema, name) for sch, name in scan_.relations},
                             key=lambda x: (x[0] or "", x[1])):
         if sch not in allowed:
@@ -909,11 +976,36 @@ def objects_problem(conn, scan_: Scan, default_schema: str, allowed) -> str | No
     return None
 
 
+def _reg_strings_problem(conn, scan_: Scan, default_schema: str, allowed: set[str]) -> str | None:
+    """`string_names` again with the reg* types only the catalog knows: reg*-typed columns of the named relations
+    and reg*-typed results/arguments of named functions in the allowed databases (the text check saw casts and
+    catalog functions already). The text is the unknown-database one, or the generic refusal."""
+    if not scan_.strings:
+        return None
+    types = sorted(REG_TYPES)
+    found: set[str] = set()
+    for sch, name in {(sch or default_schema, name) for sch, name in scan_.relations}:
+        if sch in allowed:
+            found |= {r["reg"] for r in conn.execute(_REG_COLUMNS_SQL, {"schema": sch, "name": name, "types": types})}
+    for sch, name in {(sch or default_schema, name) for sch, name in scan_.functions}:
+        if sch in allowed:
+            found |= {r["reg"] for r in conn.execute(_REG_FUNCTIONS_SQL, {"schema": sch, "name": name, "types": types})}
+    if not found or found <= scan_.reg_types:
+        return None                     # nothing new: the text check already covered these
+    names, why = string_names(scan_.strings, found)
+    if why:
+        return why
+    for n in sorted(names - SYSTEM):
+        if n not in allowed:
+            return introspect.unknown_schema_message(n)
+    return None
+
+
 def closure_problem(scan_: Scan, default_schema: str, allowed) -> str | None:
     """`objects_problem` on a fresh read-only connection (raw SQL and view queries are not planned here)."""
     from .conn import ro_connection
 
-    if not scan_.relations and not scan_.operators:
+    if not scan_.relations and not scan_.operators and not (scan_.strings and scan_.functions):
         return None
     with ro_connection() as conn:
         return objects_problem(conn, scan_, default_schema, allowed)

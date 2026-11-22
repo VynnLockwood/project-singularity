@@ -912,3 +912,49 @@ def test_a_normal_raw_sql_approval_still_applies(editor, dbs):
     approver = make_user(Role.APPROVER, master=Role.APPROVER)
     assert service.approve(approver, ch.pk).status == Change.Status.APPLIED
     assert run(make_user(Role.ADMIN, "a4@x.com"), "SELECT name FROM master.t WHERE code = 'M1'")["rows"] == [["approved"]]
+
+
+# ---- fix round 5: string constants converted to reg* next to a reg* expression ----------------------------------
+
+def test_numeric_string_enumeration_refused(viewer, dbs):
+    """ARRAY['master'::regnamespace, '<oid>', ...] would list every schema (and regclass every object) by number."""
+    oid = run(make_user(Role.ADMIN, "a5@x.com"), "SELECT 'master.t'::regclass::oid::bigint")["rows"][0][0]
+    for sql in (f"SELECT ARRAY['master'::regnamespace, '{oid}', '{oid + 1}']",
+                f"SELECT ARRAY['master.t'::regclass, '{oid + 1}', '{oid + 2}', '{oid + 3}']",
+                f"SELECT ARRAY[pg_typeof(1), '{oid}']",
+                f"SELECT COALESCE('master.t'::regclass, '{oid}'::oid)"):
+        msg = refused(viewer, sql)
+        assert "crm" not in msg and "plain names" in msg or msg == isolation.PLAN_REFUSAL, (sql, msg)
+
+
+def test_single_plain_name_next_to_reg_still_works(viewer):
+    assert run(viewer, "SELECT 'master.t'::regclass::text AS r, name FROM t WHERE name = 'Alpha'")["rows"] \
+        == [["t", "Alpha"]]
+    assert run(viewer, "SELECT pg_typeof(name) = 'text'::regtype AS same FROM t LIMIT 1")["rows"] == [[True]]
+    # the accepted over-refusal: a reg* expression with an unrelated multi-word string constant
+    assert "plain names" in refused(viewer, "SELECT 'master.t'::regclass, name FROM t WHERE name = 'Secret Co'")
+
+
+def test_reg_typed_columns_and_user_functions_count_as_reg_expressions(viewer, dbs):
+    build("CREATE TABLE master.rc (r regclass)", "INSERT INTO master.rc VALUES ('master.t')",
+          "CREATE FUNCTION master.rf() RETURNS regclass LANGUAGE sql STABLE AS $$ SELECT 'master.t'::regclass $$")
+    for s_ in ("crm", "nope"):
+        assert refused(viewer, f"SELECT COALESCE(r, '{s_}.t') FROM rc") == isolation.PLAN_REFUSAL
+        assert refused(viewer, f"SELECT COALESCE(master.rf(), '{s_}.t')") == isolation.PLAN_REFUSAL
+        assert refused(viewer, f"SELECT COALESCE(rf(), '{s_}.t')") == isolation.PLAN_REFUSAL
+    assert run(viewer, "SELECT r::text FROM rc WHERE r = 'master.t'::regclass")["rows"] == [["t"]]
+
+
+def test_reg_returning_functions_cover_the_server(dbs):
+    """Every catalog function returning a reg* type (or an array of one) is refused or in REG_RETURNING."""
+    with dbconn.ro_connection() as c:
+        rows = c.execute(
+            "SELECT DISTINCT p.proname, coalesce(et.typname, t.typname) AS reg FROM pg_proc p "
+            "JOIN pg_type t ON t.oid = p.prorettype LEFT JOIN pg_type et ON et.oid = t.typelem AND t.typlen = -1 "
+            "WHERE p.pronamespace = 'pg_catalog'::regnamespace AND coalesce(et.typname, t.typname) = ANY(%s)",
+            [sorted(isolation.REG_TYPES)]).fetchall()
+    for r in rows:
+        if r["proname"] in isolation.REG_RETURNING:
+            assert isolation.REG_RETURNING[r["proname"]] == r["reg"], r
+        else:
+            assert isolation.risky_function(r["proname"]), r
