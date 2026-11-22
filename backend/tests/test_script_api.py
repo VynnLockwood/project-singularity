@@ -128,8 +128,13 @@ def test_submit_without_validate_is_409(editor):
 # ---- read ------------------------------------------------------------------
 
 def test_detail_owner_or_approver(editor, approver, viewer):
+    from scripts.models import Script
     sid = upload(editor, "COPY t (a) FROM stdin;\n1\tx\n\\.\n", "small.sql").json()["script_id"]
     assert editor.get(f"/api/scripts/{sid}").status_code == 200
+    # until it is known which database it is for, someone else's script is not there for others
+    assert viewer.get(f"/api/scripts/{sid}").status_code == 404
+    assert approver.get(f"/api/scripts/{sid}").status_code == 404
+    Script.objects.filter(pk=sid).update(report={"validated_schema": "master"})
     assert viewer.get(f"/api/scripts/{sid}").status_code == 403
     assert approver.get(f"/api/scripts/{sid}").status_code == 200
 
@@ -149,6 +154,8 @@ def test_list_shows_own_only(editor, approver):
     other.force_login(other_u)
     b = upload(other, "COPY t (a) FROM stdin;\n1\tx\n\\.\n").json()["script_id"]
     assert [s["id"] for s in editor.get("/api/scripts").json()["scripts"]] == [a]
+    assert approver.get("/api/scripts").json()["scripts"] == []     # no database known for either yet
+    Script.objects.filter(pk__in=[a, b]).update(report={"validated_schema": "master"})
     assert {s["id"] for s in approver.get("/api/scripts").json()["scripts"]} == {a, b}
 
 

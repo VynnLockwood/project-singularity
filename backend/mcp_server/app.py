@@ -43,6 +43,7 @@ History: list_changes and get_change; approvers also have get_audit_log, revert_
 A stale change is re-checked with recheck_change.
 Data quality: find_duplicates, list_duplicates, get_duplicate, then merge_duplicates (a data change), dismiss_duplicate or reopen_duplicate.
 Settings, gate rules and roles: get_settings, get_rule_history and list_users, then propose_config_change. These always wait for an approver; a role change needs an admin to approve.
+Database access (admins only): get_user_access and set_user_access read and replace one person's per-database grants; applied at once and audited.
 Backups (approvers): create_backup and list_backups. Restoring is done by a person, not here.
 Whole SQL files: submit_script parses a pg_dump-style script into the same gated operations (small scripts inline;
 big ones are uploaded in the web app, then validate_script with the script_id). export_schema returns a database as SQL.
@@ -210,6 +211,16 @@ async def propose_config_change(operations: list[dict], prompt: str = "") -> dic
 @mcp.tool(name="list_users", description="People who can sign in, with their roles (approvers only).")
 async def list_users() -> dict:
     return await run("list_users")
+
+
+@mcp.tool(name="get_user_access", description=tools.DESCRIPTIONS["get_user_access"])
+async def get_user_access(email: str) -> dict:
+    return await run("get_user_access", email=email)
+
+
+@mcp.tool(name="set_user_access", description=tools.DESCRIPTIONS["set_user_access"])
+async def set_user_access(email: str, grants: list[dict]) -> dict:
+    return await run("set_user_access", email=email, grants=grants)
 
 
 @mcp.tool(name="get_change", description="Status, diff and any errors of a proposed change.")

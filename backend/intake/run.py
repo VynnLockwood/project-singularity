@@ -161,9 +161,27 @@ def _require_edit(user) -> None:
         raise RunError("forbidden", "your role cannot import files")
 
 
-def _check_owner(user, run: ImportRun) -> None:
-    if run.owner_id != user.pk and not user.can_approve:
-        raise RunError("forbidden", "this import belongs to someone else")
+def _denied(exc) -> RunError:
+    return RunError("access_denied", str(exc))
+
+
+def _check_owner(user, run: ImportRun, level: str = "viewer") -> None:
+    """A run in a database the user cannot reach does not exist for them (their own included); someone else's
+    run needs a global approver who is approver on its database; `level` is what the call needs there
+    (editor to change it). Readable but below that: the role refusal (`access_denied`, 403)."""
+    from accounts import access
+
+    if not access.can(user, run.schema, "viewer"):
+        raise RunError("not_found", f"import #{run.pk} does not exist")
+    if run.owner_id != user.pk:
+        if not user.can_approve:
+            raise RunError("forbidden", "this import belongs to someone else")
+        level = "approver"
+    if not access.can(user, run.schema, level):
+        try:
+            access.require(user, run.schema, level)
+        except (access.AccessDenied, introspect.UnknownSchema) as exc:
+            raise _denied(exc) from None
 
 
 def get(user, run_id: int) -> ImportRun:
@@ -175,12 +193,12 @@ def get(user, run_id: int) -> ImportRun:
     return _refresh(run)
 
 
-def _locked(user, run_id: int) -> ImportRun:
+def _locked(user, run_id: int, level: str = "editor") -> ImportRun:
     _require_edit(user)
     run = ImportRun.objects.select_for_update().filter(pk=run_id).first()
     if run is None:
         raise RunError("not_found", f"import #{run_id} does not exist")
-    _check_owner(user, run)
+    _check_owner(user, run, level)
     return _refresh(run)
 
 
@@ -210,11 +228,16 @@ def _spawn(run: ImportRun, api_key: str) -> None:
 
 
 def start(user, upload_id: int, schema: str, prompt: str, api_key: str = "") -> ImportRun:
+    from accounts import access
+
     _require_edit(user)
     try:
+        access.require(user, schema, "editor")   # unreachable reads like missing
         introspect.require_managed(schema)
     except introspect.UnknownSchema as exc:
         raise RunError("invalid", str(exc)) from None
+    except access.AccessDenied as exc:
+        raise _denied(exc) from None
     purge_expired()
     path = None
     try:
@@ -956,6 +979,8 @@ def _critic(run: ImportRun, sources: list, profiles: list, plan: dict) -> dict:
         return report
     previous = (run.report or {}).get("scriptId")
     report["scriptId"] = script.pk
+    # no `user`: the run's database was reach-checked when it started, and the ops (view queries included) are
+    # checked against the owner again when the script is submitted (approvals.service.propose -> _view_reach)
     rep = validate_mod.validate(script, s_plan["mapping"], run.schema)
     if previous and previous != script.pk:
         _drop_script(previous)

@@ -43,6 +43,35 @@ class User(AbstractUser):
         return self.rank >= ROLE_RANK[Role.ADMIN]
 
 
+GRANT_ROLES = (Role.VIEWER, Role.EDITOR, Role.APPROVER)  # admin is global, never a grant
+GRANT_NONE = "none"  # a deny on one database under a `*` grant; never on `*` itself (no row means none there)
+GRANT_CHOICES = [(r.value, r.label) for r in GRANT_ROLES] + [(GRANT_NONE, "None")]
+
+
+class SchemaGrant(models.Model):
+    """A user's level on one database (a managed Postgres schema), or on all of them with schema `*`.
+
+    The user's global role caps it; `accounts.access` is the only place that reads grants to decide.
+    """
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="schema_grants")
+    schema = models.CharField(max_length=63)  # a managed database name, or "*" (all, including later ones)
+    role = models.CharField(max_length=16, choices=GRANT_CHOICES)  # GRANT_NONE only for a specific database
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["user_id", "schema"]
+        constraints = [
+            models.UniqueConstraint(fields=["user", "schema"], name="accounts_schemagrant_user_schema_unique"),
+            models.CheckConstraint(
+                condition=models.Q(role__in=[c for c, _ in GRANT_CHOICES]) & ~models.Q(schema="*", role=GRANT_NONE),
+                name="accounts_schemagrant_role_valid"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.user_id}:{self.schema}={self.role}"
+
+
 class McpToken(models.Model):
     """A personal access token for MCP clients (Claude Desktop, Cursor, ...).
 

@@ -3,6 +3,7 @@ import pytest
 from gate import check
 from gate.defaults import DEFAULT_RULES
 from schema import executor, introspect, query
+from .ops_helpers import ADMIN
 
 pytestmark = pytest.mark.usefixtures("master")
 
@@ -22,7 +23,7 @@ def apply(ops, **kw):
 
 
 def rows(sql):
-    r = query.run_select(sql)
+    r = query.run_select(sql, user=ADMIN)
     names = [c["name"] if isinstance(c, dict) else c for c in r["columns"]]
     return [dict(zip(names, x)) for x in r["rows"]]
 

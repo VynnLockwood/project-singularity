@@ -9,6 +9,7 @@ from gate.operations import OpError, parse_ops
 from scripts.copyparse import RowStreamError, iter_copy, iter_copy_rows
 from scripts.mapping import MappingResult, apply_mapping, bind_script, suggest_mapping
 from scripts.sqlparse import ScriptIssue, parse_script
+from .ops_helpers import ADMIN
 
 MINI = (Path(__file__).parent / "data" / "mini_dump.sql").read_text(encoding="utf-8")
 
@@ -651,7 +652,7 @@ def test_mapped_mini_dump_loads_end_to_end():
     executor.execute(res.operations, st, "me@example.com", rules=rules, row_source=row_source)
 
     def q(sql):
-        r = query.run_select(sql)
+        r = query.run_select(sql, user=ADMIN)
         names = [c["name"] if isinstance(c, dict) else c for c in r["columns"]]
         return [dict(zip(names, x)) for x in r["rows"]]
 

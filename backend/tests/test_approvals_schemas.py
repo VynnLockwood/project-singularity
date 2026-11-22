@@ -8,6 +8,7 @@ from approvals.models import Change
 from schema import introspect, query
 
 from . import pgsetup
+from .ops_helpers import ADMIN
 
 pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("master")]
 
@@ -79,7 +80,7 @@ def test_propose_in_crm_stores_schema_and_applies_there(approver):
     assert any(p.name.startswith("crm-") for p in __import__("pathlib").Path(
         __import__("django.conf", fromlist=["settings"]).settings.BACKUP_DIR).iterdir())
     run(approver, INSERT, schema="crm")
-    r = query.run_select("SELECT count(*) AS n FROM crm.customer")
+    r = query.run_select("SELECT count(*) AS n FROM crm.customer", user=ADMIN)
     assert r["rows"][0][0] == 1
 
 
@@ -155,7 +156,7 @@ def test_revert_stays_in_crm(approver):
     ins = run(approver, INSERT, schema="crm")
     rev = service.revert(approver, ins.pk)
     assert rev.status == "applied" and rev.schema == "crm"
-    assert query.run_select("SELECT count(*) AS n FROM crm.customer WHERE is_active")["rows"][0][0] == 0
+    assert query.run_select("SELECT count(*) AS n FROM crm.customer WHERE is_active", user=ADMIN)["rows"][0][0] == 0
     first = Change.objects.filter(schema="crm", kind="schema").order_by("id").first()
     rev = service.revert(approver, first.pk)
     assert rev.status == "applied" and rev.schema == "crm" and tables("crm") == []

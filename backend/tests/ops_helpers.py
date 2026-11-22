@@ -1,7 +1,12 @@
 """Shared helpers for the Plan B operation tests (tests/test_ops_*.py)."""
+from types import SimpleNamespace
+
 from gate import check
 from gate.defaults import DEFAULT_RULES
 from schema import executor, introspect, query
+
+ADMIN = SimpleNamespace(role="admin", is_active=True, is_authenticated=True, pk=None)
+"""Whose reach `query.run_select` uses in tests that only read back data: an admin reaches every database."""
 
 RULES = [{**r, "enabled": True} for r in DEFAULT_RULES]
 ME = "me@example.com"
@@ -33,7 +38,7 @@ def make_table(name="t", extra=None, rows=None):
 
 
 def rows(sql):
-    return query.run_select(sql)["rows"]
+    return query.run_select(sql, user=ADMIN)["rows"]
 
 
 def gate_db(ops, skip_rules=True):

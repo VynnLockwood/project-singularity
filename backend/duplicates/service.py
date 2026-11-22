@@ -183,19 +183,41 @@ def propose_merge(g: DuplicateGroup, survivor_id: int, user, *, source: str = "w
     return change
 
 
-def get_group(group_id) -> DuplicateGroup:
+def get_group(group_id, user=None, level: str = "viewer") -> DuplicateGroup:
+    """The group, or DuplicateError 404. With `user`, a group in a database they cannot reach is the same 404 as
+    one that does not exist; one they can read but without `level` there raises `access.AccessDenied`."""
+    from accounts import access
+
     g = None
     if isinstance(group_id, int) and not isinstance(group_id, bool):
         g = DuplicateGroup.objects.select_related("merge_change").filter(pk=group_id).first()
+    if g is not None and user is not None and not access.can(user, g.schema, "viewer"):
+        g = None   # hidden equals missing
     if g is None:
         raise DuplicateError(f"duplicate group #{group_id} does not exist", 404)
+    if user is not None and not access.can(user, g.schema, level):
+        access.require(user, g.schema, level)   # readable here, so this raises the role refusal
     return g
 
 
-def list_groups(*, schema: str | None = "master", table: str | None = None, status: str | None = None) -> list[dict]:
-    """Group summaries. `schema=None` means every managed schema; `status` is the shown state (see `state`)."""
-    qs = DuplicateGroup.objects.select_related("merge_change")
+def visible_groups(user):
+    """Every group, cut (in the query) to the databases `user` can read; None means no filtering."""
+    from accounts import access
+
+    qs = DuplicateGroup.objects.all()
+    return qs if user is None else qs.filter(schema__in=access.readable_schemas(user))
+
+
+def list_groups(*, schema: str | None = "master", table: str | None = None, status: str | None = None,
+                user=None) -> list[dict]:
+    """Group summaries. `schema=None` means every managed schema (with `user`: every one they can read; one
+    `schema` they cannot reach fails like a missing one); `status` is the shown state (see `state`)."""
+    from accounts import access
+
+    qs = visible_groups(user).select_related("merge_change")
     if schema:
+        if user is not None:
+            access.require(user, schema)
         qs = qs.filter(schema=introspect.require_managed(schema))
     if table:
         qs = qs.filter(table_name=table)
@@ -212,7 +234,7 @@ def reopen(g: DuplicateGroup, user) -> dict:
         raise DuplicateError(f"table {g.table_name!r} of group #{g.pk} no longer exists", 404)
     g.status = DuplicateGroup.Status.OPEN
     g.save(update_fields=["status"])
-    record(user, "duplicates.reopened", target=f"#{g.pk}", details={"table": g.table_name})
+    record(user, "duplicates.reopened", target=f"#{g.pk}", details={"schema": g.schema, "table": g.table_name})
     return summary(g)
 
 
@@ -220,5 +242,5 @@ def dismiss(g: DuplicateGroup, user) -> dict:
     """Mark a group as not duplicates; a later scan will not bring it back."""
     g.status, g.decided_by = DuplicateGroup.Status.DISMISSED, user
     g.save(update_fields=["status", "decided_by"])
-    record(user, "duplicates.dismissed", target=f"#{g.pk}", details={"table": g.table_name})
+    record(user, "duplicates.dismissed", target=f"#{g.pk}", details={"schema": g.schema, "table": g.table_name})
     return summary(g)

@@ -47,7 +47,7 @@ def test_admin_lists_creates_patches_users(client):
     by = {u["email"]: u for u in users}
     assert set(by) == {"admin@example.com", "off@example.com"}
     assert by["off@example.com"]["active"] is False
-    assert set(by["off@example.com"]) == {"id", "email", "name", "role", "active", "lastLoginAt"}
+    assert set(by["off@example.com"]) == {"id", "email", "name", "role", "active", "lastLoginAt", "access"}
     assert by["admin@example.com"]["lastLoginAt"] is not None  # force_login sets last_login
     assert by["off@example.com"]["lastLoginAt"] is None
 
@@ -86,7 +86,7 @@ def test_me_has_role_summary(client):
         "Read data and the schema",
         "Edit data, import files, propose schema changes",
         "Approve changes, settings, backups",
-        "Manage users and roles",
+        "Manage users, roles and who can reach each database",
     ]
     tool = next(t for t in me["capabilities"]["mcpTools"] if t["name"] == "approve_change")
     assert tool["minRole"] == "approver" and tool["allowed"] is False and tool["description"]
@@ -94,8 +94,13 @@ def test_me_has_role_summary(client):
 
 def test_every_tool_is_listed():
     from accounts import capabilities
-    listed = {t["name"] for t in capabilities.build(make("v@example.com"))["mcpTools"]}
-    assert listed == set(tools.TOOL_ROLES)
+    listed = {t["name"]: t for t in capabilities.build(make("v@example.com"))["mcpTools"]}
+    assert set(listed) == set(tools.TOOL_ROLES)
+    assert {"get_user_access", "set_user_access"} <= set(listed)
+    for name in ("get_user_access", "set_user_access"):
+        assert listed[name]["minRole"] == "admin" and listed[name]["allowed"] is False and listed[name]["description"]
+    admin = {t["name"]: t for t in capabilities.build(make("a@example.com", Role.ADMIN))["mcpTools"]}
+    assert set(admin) == set(listed) and all(t["allowed"] for t in admin.values() if t["name"] != "propose_sql")
 
 
 # ---- fix round 1 -------------------------------------------------------------

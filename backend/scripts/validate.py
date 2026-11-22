@@ -11,7 +11,7 @@ check both run so the report shows both):
 Report (JSON-serializable, bounded; saved on script.report):
   {"ok": bool, "script_id": int, "statements": int,
    "mapping_used": "given" | "suggested" | None,              # None: stopped before mapping
-   "errors": [{"kind": "storage"|"parse"|"mapping"|"rows", "line", "statement", "message"}],
+   "errors": [{"kind": "storage"|"parse"|"mapping"|"rows"|"access", "line", "statement", "message"}],
    "errors_truncated": int,                                   # errors beyond MAX_ERRORS
    "ignored": [{"line", "statement"}], "ignored_truncated": int,
    "skipped": [{"line", "statement", "reason", "kind"}], "skipped_truncated": int,
@@ -191,12 +191,21 @@ def _orphans(report: dict, ops: list[dict], parsed, state: dict, schema: str = "
 
 # ---------------------------------------------------------------- main
 
-def validate(script: Script, mapping: dict | None, schema: str | None = None, progress=None) -> dict:
+def validate(script: Script, mapping: dict | None, schema: str | None = None, progress=None, *, user=None) -> dict:
     """`progress(phase)` is called with reading, parsing, checking, dry_run as a run reaches each one.
 
     `schema=None` means "the one the file names, if it is a database here, else master" (see `_resolve_schema`);
-    a schema the person gave always wins. The report says which was used and why (`schema_source`)."""
+    a schema the person gave always wins. The report says which was used and why (`schema_source`).
+
+    With `user` (the person validating), a database the file names that they cannot reach counts as one that does
+    not exist here, and they need editor on the database used: checked right after parsing, before anything of
+    that database is read (structure, rows, dry run). Without it the run is not access-checked (callers that
+    have already checked, such as an import run's Critic)."""
     if schema is not None:
+        if user is not None:
+            from accounts import access
+
+            access.require(user, schema, "editor")
         introspect.require_managed(schema)
     report = _new_report(script)
     report["schema"] = schema or "master"
@@ -210,7 +219,7 @@ def validate(script: Script, mapping: dict | None, schema: str | None = None, pr
         _save(script, report, kept)
         return report
     try:
-        _run(report, script, mapping, schema, progress or (lambda phase: None))
+        _run(report, script, mapping, schema, progress or (lambda phase: None), user=user)
     except Exception as exc:  # last resort: never crash, report a failed run instead
         _add_error(report, "rows", 0, "", f"unexpected error: {_clip(exc)}")
         report["dry_run"] = {"ok": False, "skipped": report["dry_run"]["skipped"],
@@ -237,18 +246,54 @@ def _save(script: Script, report: dict, kept: tuple) -> None:
     script.save(update_fields=fields)
 
 
-def _resolve_schema(report: dict, parsed, requested: str | None) -> str:
-    """Which database to check against: the person's choice, else the one the file names (when it is managed)."""
+def _resolve_schema(report: dict, parsed, requested: str | None, user=None) -> str:
+    """Which database to check against: the person's choice, else the one the file names (when it is managed
+    and, with `user`, one they can read: a database they cannot reach is treated like one that does not exist)."""
     report["detected_schema"] = parsed.schema
     if requested is not None:
         return requested
     if parsed.schema and parsed.schema in {m["name"] for m in introspect.managed_schemas()}:
-        report["schema"], report["schema_source"] = parsed.schema, "detected"
-        return parsed.schema
+        from accounts import access
+
+        if user is None or access.can(user, parsed.schema, "viewer"):
+            report["schema"], report["schema_source"] = parsed.schema, "detected"
+            return parsed.schema
     return "master"
 
 
-def _run(report: dict, script: Script, mapping: dict | None, schema: str | None = None, progress=lambda p: None) -> None:
+def _may_use(report: dict, user, schema: str) -> bool:
+    """With `user`: editor on `schema`, or an error in the report (the role text, or the unknown-database text
+    when even master is out of reach). Called before anything of that database is read."""
+    if user is None:
+        return True
+    from accounts import access
+
+    try:
+        access.require(user, schema, "editor")
+    except (access.AccessDenied, introspect.UnknownSchema) as exc:
+        _add_error(report, "access", 0, "", str(exc))
+        return False
+    return True
+
+
+def _views_reach(report: dict, user, ops: list[dict], schema: str) -> bool:
+    """With `user`: every view query may name or read only databases where they are editor, else an "access"
+    error (the unknown-database text for one they cannot reach, the same as for a missing one). Before the
+    gate and the dry run."""
+    if user is None:
+        return True
+    from schema import isolation
+
+    for where, q in isolation.view_queries(ops):
+        problem = isolation.reach_problem(user, q, "editor", schema=schema)
+        if problem:
+            _add_error(report, "access", 0, q, f"{where}: {problem[1]}")
+            return False
+    return True
+
+
+def _run(report: dict, script: Script, mapping: dict | None, schema: str | None = None, progress=lambda p: None,
+         *, user=None) -> None:
     if mapping is not None:
         script.mapping = mapping
         report["mapping_used"] = "given"
@@ -273,7 +318,9 @@ def _run(report: dict, script: Script, mapping: dict | None, schema: str | None 
             _add_error(report, "parse", e.line, e.statement, e.message)
         return
 
-    schema = _resolve_schema(report, parsed, schema)
+    schema = _resolve_schema(report, parsed, schema, user)
+    if not _may_use(report, user, schema):
+        return
     progress("checking")
     state = introspect.snapshot(schema)
     external = introspect.external_state(state, schema)  # tables the script does not create (external refs)
@@ -289,6 +336,8 @@ def _run(report: dict, script: Script, mapping: dict | None, schema: str | None 
         return
     ops = bind_script(mapped.ops, script.pk)
     report["ops_summary"] = _summary(ops)
+    if not _views_reach(report, user, ops, schema):
+        return
 
     limits = get_config()["limits"]
     max_ops = limits["maxOpsPerScript"]

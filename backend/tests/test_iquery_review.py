@@ -17,6 +17,7 @@ from .test_iquery_api import BASE, login, post  # noqa: F401
 from .test_iquery_context import build, shop  # noqa: F401
 from .test_iquery_memory import SQL, A, active, user, world  # noqa: F401
 from .test_iquery_suggest import OK, Model, patched_config
+from .ops_helpers import ADMIN
 
 pytestmark = [pytest.mark.django_db(transaction=True), pytest.mark.usefixtures("master")]
 
@@ -36,7 +37,7 @@ def test_embedding_outage_does_not_break_suggest_or_recall(shop, monkeypatch):
     monkeypatch.setattr(embedder, "embed", down)
     out = suggest.suggest(me, "master", ["contracts"], "")
     assert out["sql"] == OK and out["searchOffline"] is True
-    assert suggest.recall_for("master", ["contracts"])["sql"] is None
+    assert suggest.recall_for(ADMIN, "master", ["contracts"])["sql"] is None
 
 
 def test_transient_database_error_keeps_memory(world, monkeypatch):
@@ -45,13 +46,13 @@ def test_transient_database_error_keeps_memory(world, monkeypatch):
     def down(*a, **k):
         raise psycopg.OperationalError("server closed the connection")
     monkeypatch.setattr(memory, "ro_connection", down)
-    assert [e.pk for e in memory.examples("master", ["a"], 3)] == [ex.pk]
+    assert [e.pk for e in memory.examples("master", ["a"], 3, user=ADMIN)] == [ex.pk]
     assert QueryExample.objects.filter(pk=ex.pk).exists()
 
 
 def test_a_missing_column_still_deletes_memory(world):
     ex = active(["a"], sql='SELECT "gone" FROM "partner"')
-    assert memory.examples("master", ["a"], 3) == []
+    assert memory.examples("master", ["a"], 3, user=ADMIN) == []
     assert not QueryExample.objects.filter(pk=ex.pk).exists()
 
 
@@ -63,7 +64,7 @@ def test_learn_rejects_sql_that_does_not_plan(world):
 
 def test_recall_survives_malformed_stored_values(world):
     active(["a"], values=[{"x": 1}])
-    assert memory.recall("master", ["a"], A, 0.9) is None
+    assert memory.recall("master", ["a"], A, 0.9, user=ADMIN) is None
 
 
 @pytest.mark.parametrize("extra", [

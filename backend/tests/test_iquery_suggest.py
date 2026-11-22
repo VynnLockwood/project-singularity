@@ -9,6 +9,7 @@ from iquery import memory, suggest
 from iquery.models import QueryExample, SuggestCall
 
 from .conftest import fake_vector
+from .ops_helpers import ADMIN
 from .test_iquery_context import build, shop  # noqa: F401  (shop is a fixture)
 
 pytestmark = [pytest.mark.django_db(transaction=True), pytest.mark.usefixtures("master")]
@@ -157,6 +158,6 @@ def test_recall_for(shop):
         schema="master", comments="partner acme", sql='SELECT * FROM "partner"', sql_norm='select * from "partner"',
         values=[{"table": "partner", "column": "name", "value": "Acme Ltd"}],
         embedding=fake_vector("partner acme"), status="active")
-    r = suggest.recall_for("master", ["partner acme"])
+    r = suggest.recall_for(ADMIN, "master", ["partner acme"])
     assert r["sql"] == 'SELECT * FROM "partner"' and r["source"] == "memory"
-    assert suggest.recall_for("master", ["something unrelated entirely"])["sql"] is None
+    assert suggest.recall_for(ADMIN, "master", ["something unrelated entirely"])["sql"] is None

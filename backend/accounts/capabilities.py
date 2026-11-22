@@ -10,7 +10,7 @@ ROLE_SUMMARY = [
     "Read data and the schema",
     "Edit data, import files, propose schema changes",
     "Approve changes, settings, backups",
-    "Manage users and roles",
+    "Manage users, roles and who can reach each database",
 ]
 
 

@@ -32,9 +32,14 @@ def managed_schemas() -> list[dict]:
                 for r in conn.execute(MANAGED_SQL)]
 
 
+def unknown_schema_message(schema) -> str:
+    """The text for a database that does not exist; access.require uses it too, so hidden reads like missing."""
+    return f"Unknown schema {schema!r}."
+
+
 def require_managed(schema: str) -> str:
     if not isinstance(schema, str) or schema not in {m["name"] for m in managed_schemas()}:
-        raise UnknownSchema(f"Unknown schema {schema!r}.")
+        raise UnknownSchema(unknown_schema_message(schema))
     return schema
 
 COLUMNS_SQL = """

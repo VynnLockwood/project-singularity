@@ -36,16 +36,33 @@ def schema_param(request, body: dict | None = None, default: str | None = "maste
     return found[0] if found else default
 
 
+def schema_for(request, level: str = "viewer", body: dict | None = None, default: str = "master") -> str:
+    """`schema_param` (absent means `default`, master) checked against the user's access at `level`.
+
+    A database the user cannot reach raises the same `UnknownSchema` as one that does not exist; a readable one
+    below `level` raises `access.AccessDenied`. Call it first in a view, before anything that looks the database
+    or its tables up, so the answers cannot differ.
+    """
+    from accounts import access
+
+    return access.require(request.user, schema_param(request, body, default), level)
+
+
 def unknown_schema_is_400(fn):
-    """Decorator for views: an unmanaged or unknown schema anywhere below becomes HTTP 400, never 500.
+    """Decorator for views: an unmanaged, unknown or unreachable schema anywhere below becomes HTTP 400, never
+    500; a readable database where the user lacks the level (`access.AccessDenied`) becomes 403.
 
     Put it inside `@endpoint(...)` so sign-in and role checks still run first.
     """
+    from accounts import access
+
     @wraps(fn)
     def wrapper(request, *args, **kwargs):
         try:
             return fn(request, *args, **kwargs)
         except introspect.UnknownSchema as exc:
             return error(str(exc), 400)
+        except access.AccessDenied as exc:
+            return error(str(exc), exc.status)
 
     return wrapper

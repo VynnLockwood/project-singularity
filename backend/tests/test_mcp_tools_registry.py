@@ -6,7 +6,8 @@ from mcp_server import tools
 
 # Not offered to the web chat assistant (chat.toolspecs.NOT_IN_CHAT): the tools that apply or decide a change (in the
 # web app a person does that; revert_change proposes and approves its own reverse in one call), and the MCP-only
-# import helpers (in the web app a file goes through the Import tab).
+# import helpers (in the web app a file goes through the Import tab), and the admin's grant management (in the web
+# app an admin uses the Users page; the chat never grants access).
 NOT_IN_CHAT = toolspecs.NOT_IN_CHAT
 
 
@@ -21,7 +22,8 @@ def test_every_tool_is_registered_with_the_mcp_server():
 
 
 def test_the_web_chat_has_every_tool_except_deciding():
-    assert NOT_IN_CHAT == {"approve_change", "reject_change", "revert_change", "match_data", "get_import_recipe"}
+    assert NOT_IN_CHAT == {"approve_change", "reject_change", "revert_change", "match_data", "get_import_recipe",
+                           "get_user_access", "set_user_access"}
     assert set(toolspecs.SPECS) == set(tools.TOOL_ROLES) - NOT_IN_CHAT
 
 
@@ -65,3 +67,10 @@ def test_minimum_roles_of_the_parity_tools_are_pinned():
         "get_rule_history": "viewer", "reopen_duplicate": "editor", "create_backup": "approver",
         "list_backups": "approver", "profile_column": "viewer", "lookup_options": "viewer",
     }
+
+
+def test_access_tools_are_admin_tools():
+    """Granting database access is an admin's decision: no other token may even list these tools."""
+    assert {t: tools.TOOL_ROLES[t] for t in ("get_user_access", "set_user_access")} == {
+        "get_user_access": "admin", "set_user_access": "admin"}
+    assert {t for t, need in tools.TOOL_ROLES.items() if need == "admin"} == {"get_user_access", "set_user_access"}

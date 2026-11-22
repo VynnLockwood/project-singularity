@@ -6,6 +6,7 @@ import pytest
 from gate import check
 from gate.defaults import DEFAULT_RULES
 from schema import backup, executor, introspect, query
+from .ops_helpers import ADMIN
 
 pytestmark = pytest.mark.usefixtures("master")
 
@@ -30,7 +31,7 @@ def make_customer(extra=None):
 
 
 def rows(sql):
-    return query.run_select(sql)["rows"]
+    return query.run_select(sql, user=ADMIN)["rows"]
 
 
 # ---- create + introspect ---------------------------------------------------
@@ -275,14 +276,14 @@ def test_backup_failure_is_reported(settings):
 def test_query_returns_rows_and_columns():
     make_customer()
     apply([{"op": "insert_rows", "table": "customer", "rows": [{"customer_code": "C1", "name": "A"}]}])
-    out = query.run_select('SELECT "customer_code", name FROM customer')
+    out = query.run_select('SELECT "customer_code", name FROM customer', user=ADMIN)
     assert out == {"columns": ["customer_code", "name"], "rows": [["C1", "A"]], "truncated": False}
 
 
 def test_query_truncates():
     make_customer()
     apply([{"op": "insert_rows", "table": "customer", "rows": [{"customer_code": f"C{i}", "name": "n"} for i in range(5)]}])
-    out = query.run_select("SELECT customer_id FROM customer", limit=3)
+    out = query.run_select("SELECT customer_id FROM customer", limit=3, user=ADMIN)
     assert len(out["rows"]) == 3 and out["truncated"] is True
 
 
@@ -301,7 +302,7 @@ def test_query_truncates():
 def test_query_rejects_non_select(bad):
     make_customer()
     with pytest.raises(query.QueryError):
-        query.run_select(bad)
+        query.run_select(bad, user=ADMIN)
     assert [t["name"] for t in introspect.list_tables()] == ["customer"]
 
 
@@ -309,15 +310,15 @@ def test_query_cannot_write_through_a_cte():
     make_customer()
     apply([{"op": "insert_rows", "table": "customer", "rows": [{"customer_code": "C1", "name": "A"}]}])
     with pytest.raises(query.QueryError):
-        query.run_select("WITH d AS (DELETE FROM customer RETURNING customer_id) SELECT * FROM d")
+        query.run_select("WITH d AS (DELETE FROM customer RETURNING customer_id) SELECT * FROM d", user=ADMIN)
     assert rows("SELECT count(*) FROM customer") == [[1]]
 
 
 def test_query_timeout():
     with pytest.raises(query.QueryError, match="timeout"):
-        query.run_select("SELECT pg_sleep(2)", timeout_ms=100)
+        query.run_select("SELECT pg_sleep(2)", timeout_ms=100, user=ADMIN)
 
 
 def test_query_cannot_see_singularity_schema():
     with pytest.raises(query.QueryError):
-        query.run_select("SELECT * FROM singularity.settings_app_rule")
+        query.run_select("SELECT * FROM singularity.settings_app_rule", user=ADMIN)

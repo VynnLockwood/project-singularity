@@ -17,6 +17,35 @@ from django.db.models.signals import post_migrate  # noqa: E402
 post_migrate.disconnect(dispatch_uid="ensure_seed_admins", sender=apps.get_app_config("accounts"))
 
 
+def _default_access(sender, instance, created, raw=False, **kwargs):
+    """Tests only: a new non-admin user gets a `*` grant at its global role (today's reach before grants)."""
+    from accounts.models import Role, SchemaGrant
+
+    if created and not raw and instance.role != Role.ADMIN:
+        SchemaGrant.objects.get_or_create(user=instance, schema="*", defaults={"role": instance.role})
+
+
+@pytest.fixture(autouse=True)
+def _default_schema_access(request):
+    """Per-database access fails closed; the older tests predate grants, so their users get one (see above).
+
+    Tests marked `no_default_access` get none and set grants themselves. Installed here only, never in app code.
+    """
+    if request.node.get_closest_marker("no_default_access"):
+        yield
+        return
+    from django.db.models.signals import post_save
+
+    from accounts.models import User
+
+    uid = "tests_default_schema_access"
+    post_save.connect(_default_access, sender=User, dispatch_uid=uid)
+    try:
+        yield
+    finally:
+        post_save.disconnect(sender=User, dispatch_uid=uid)
+
+
 @pytest.fixture(scope="session")
 def master_db():
     if not pgsetup.ADMIN:

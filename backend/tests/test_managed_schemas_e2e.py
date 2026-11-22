@@ -12,6 +12,7 @@ from schema.executor import ApplyError
 from schema.export import open_export
 
 from . import pgsetup
+from .ops_helpers import ADMIN
 
 pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("master")]
 
@@ -49,7 +50,7 @@ def run(approver, ops, schema="master"):
 def master_state():
     counts = {}
     for t in introspect.list_tables("master"):
-        counts[t["name"]] = query.run_select(f'SELECT count(*) AS n FROM master."{t["name"]}"')["rows"][0][0]
+        counts[t["name"]] = query.run_select(f'SELECT count(*) AS n FROM master."{t["name"]}"', user=ADMIN)["rows"][0][0]
     names = sorted(counts)
     return counts, introspect.fingerprint(names, "master")
 
@@ -89,7 +90,7 @@ def test_managed_schema_lifecycle(approver, tmp_path):
 
     res = query.run_select(
         "SELECT c.name AS contact, o.name AS company FROM contact c JOIN company o ON o.company_id = c.company_id ORDER BY c.contact_id",
-        schema="crm")
+        schema="crm", user=ADMIN)
     assert [tuple(r) for r in res["rows"]] == [("Ann", "Acme"), ("Bob", "Beta")]
     assert master_state() == before
 
@@ -126,7 +127,7 @@ def test_managed_schema_lifecycle(approver, tmp_path):
     assert [t["name"] for t in introspect.list_tables("sales")] == ["company", "contact"]
     with pytest.raises(introspect.UnknownSchema):
         introspect.list_tables("crm")
-    assert query.run_select("SELECT count(*) AS n FROM contact", schema="sales")["rows"][0][0] == 2
+    assert query.run_select("SELECT count(*) AS n FROM contact", schema="sales", user=ADMIN)["rows"][0][0] == 2
     stale = service.approve(approver, pending.pk)
     assert stale.status == "stale" and "crm" in stale.error
     assert master_state() == before

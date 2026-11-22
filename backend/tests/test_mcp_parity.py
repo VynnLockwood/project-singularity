@@ -42,6 +42,7 @@ COVERED = {
     "api/scripts/<int:script_id>": ["get_script"],
     "api/scripts/<int:script_id>/validate": ["validate_script"],
     "api/scripts/<int:script_id>/submit": ["submit_script"],
+    "api/users/<int:user_id>/access": ["get_user_access", "set_user_access"],  # admin only, by email
 }
 
 # The web import runs the Profiler, Matcher and Designer on a person's uploaded file. An AI client already has the
@@ -50,7 +51,8 @@ COVERED = {
 IMPORTS = ("importing a file from a person's computer; AI clients call match_data and get_import_recipe, then load "
            "with begin_load and append_rows")
 
-USERS = "granting access is a person's decision; an AI client lists users with list_users"
+USERS = ("inviting people and changing roles is a person's decision; an AI client lists users with list_users "
+         "(an admin's client manages database grants with get_user_access and set_user_access)")
 
 WEB_ONLY = {
     "api/health": "liveness probe for the gateway, not a database task",

@@ -7,6 +7,7 @@ from accounts.models import Role, User
 from approvals import service
 from duplicates import service as dup
 from duplicates.models import DuplicateGroup
+from .ops_helpers import ADMIN
 
 pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("master")]
 
@@ -201,11 +202,11 @@ def test_merge_goes_through_the_gate_and_cleans_up(data):
     assert dup.state(DuplicateGroup.objects.get(pk=g.pk)) == "merged"
 
     from schema.query import run_select
-    orders = run_select('SELECT "customer_id" FROM \"order_header\" ORDER BY customer_id')["rows"]
+    orders = run_select('SELECT "customer_id" FROM \"order_header\" ORDER BY customer_id', user=ADMIN)["rows"]
     assert orders == [[1], [1], [3]]                       # 2 and 7 now point at the survivor
-    active = run_select('SELECT customer_id FROM customer WHERE is_active ORDER BY customer_id')["rows"]
+    active = run_select('SELECT customer_id FROM customer WHERE is_active ORDER BY customer_id', user=ADMIN)["rows"]
     assert [x[0] for x in active] == [1, 3, 4, 5, 6]        # losers are deactivated, not deleted
-    assert run_select("SELECT count(*) FROM customer")["rows"] == [[7]]
+    assert run_select("SELECT count(*) FROM customer", user=ADMIN)["rows"] == [[7]]
 
     assert scan().json()["groups"] == 1                    # the merged group is gone on the next scan
     assert member_sets() == [[4, 5]]

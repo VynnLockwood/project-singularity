@@ -89,6 +89,7 @@ def test_second_start_refused_while_running(never_starts):
         jobs.start(u, s.pk, None, "master")
 
 
+@pytest.mark.usefixtures("master")   # starting a check for a database looks the database up
 def test_start_refused_for_submitted_script(never_starts):
     u = user()
     s = make(u)
@@ -111,6 +112,7 @@ def test_failed_job_stores_message(inline, monkeypatch):
     assert jobs.start  # and a new run is allowed afterwards
 
 
+@pytest.mark.usefixtures("master")   # starting a check for a database looks the database up
 def test_stale_running_report_reads_as_failed(never_starts):
     u = user()
     s = make(u)
@@ -123,6 +125,7 @@ def test_stale_running_report_reads_as_failed(never_starts):
     assert Script.objects.get(pk=s.pk).report["state"] == "running"     # read only, never written
 
 
+@pytest.mark.usefixtures("master")   # starting a check for a database looks the database up
 def test_killed_process_never_started(never_starts):
     u = user()
     s = make(u)
@@ -133,9 +136,12 @@ def test_killed_process_never_started(never_starts):
     assert jobs.start(u, s.pk, None, "master") == {"state": "running"}
 
 
+@pytest.mark.usefixtures("master")   # starting a check for a database looks the database up
 def test_other_user_gets_403_or_404_for_validate_and_detail(never_starts):
     a, b = user(n="a"), user(n="b")
     s = make(a)
+    # someone else's script is only theirs to see once it is known to be for a database they can read
+    Script.objects.filter(pk=s.pk).update(report={"validated_schema": "master"})
     c = Client()
     c.force_login(b)
     assert c.get(f"/api/scripts/{s.pk}").status_code == 403
@@ -178,7 +184,7 @@ def test_heartbeat_advances_during_a_long_phase(monkeypatch):
     s = make(u)
     seen = []
 
-    def slow(script, mapping, schema="master", progress=None):
+    def slow(script, mapping, schema="master", progress=None, user=None):
         time.sleep(0.6)
         seen.append(Script.objects.get(pk=script.pk).report["heartbeat"])
         return {"ok": True}
@@ -194,6 +200,7 @@ def test_heartbeat_advances_during_a_long_phase(monkeypatch):
     assert seen[0] > before
 
 
+@pytest.mark.usefixtures("master")   # starting a check for a database looks the database up
 def test_at_most_max_running_checks_at_once(never_starts):               # review finding 2
     u = user()
     scripts = [make(u) for _ in range(jobs.MAX_RUNNING + 1)]

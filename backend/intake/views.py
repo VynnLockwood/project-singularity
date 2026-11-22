@@ -7,7 +7,7 @@ from schema.http import schema_param, unknown_schema_is_400
 from . import run as runs
 
 MAX_PROMPT, MAX_ANSWER, MAX_KEY, MAX_NOTE = 2000, 1000, 500, 2000
-STATUS = {"forbidden": 404, "not_found": 404, "bad_state": 409, "busy": 409, "invalid": 400}
+STATUS = {"forbidden": 404, "not_found": 404, "bad_state": 409, "busy": 409, "invalid": 400, "access_denied": 403}
 # Another person's run is reported as 404, like a run that does not exist: its id says nothing to anyone else.
 
 

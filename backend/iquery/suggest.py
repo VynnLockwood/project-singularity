@@ -103,8 +103,8 @@ def _ask(cfg, messages, api_key) -> str:
     return clean_reply(reply.get("content", ""))
 
 
-def _problem(schema: str, text: str) -> str | None:
-    return memory.select_problem(text) or memory.explains(schema, text)
+def _problem(user, schema: str, text: str) -> str | None:
+    return memory.select_problem(text) or memory.explains(schema, text, user=user)
 
 
 def suggest(user, schema: str, comments: list[str], sql_context: str, api_key: str = "") -> dict:
@@ -117,8 +117,9 @@ def suggest(user, schema: str, comments: list[str], sql_context: str, api_key: s
     if not _model_name(cfg):
         raise SuggestError("not_configured", "no chat model is configured")
     _check_rate_limit(user, iq["ratePerMinute"])
+    # per user: a suggestion is checked against the asker's reach, so it is never served to someone else
     key = "iq:" + hashlib.sha256(json.dumps(
-        [schema, comments, sql_context, _model_name(cfg)], ensure_ascii=False).encode()).hexdigest()
+        [user.pk, schema, comments, sql_context, _model_name(cfg)], ensure_ascii=False).encode()).hexdigest()
     hit = cache.get(key)
     if hit is not None:
         return hit
@@ -126,18 +127,18 @@ def suggest(user, schema: str, comments: list[str], sql_context: str, api_key: s
     picked = pick_tables(schema, comments, iq["maxTables"])
     values = find_values(schema, picked["tables"], comments, iq["valueLookupMs"])
     try:
-        examples = memory.examples(schema, comments, iq["examples"])
+        examples = memory.examples(schema, comments, iq["examples"], user=user)
     except SearchError:   # the embed service is down: no examples, the tables were already matched by name
         examples = []
     messages = _messages(schema, comments, sql_context, picked["tables"], values, examples)
 
     text = _ask(cfg, messages, api_key)
-    problem = _problem(schema, text)
+    problem = _problem(user, schema, text)
     if problem and time.monotonic() - started < DEADLINE_S:
         messages += [{"role": "assistant", "content": text or "(empty)"},
                      {"role": "user", "content": f"That query failed: {problem}\nReturn a corrected query, SQL only."}]
         text = _ask(cfg, messages, api_key)
-        problem = _problem(schema, text)
+        problem = _problem(user, schema, text)
     elif problem:
         problem = "took too long"
     result = {"sql": None if problem else text, "source": "model", "tables": picked["tables"], "values": values,
@@ -148,13 +149,13 @@ def suggest(user, schema: str, comments: list[str], sql_context: str, api_key: s
     return result
 
 
-def recall_for(schema: str, comments: list[str]) -> dict:
+def recall_for(user, schema: str, comments: list[str]) -> dict:
     """The fast path: a saved query for the same question and the same stored values, or nothing."""
     iq = get_config()["intelligentQuery"]
     tables = pick_tables(schema, comments, iq["maxTables"])["tables"]
     values = find_values(schema, tables, comments, iq["valueLookupMs"])
     try:
-        ex = memory.recall(schema, comments, values, iq["memoryHit"])
+        ex = memory.recall(schema, comments, values, iq["memoryHit"], user=user)
     except SearchError:
         ex = None
     return {"sql": ex.sql if ex else None, "source": "memory", "values": values}
