@@ -269,3 +269,19 @@ def test_profile_tools_match_tools_list(server, client, role):
     allowed = sorted(t["name"] for t in mine if t["allowed"])
     listed = sorted(t.name for t in with_client(server["url"], token, lambda c: c.list_tools()).tools)
     assert allowed == listed
+
+
+def test_public_base_prefers_configured_url_over_a_rewritten_host(monkeypatch):
+    """A tunnel may hand us Host: localhost:8088; the advertised URL must stay reachable."""
+    from mcp_server.app import _public_base
+
+    # explicit config wins (what prod sets) - the Gemini failure
+    monkeypatch.setenv("MCP_PUBLIC_URL", "https://singularity.example.com")
+    assert _public_base({"host": "localhost:8088"}) == "https://singularity.example.com"
+
+    # otherwise the proxy's own header wins over Host
+    monkeypatch.delenv("MCP_PUBLIC_URL", raising=False)
+    assert _public_base({"host": "localhost:8088", "x-forwarded-host": "real.example.com"}) == "http://real.example.com"
+
+    # with neither, Host is still used (local/test behaviour, unchanged)
+    assert _public_base({"host": "127.0.0.1:9", "x-forwarded-proto": "https"}) == "https://127.0.0.1:9"

@@ -23,6 +23,9 @@ x-backend-env: &backend-env
   EMBED_URL: http://embed:8080
   BACKUP_DIR: /backups
   MCP_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost}
+  # Advertised in WWW-Authenticate for OAuth discovery. Without it the Host header is used,
+  # which the tunnel rewrites to localhost:8088 and makes discovery unreachable (Gemini).
+  MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-https://singularity.lunariankids.com}
 
 services:
   nginx:

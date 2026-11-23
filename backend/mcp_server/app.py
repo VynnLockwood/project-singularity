@@ -89,6 +89,13 @@ async def run(tool: str, **kwargs):
         raise ToolError(str(exc)) from exc
 
 
+def _public_base(headers) -> str:
+    if base := os.environ.get("MCP_PUBLIC_URL", "").strip().rstrip("/"):
+        return base
+    host = (headers.get("x-forwarded-host") or headers.get("host") or "localhost").split(",")[0].strip()
+    return f"{headers.get('x-forwarded-proto', 'http')}://{host}"
+
+
 def _hosts() -> list[str]:
     raw = os.environ.get("MCP_ALLOWED_HOSTS") or os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost")
     hosts = []
@@ -437,8 +444,8 @@ class BearerAuth:
 
         user = await sync_to_async(lookup, thread_sensitive=False)()
         if user is None:
-            # points OAuth clients (Claude.ai, ...) at the discovery document, RFC 9728
-            base = f"{headers.get('x-forwarded-proto', 'http')}://{headers.get('host', 'localhost')}"
+            # points OAuth clients (Claude.ai, Gemini, ...) at the discovery document, RFC 9728
+            base = _public_base(headers)
             resp = JSONResponse(
                 {"error": "missing or invalid token"}, status_code=401,
                 headers={"WWW-Authenticate": f'Bearer realm="singularity", resource_metadata="{base}/.well-known/oauth-protected-resource"'},
