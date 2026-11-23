@@ -2,10 +2,10 @@
 auth:
   provider: google
   allowedDomains:
-    - example.com      # CHANGE: email domains admins may invite; empty = any. Limits invitations only, not sign-in (a Gmail-only team: gmail.com)
-  seedAdmins:              # on migrate: missing ones are created as active admins; if no real active admin exists, existing ACTIVE users listed here are promoted (unclaimed seeds, listed here and never signed in, do not count as real); turned-off users are never reactivated
-    - admin@example.com   # CHANGE: your email. Placeholder: reserved domains (example.com/.org/.net, *.invalid, *.test, localhost) are skipped with a warning
-  defaultRole: viewer      # unused by sign-in (sign-in is invite-only); kept so older configs still load
+    - gmail.com          # invite-only: only accounts already in the DB can sign in
+  seedAdmins:              # become "approver" on first sign-in
+    - nolanrobinson490@gmail.com
+  defaultRole: viewer      # viewer | editor | approver
 
 limits:
   maxQueryRows: 500
