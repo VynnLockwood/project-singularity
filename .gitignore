@@ -1,4 +1,5 @@
 .env
+dozzle/users.yml
 nginx/certs/
 __pycache__/
 *.pyc

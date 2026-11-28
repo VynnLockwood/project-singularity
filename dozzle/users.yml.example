@@ -1,0 +1,7 @@
+# Copy via: ./scripts/init-dozzle-user.sh <username>
+# Do not commit dozzle/users.yml.
+users:
+  admin:
+    email: admin@example.com
+    name: Admin
+    password: <sha256-or-bcrypt-hash-from-dozzle-generate>

@@ -38,6 +38,7 @@ services:
       - web
       - api
       - mcp
+      - dozzle
     networks: [edge, internal]
     restart: unless-stopped
 
@@ -142,10 +143,51 @@ services:
     networks: [internal]
     restart: unless-stopped
 
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    environment:
+      CONTAINERS: 1
+      INFO: 1
+      EVENTS: 1
+      PING: 1
+      VERSION: 1
+      POST: 0
+      EXEC: 0
+      IMAGES: 0
+      VOLUMES: 0
+      NETWORKS: 0
+      SERVICES: 0
+      TASKS: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    expose: ["2375"]
+    networks: [monitor]
+    restart: unless-stopped
+
+  dozzle:
+    image: amir20/dozzle:latest
+    environment:
+      DOZZLE_BASE: /monitor
+      DOZZLE_AUTH_PROVIDER: simple
+      DOZZLE_AUTH_TTL: 24h
+      DOZZLE_REMOTE_HOST: tcp://socket-proxy:2375|singularity
+      DOZZLE_NO_ANALYTICS: "true"
+      DOZZLE_ENABLE_ACTIONS: "false"
+      DOZZLE_ENABLE_SHELL: "false"
+    volumes:
+      - ./dozzle:/data:ro
+    expose: ["8080"]
+    depends_on:
+      - socket-proxy
+    networks: [internal, monitor]
+    restart: unless-stopped
+
 networks:
   edge: {}          # nginx <-> host
   internal:
     internal: true  # no internet; db/redis/web live only here
+  monitor:
+    internal: true  # isolated socket-proxy <-> dozzle only
   egress: {}        # outbound internet for api/mcp/worker (Google, OpenRouter)
 
 volumes:

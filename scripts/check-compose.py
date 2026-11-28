@@ -35,6 +35,12 @@ for name in ("db", "redis", "web", "embed"):
     if nets != {"internal"}:
         errors.append(f"{name} must be on the internal network only, got {sorted(nets)}")
 
+if set(services["socket-proxy"].get("networks", {})) != {"monitor"}:
+    errors.append(f"socket-proxy must be on the monitor network only, got {sorted(services['socket-proxy'].get('networks', {}))}")
+
+if set(services["dozzle"].get("networks", {})) != {"internal", "monitor"}:
+    errors.append(f"dozzle must be on internal and monitor networks only, got {sorted(services['dozzle'].get('networks', {}))}")
+
 for name in ("db", "redis"):
     if "ports" in services[name]:
         errors.append(f"{name} must not publish ports")
